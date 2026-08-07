@@ -1,0 +1,42 @@
+{
+  "name": "ewallet_rn",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "dependencies": {
+    "@expo/metro-runtime": "~57.0.8",
+    "@expo/vector-icons": "^15.1.1",
+    "@react-navigation/native": "^7.3.15",
+    "@react-navigation/native-stack": "^7.18.7",
+    "crypto-js": "^4.2.0",
+    "expo": "~57.0.11",
+    "expo-crypto": "^57.0.1",
+    "expo-document-picker": "~57.0.1",
+    "expo-file-system": "~57.0.2",
+    "expo-image-picker": "~57.0.8",
+    "expo-sharing": "~57.0.10",
+    "expo-sqlite": "^57.0.1",
+    "expo-status-bar": "~57.0.1",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.86.2",
+    "react-native-get-random-values": "^2.0.0",
+    "react-native-safe-area-context": "^5.8.1",
+    "react-native-screens": "^4.27.0",
+    "react-native-web": "^0.21.2",
+    "uuid": "^14.0.1",
+    "zustand": "^5.0.14"
+  },
+  "devDependencies": {
+    "@types/crypto-js": "^4.2.2",
+    "@types/react": "~19.2.2",
+    "@types/uuid": "^10.0.0",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web"
+  },
+  "private": true
+}
