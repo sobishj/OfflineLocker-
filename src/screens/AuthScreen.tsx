@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, Alert } from 'react-native';
 import { useWalletStore } from '../store/useWalletStore';
-import { AppTheme } from '../theme/AppTheme';
+import { Feather } from '@expo/vector-icons';
 
 export default function AuthScreen() {
   const { currentUser, registerUser, loginUser, errorMessage, clearError } = useWalletStore();
@@ -28,13 +28,19 @@ export default function AuthScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <View style={styles.content}>
+        <View style={styles.iconContainer}>
+          <Feather name="lock" size={24} color="#86868b" />
+        </View>
         <Text style={styles.title}>{isRegistration ? 'Create Vault' : 'Unlock Vault'}</Text>
+        <Text style={styles.subtitle}>
+          {isRegistration ? 'Enter a username and 4-digit PIN' : 'Enter your 4-digit PIN to continue'}
+        </Text>
         
         {isRegistration && (
           <TextInput
-            style={styles.input}
+            style={[styles.input, { letterSpacing: 0, textAlign: 'left', fontSize: 16 }]}
             placeholder="Username"
-            placeholderTextColor={AppTheme.colors.textSecondary}
+            placeholderTextColor="#8e8e93"
             value={username}
             onChangeText={setUsername}
             autoCapitalize="none"
@@ -43,8 +49,8 @@ export default function AuthScreen() {
         
         <TextInput
           style={styles.input}
-          placeholder="4-Digit PIN"
-          placeholderTextColor={AppTheme.colors.textSecondary}
+          placeholder="••••"
+          placeholderTextColor="#8e8e93"
           value={pin}
           onChangeText={setPin}
           keyboardType="numeric"
@@ -65,51 +71,78 @@ export default function AuthScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: AppTheme.colors.background,
+    backgroundColor: '#eaf0f8', // Soft light blue-ish grey background
     justifyContent: 'center',
-    padding: AppTheme.spacing.l,
+    padding: 24,
   },
   content: {
-    backgroundColor: AppTheme.colors.surface,
-    padding: AppTheme.spacing.l,
-    borderRadius: AppTheme.borderRadius.l,
+    backgroundColor: 'rgba(255, 255, 255, 0.45)', // Glassmorphism base
+    padding: 32,
+    borderRadius: 24,
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.8)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.05,
+    shadowRadius: 20,
+    elevation: 3,
+  },
+  iconContainer: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: 'rgba(255, 255, 255, 0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.9)',
   },
   title: {
-    fontSize: 24,
-    color: AppTheme.colors.text,
-    fontWeight: 'bold',
-    marginBottom: AppTheme.spacing.xl,
+    fontSize: 22,
+    color: '#1d1d1f',
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: '#86868b',
+    marginBottom: 24,
+    textAlign: 'center',
   },
   input: {
     width: '100%',
     height: 50,
-    backgroundColor: AppTheme.colors.background,
+    backgroundColor: 'rgba(255, 255, 255, 0.6)',
     borderWidth: 1,
-    borderColor: AppTheme.colors.border,
-    borderRadius: AppTheme.borderRadius.m,
-    paddingHorizontal: AppTheme.spacing.m,
-    color: AppTheme.colors.text,
-    marginBottom: AppTheme.spacing.m,
-    fontSize: 16,
+    borderColor: 'rgba(255, 255, 255, 1)',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    color: '#1d1d1f',
+    marginBottom: 16,
+    fontSize: 24,
+    textAlign: 'center',
+    letterSpacing: 12, // Increased letter spacing for PIN dots
   },
   error: {
-    color: AppTheme.colors.error,
-    marginBottom: AppTheme.spacing.m,
+    color: '#ff3b30',
+    marginBottom: 16,
     textAlign: 'center',
+    fontSize: 14,
   },
   button: {
     width: '100%',
     height: 50,
-    backgroundColor: AppTheme.colors.primary,
-    borderRadius: AppTheme.borderRadius.m,
+    backgroundColor: '#78a3f0', // Soft blue from the image
+    borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
-    marginTop: AppTheme.spacing.m,
+    marginTop: 8,
   },
   buttonText: {
-    color: AppTheme.colors.background,
-    fontSize: 18,
-    fontWeight: 'bold',
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });

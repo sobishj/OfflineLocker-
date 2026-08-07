@@ -492,7 +492,7 @@ export default function TabDetailScreen({ route }: any) {
             
             <View style={styles.modalActions}>
               <TouchableOpacity onPress={() => { setModalVisible(false); setFileUris([]); setFileType(null); setDocTitle(''); setDocContent(''); }} style={[styles.button, { backgroundColor: AppTheme.colors.border }]}>
-                <Text style={styles.buttonText}>Cancel</Text>
+                <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity onPress={handleAddDocument} style={styles.button}>
                 <Text style={styles.buttonText}>Encrypt & Save</Text>
@@ -571,40 +571,40 @@ export default function TabDetailScreen({ route }: any) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: AppTheme.colors.background },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: AppTheme.colors.background },
-  docCard: { backgroundColor: AppTheme.colors.surface, padding: AppTheme.spacing.m, borderRadius: AppTheme.borderRadius.m, marginBottom: AppTheme.spacing.m, borderWidth: 1, borderColor: AppTheme.colors.border },
+  docCard: { backgroundColor: AppTheme.colors.surface, padding: AppTheme.spacing.m, borderRadius: AppTheme.borderRadius.m, marginBottom: AppTheme.spacing.m, borderWidth: 1, borderColor: AppTheme.colors.border, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 2 },
   docTitle: { color: AppTheme.colors.text, fontSize: 16, fontWeight: 'bold' },
   docDate: { color: AppTheme.colors.textSecondary, fontSize: 12, marginTop: 4 },
   cardActionsRow: { flexDirection: 'row', alignItems: 'center', marginTop: 16 },
-  cardActionBtn: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4, paddingHorizontal: 8, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 4 },
+  cardActionBtn: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4, paddingHorizontal: 8, backgroundColor: 'rgba(255,255,255,0.4)', borderRadius: 4 },
   cardActionText: { color: AppTheme.colors.primary, fontSize: 12, marginLeft: 6, fontWeight: '600' },
   emptyText: { color: AppTheme.colors.textSecondary, textAlign: 'center', marginTop: 40 },
-  fab: { position: 'absolute', bottom: 30, left: 330, width: 60, height: 60, borderRadius: 30, backgroundColor: AppTheme.colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 5, zIndex: 10 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', padding: AppTheme.spacing.l },
-  modalContent: { backgroundColor: AppTheme.colors.surface, padding: AppTheme.spacing.l, borderRadius: AppTheme.borderRadius.l, maxWidth: 600, width: '100%', alignSelf: 'center' },
+  fab: { position: 'absolute', bottom: 30, left: 330, width: 60, height: 60, borderRadius: 30, backgroundColor: AppTheme.colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 5, zIndex: 10, shadowColor: AppTheme.colors.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: AppTheme.spacing.l },
+  modalContent: { backgroundColor: 'rgba(255, 255, 255, 0.85)', padding: AppTheme.spacing.l, borderRadius: AppTheme.borderRadius.l, maxWidth: 600, width: '100%', alignSelf: 'center', borderWidth: 1, borderColor: '#fff', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.1, shadowRadius: 20, elevation: 5 },
   modalTitle: { color: AppTheme.colors.text, fontSize: 20, fontWeight: 'bold', marginBottom: AppTheme.spacing.m },
-  input: { backgroundColor: AppTheme.colors.background, borderWidth: 1, borderColor: AppTheme.colors.border, color: AppTheme.colors.text, padding: 12, borderRadius: AppTheme.borderRadius.s, marginBottom: AppTheme.spacing.m },
+  input: { backgroundColor: 'rgba(255, 255, 255, 0.6)', borderWidth: 1, borderColor: '#fff', color: AppTheme.colors.text, padding: 12, borderRadius: AppTheme.borderRadius.s, marginBottom: AppTheme.spacing.m },
   mediaActions: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: AppTheme.spacing.m },
-  mediaButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: AppTheme.colors.background, borderWidth: 1, borderColor: AppTheme.colors.primary, padding: 10, borderRadius: AppTheme.borderRadius.s, marginHorizontal: 2 },
+  mediaButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255, 255, 255, 0.5)', borderWidth: 1, borderColor: AppTheme.colors.primary, padding: 10, borderRadius: AppTheme.borderRadius.s, marginHorizontal: 2 },
   mediaButtonText: { color: AppTheme.colors.primary, marginLeft: 4, fontWeight: '600', fontSize: 12 },
   
   // Multi-file thumbnails
   filePreviewContainer: { marginBottom: AppTheme.spacing.m },
-  thumbnailWrapper: { position: 'relative', marginRight: 16, width: 120, height: 120 },
+  thumbnailWrapper: { position: 'relative', marginRight: 16, width: 120, height: 120, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 8 },
   thumbnailImage: { width: 120, height: 120, borderRadius: AppTheme.borderRadius.m },
-  thumbnailPdf: { width: 120, height: 120, backgroundColor: AppTheme.colors.background, borderRadius: AppTheme.borderRadius.m, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: AppTheme.colors.border },
+  thumbnailPdf: { width: 120, height: 120, backgroundColor: 'rgba(255, 255, 255, 0.6)', borderRadius: AppTheme.borderRadius.m, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#fff' },
   removeFileBtn: { position: 'absolute', top: -10, right: -10, backgroundColor: '#000', borderRadius: 12 },
-  addMoreTile: { width: 120, height: 120, borderRadius: AppTheme.borderRadius.m, borderWidth: 1, borderColor: AppTheme.colors.primary, borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(6, 182, 212, 0.05)' },
+  addMoreTile: { width: 120, height: 120, borderRadius: AppTheme.borderRadius.m, borderWidth: 1, borderColor: AppTheme.colors.primary, borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255, 255, 255, 0.4)' },
   
   modalActions: { flexDirection: 'row', justifyContent: 'space-between', marginTop: AppTheme.spacing.s },
   button: { flex: 1, backgroundColor: AppTheme.colors.primary, padding: 12, borderRadius: AppTheme.borderRadius.s, alignItems: 'center', marginHorizontal: 4 },
   buttonText: { color: '#fff', fontWeight: 'bold' },
-  decryptedBox: { backgroundColor: AppTheme.colors.background, padding: AppTheme.spacing.m, borderRadius: AppTheme.borderRadius.s, marginVertical: AppTheme.spacing.m, minHeight: 100 },
+  decryptedBox: { backgroundColor: 'rgba(255, 255, 255, 0.6)', padding: AppTheme.spacing.m, borderRadius: AppTheme.borderRadius.s, marginVertical: AppTheme.spacing.m, minHeight: 100 },
   decryptedText: { color: AppTheme.colors.text, fontSize: 16, lineHeight: 24 },
   
-  fullScreenModal: { flex: 1, backgroundColor: '#000' },
-  fullScreenHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, paddingTop: 40, backgroundColor: 'rgba(0,0,0,0.8)' },
-  fullScreenTitle: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
-  closeButton: { padding: 8 },
+  fullScreenModal: { flex: 1, backgroundColor: 'rgba(234, 240, 248, 0.95)' }, // frosted glass overall
+  fullScreenHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, paddingTop: 40, backgroundColor: 'rgba(255, 255, 255, 0.3)' },
+  fullScreenTitle: { color: AppTheme.colors.text, fontSize: 20, fontWeight: 'bold' },
+  closeButton: { padding: 8, backgroundColor: 'rgba(0,0,0,0.1)', borderRadius: 20 },
   fullScreenContent: { flex: 1, padding: 20 },
-  fullScreenText: { color: '#fff', fontSize: 18, lineHeight: 28 }
+  fullScreenText: { color: AppTheme.colors.text, fontSize: 18, lineHeight: 28 }
 });

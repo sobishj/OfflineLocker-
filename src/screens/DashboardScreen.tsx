@@ -111,7 +111,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
             <View style={styles.modalActions}>
               <TouchableOpacity onPress={() => setModalVisible(false)} style={[styles.button, { backgroundColor: AppTheme.colors.border }]}>
-                <Text style={styles.buttonText}>Cancel</Text>
+                <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity onPress={handleCreateTab} style={styles.button}>
                 <Text style={styles.buttonText}>Create</Text>
@@ -129,7 +129,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             <TextInput style={styles.input} placeholder="4-Digit PIN" placeholderTextColor={AppTheme.colors.textSecondary} value={unlockPin} onChangeText={setUnlockPin} keyboardType="numeric" secureTextEntry maxLength={4} />
             <View style={styles.modalActions}>
               <TouchableOpacity onPress={() => { setPinModalVisible(false); setUnlockPin(''); }} style={[styles.button, { backgroundColor: AppTheme.colors.border }]}>
-                <Text style={styles.buttonText}>Cancel</Text>
+                <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity onPress={handleUnlockTab} style={styles.button}>
                 <Text style={styles.buttonText}>Unlock</Text>
@@ -144,15 +144,15 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: AppTheme.colors.background },
-  tabCard: { backgroundColor: AppTheme.colors.surface, padding: AppTheme.spacing.m, borderRadius: AppTheme.borderRadius.m, marginBottom: AppTheme.spacing.m, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 1, borderColor: AppTheme.colors.border },
+  tabCard: { backgroundColor: AppTheme.colors.surface, padding: AppTheme.spacing.m, borderRadius: AppTheme.borderRadius.m, marginBottom: AppTheme.spacing.m, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 1, borderColor: AppTheme.colors.border, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 2 },
   tabName: { color: AppTheme.colors.text, fontSize: 18, fontWeight: 'bold' },
   tabDesc: { color: AppTheme.colors.textSecondary, fontSize: 14, marginTop: 4 },
   emptyText: { color: AppTheme.colors.textSecondary, textAlign: 'center', marginTop: 40 },
-  fab: { position: 'absolute', bottom: 30, right: 30, width: 60, height: 60, borderRadius: 30, backgroundColor: AppTheme.colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 5 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', padding: AppTheme.spacing.l },
-  modalContent: { backgroundColor: AppTheme.colors.surface, padding: AppTheme.spacing.l, borderRadius: AppTheme.borderRadius.l },
+  fab: { position: 'absolute', bottom: 30, right: 30, width: 60, height: 60, borderRadius: 30, backgroundColor: AppTheme.colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 5, shadowColor: AppTheme.colors.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: AppTheme.spacing.l },
+  modalContent: { backgroundColor: 'rgba(255, 255, 255, 0.8)', padding: AppTheme.spacing.l, borderRadius: AppTheme.borderRadius.l, borderWidth: 1, borderColor: '#fff', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.1, shadowRadius: 20, elevation: 5 },
   modalTitle: { color: AppTheme.colors.text, fontSize: 20, fontWeight: 'bold', marginBottom: AppTheme.spacing.m },
-  input: { backgroundColor: AppTheme.colors.background, borderWidth: 1, borderColor: AppTheme.colors.border, color: AppTheme.colors.text, padding: 12, borderRadius: AppTheme.borderRadius.s, marginBottom: AppTheme.spacing.m },
+  input: { backgroundColor: 'rgba(255, 255, 255, 0.6)', borderWidth: 1, borderColor: '#fff', color: AppTheme.colors.text, padding: 12, borderRadius: AppTheme.borderRadius.s, marginBottom: AppTheme.spacing.m },
   checkboxRow: { flexDirection: 'row', alignItems: 'center', marginBottom: AppTheme.spacing.m },
   checkboxText: { color: AppTheme.colors.text, marginLeft: 8 },
   modalActions: { flexDirection: 'row', justifyContent: 'space-between', marginTop: AppTheme.spacing.s },

@@ -1,13 +1,13 @@
 export const AppTheme = {
   colors: {
-    background: '#121212',
-    surface: '#1E1E1E',
-    primary: '#00E5FF', // accentCyan
-    text: '#FFFFFF',
-    textSecondary: '#B3B3B3',
-    error: '#CF6679',
-    border: '#333333',
-    sensitive: '#FFD700',
+    background: '#eaf0f8',
+    surface: 'rgba(255, 255, 255, 0.45)',
+    primary: '#78a3f0',
+    text: '#1d1d1f',
+    textSecondary: '#86868b',
+    error: '#ff3b30',
+    border: 'rgba(255, 255, 255, 0.8)',
+    sensitive: '#f0a378', // a soft orange/yellow for sensitive icon
   },
   spacing: {
     xs: 4,
@@ -17,8 +17,8 @@ export const AppTheme = {
     xl: 32,
   },
   borderRadius: {
-    s: 4,
-    m: 8,
-    l: 12,
+    s: 12,
+    m: 16,
+    l: 24,
   }
 };
