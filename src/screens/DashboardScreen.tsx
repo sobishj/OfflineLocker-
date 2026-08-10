@@ -122,9 +122,18 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               >
                 <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity onPress={handleCreateTab} style={styles.button}>
-                <Text style={styles.buttonText}>Create</Text>
-              </TouchableOpacity>
+              {(() => {
+                const isCreateDisabled = !tabName.trim() || (isSensitive && tabPin.trim().length !== 4);
+                return (
+                  <TouchableOpacity 
+                    onPress={handleCreateTab} 
+                    disabled={isCreateDisabled} 
+                    style={[styles.button, isCreateDisabled && { backgroundColor: AppTheme.colors.border, opacity: 0.5 }]}
+                  >
+                    <Text style={[styles.buttonText, isCreateDisabled && { color: AppTheme.colors.textSecondary }]}>Create</Text>
+                  </TouchableOpacity>
+                );
+              })()}
             </View>
           </View>
         </KeyboardAvoidingView>
@@ -140,9 +149,18 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               <TouchableOpacity onPress={() => { setPinModalVisible(false); setUnlockPin(''); }} style={[styles.button, { backgroundColor: AppTheme.colors.border }]}>
                 <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity onPress={handleUnlockTab} style={styles.button}>
-                <Text style={styles.buttonText}>Unlock</Text>
-              </TouchableOpacity>
+              {(() => {
+                const isUnlockDisabled = unlockPin.trim().length !== 4;
+                return (
+                  <TouchableOpacity 
+                    onPress={handleUnlockTab} 
+                    disabled={isUnlockDisabled} 
+                    style={[styles.button, isUnlockDisabled && { backgroundColor: AppTheme.colors.border, opacity: 0.5 }]}
+                  >
+                    <Text style={[styles.buttonText, isUnlockDisabled && { color: AppTheme.colors.textSecondary }]}>Unlock</Text>
+                  </TouchableOpacity>
+                );
+              })()}
             </View>
           </View>
         </KeyboardAvoidingView>

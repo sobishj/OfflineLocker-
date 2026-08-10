@@ -635,7 +635,7 @@ export default function TabDetailScreen({ route }: any) {
           <View style={styles.fullScreenHeader}>
             <Text style={styles.fullScreenTitle}>{selectedDoc?.title}</Text>
             <TouchableOpacity onPress={() => setViewModalVisible(false)} style={styles.closeButton}>
-              <Ionicons name="close" size={32} color="#fff" />
+              <Ionicons name="close" size={26} color="#ffffff" />
             </TouchableOpacity>
           </View>
           
@@ -745,7 +745,7 @@ const styles = StyleSheet.create({
   fullScreenModal: { flex: 1, backgroundColor: 'rgba(234, 240, 248, 0.95)' }, // frosted glass overall
   fullScreenHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, paddingTop: 40, backgroundColor: 'rgba(255, 255, 255, 0.3)' },
   fullScreenTitle: { color: AppTheme.colors.text, fontSize: 20, fontWeight: 'bold' },
-  closeButton: { padding: 8, backgroundColor: 'rgba(0,0,0,0.1)', borderRadius: 20 },
+  closeButton: { padding: 6, backgroundColor: '#ef4444', borderRadius: 20, shadowColor: '#ef4444', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 3 },
   fullScreenContent: { flex: 1, padding: 20 },
   fullScreenText: { color: AppTheme.colors.text, fontSize: 18, lineHeight: 28 }
 });

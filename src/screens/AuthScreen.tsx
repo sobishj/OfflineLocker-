@@ -60,9 +60,20 @@ export default function AuthScreen() {
 
         {errorMessage ? <Text style={styles.error}>{errorMessage}</Text> : null}
 
-        <TouchableOpacity style={styles.button} onPress={handleSubmit}>
-          <Text style={styles.buttonText}>{isRegistration ? 'Register' : 'Login'}</Text>
-        </TouchableOpacity>
+        {(() => {
+          const isValid = isRegistration ? (username.trim().length > 0 && pin.trim().length === 4) : (pin.trim().length === 4);
+          return (
+            <TouchableOpacity 
+              style={[styles.button, !isValid && styles.disabledButton]} 
+              onPress={handleSubmit}
+              disabled={!isValid}
+            >
+              <Text style={[styles.buttonText, !isValid && styles.disabledButtonText]}>
+                {isRegistration ? 'Register' : 'Unlock Vault'}
+              </Text>
+            </TouchableOpacity>
+          );
+        })()}
       </View>
     </KeyboardAvoidingView>
   );
@@ -144,5 +155,13 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  disabledButton: {
+    backgroundColor: '#cbd5e1',
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  disabledButtonText: {
+    color: '#94a3b8',
   },
 });
