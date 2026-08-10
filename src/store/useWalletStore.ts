@@ -4,6 +4,7 @@ import 'react-native-get-random-values'; // Needed for uuid in React Native
 import { User, Tab, Document } from '../models';
 import { DatabaseHelper } from '../services/DatabaseHelper';
 import { CryptoService } from '../services/CryptoService';
+import { BackupService } from '../services/BackupService';
 
 interface WalletState {
   currentUser: User | null;
@@ -25,6 +26,8 @@ interface WalletState {
   loadDocumentsForTab: (tabId: string) => Promise<void>;
   addDocument: (tabId: string, title: string, type: string, plainContent: string, encryptionPin: string) => Promise<void>;
   deleteDocument: (id: number, tabId: string) => Promise<void>;
+  exportBackup: (exportPin: string) => Promise<boolean>;
+  importBackup: (encryptedContent: string, importPin: string) => Promise<{ success: boolean; tabsCount: number; docsCount: number }>;
   clearError: () => void;
 }
 
@@ -185,6 +188,21 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   deleteDocument: async (id: number, tabId: string) => {
     await DatabaseHelper.deleteDocument(id);
     await get().loadDocumentsForTab(tabId);
+  },
+
+  exportBackup: async (exportPin: string) => {
+    const { currentUser } = get();
+    if (!currentUser) return false;
+    return await BackupService.exportBackup(currentUser, exportPin);
+  },
+
+  importBackup: async (encryptedContent: string, importPin: string) => {
+    const result = await BackupService.importBackup(encryptedContent, importPin);
+    if (result.success && result.user) {
+      set({ currentUser: result.user, isAuthenticated: true });
+      await get().loadTabs();
+    }
+    return { success: result.success, tabsCount: result.tabsCount, docsCount: result.docsCount };
   },
 
   clearError: () => {

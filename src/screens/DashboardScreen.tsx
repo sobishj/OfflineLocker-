@@ -1,16 +1,18 @@
 import React, { useState, useRef } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
 import { useWalletStore } from '../store/useWalletStore';
 import { AppTheme } from '../theme/AppTheme';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 
 type DashboardProps = {
   navigation: NativeStackNavigationProp<any>;
 };
 
 export default function DashboardScreen({ navigation }: DashboardProps) {
-  const { tabs, logout, createTab, deleteTab, verifyTabPin } = useWalletStore();
+  const { tabs, logout, createTab, deleteTab, verifyTabPin, exportBackup, importBackup } = useWalletStore();
   const [modalVisible, setModalVisible] = useState(false);
   const [pinModalVisible, setPinModalVisible] = useState(false);
   
@@ -23,6 +25,78 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   // Unlock tab state
   const [selectedTab, setSelectedTab] = useState<any>(null);
   const [unlockPin, setUnlockPin] = useState('');
+
+  // Export / Import state
+  const [exportModalVisible, setExportModalVisible] = useState(false);
+  const [exportPin, setExportPin] = useState('');
+  const [isExporting, setIsExporting] = useState(false);
+
+  const [importModalVisible, setImportModalVisible] = useState(false);
+  const [importPin, setImportPin] = useState('');
+  const [pickedFileContent, setPickedFileContent] = useState<string | null>(null);
+  const [pickedFileName, setPickedFileName] = useState<string | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
+
+  const handlePerformExport = async () => {
+    if (exportPin.trim().length !== 4) return;
+    setIsExporting(true);
+    try {
+      await exportBackup(exportPin.trim());
+      setExportModalVisible(false);
+      setExportPin('');
+      Alert.alert('Success', 'Backup file exported successfully.');
+    } catch (e: any) {
+      Alert.alert('Export Error', e?.message || 'Failed to export backup.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handlePickBackupFile = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: '*/*',
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const asset = result.assets[0];
+        setPickedFileName(asset.name);
+        if (Platform.OS === 'web') {
+          const reader = new FileReader();
+          const contentPromise = new Promise<string>((resolve) => {
+            reader.onload = (e) => resolve(e.target?.result as string);
+          });
+          reader.readAsText(asset.file as any);
+          const text = await contentPromise;
+          setPickedFileContent(text);
+        } else {
+          const text = await FileSystem.readAsStringAsync(asset.uri, { encoding: 'utf8' });
+          setPickedFileContent(text);
+        }
+      }
+    } catch (err: any) {
+      Alert.alert('Error', 'Failed to read backup file.');
+    }
+  };
+
+  const handlePerformImport = async () => {
+    if (!pickedFileContent || importPin.trim().length !== 4) return;
+    setIsImporting(true);
+    try {
+      const res = await importBackup(pickedFileContent, importPin.trim());
+      setImportModalVisible(false);
+      setImportPin('');
+      setPickedFileContent(null);
+      setPickedFileName(null);
+      Alert.alert('Backup Restored', `Successfully restored ${res.tabsCount} tabs and ${res.docsCount} documents!`);
+    } catch (e: any) {
+      Alert.alert('Import Error', e?.message || 'Failed to import backup. Incorrect PIN or invalid file.');
+    } finally {
+      setIsImporting(false);
+    }
+  };
 
   const handleCreateTab = async () => {
     const success = await createTab(tabName, tabDesc, isSensitive, tabPin);
@@ -62,9 +136,17 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   React.useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <TouchableOpacity onPress={logout} style={{ marginRight: 15 }}>
-          <Ionicons name="log-out-outline" size={24} color={AppTheme.colors.primary} />
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <TouchableOpacity onPress={() => setExportModalVisible(true)} style={{ marginRight: 14 }}>
+            <Ionicons name="cloud-upload-outline" size={22} color={AppTheme.colors.primary} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setImportModalVisible(true)} style={{ marginRight: 14 }}>
+            <Ionicons name="cloud-download-outline" size={22} color={AppTheme.colors.primary} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={logout} style={{ marginRight: 10 }}>
+            <Ionicons name="log-out-outline" size={22} color={AppTheme.colors.primary} />
+          </TouchableOpacity>
+        </View>
       )
     });
   }, [navigation]);
@@ -164,6 +246,97 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                     style={[styles.button, isUnlockDisabled && { backgroundColor: AppTheme.colors.border, opacity: 0.5 }]}
                   >
                     <Text style={[styles.buttonText, isUnlockDisabled && { color: AppTheme.colors.textSecondary }]}>Unlock</Text>
+                  </TouchableOpacity>
+                );
+              })()}
+            </View>
+          </View>
+      {/* EXPORT BACKUP MODAL */}
+      <Modal visible={exportModalVisible} animationType="slide" transparent>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '95%' }]}>
+            <Text style={styles.modalTitle}>Export Encrypted Backup</Text>
+            <Text style={{ color: AppTheme.colors.textSecondary, marginBottom: AppTheme.spacing.m, fontSize: 13 }}>
+              Enter a 4-digit PIN to encrypt your backup. You must enter this exact PIN when restoring your data.
+            </Text>
+            <TextInput
+              style={[styles.input, { letterSpacing: exportPin ? 8 : 0, textAlign: exportPin ? 'center' : 'left', fontSize: exportPin ? 18 : 15 }]}
+              placeholder="Enter 4-Digit Export PIN"
+              placeholderTextColor={AppTheme.colors.textSecondary}
+              value={exportPin}
+              onChangeText={setExportPin}
+              keyboardType="numeric"
+              secureTextEntry
+              maxLength={4}
+            />
+            <View style={styles.modalActions}>
+              <TouchableOpacity onPress={() => { setExportModalVisible(false); setExportPin(''); }} style={[styles.button, { backgroundColor: AppTheme.colors.border }]}>
+                <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
+              </TouchableOpacity>
+              {(() => {
+                const isExportDisabled = exportPin.trim().length !== 4 || isExporting;
+                return (
+                  <TouchableOpacity
+                    onPress={handlePerformExport}
+                    disabled={isExportDisabled}
+                    style={[styles.button, isExportDisabled && { backgroundColor: AppTheme.colors.border, opacity: 0.5 }]}
+                  >
+                    {isExporting ? (
+                      <ActivityIndicator size="small" color="#ffffff" />
+                    ) : (
+                      <Text style={[styles.buttonText, isExportDisabled && { color: AppTheme.colors.textSecondary }]}>Export & Share</Text>
+                    )}
+                  </TouchableOpacity>
+                );
+              })()}
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* IMPORT BACKUP MODAL */}
+      <Modal visible={importModalVisible} animationType="slide" transparent>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '95%' }]}>
+            <Text style={styles.modalTitle}>Import Encrypted Backup</Text>
+            <Text style={{ color: AppTheme.colors.textSecondary, marginBottom: AppTheme.spacing.m, fontSize: 13 }}>
+              Select an encrypted backup file (.ewallet) and enter the 4-digit PIN used when exporting.
+            </Text>
+
+            <TouchableOpacity onPress={handlePickBackupFile} style={[styles.button, { backgroundColor: AppTheme.colors.surface, borderWidth: 1, borderColor: AppTheme.colors.primary, marginBottom: AppTheme.spacing.m, flex: 0, padding: 12 }]}>
+              <Ionicons name="document-text-outline" size={20} color={AppTheme.colors.primary} style={{ marginRight: 6 }} />
+              <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', textAlign: 'center' }}>
+                {pickedFileName ? `Selected: ${pickedFileName}` : 'Choose Backup File (.ewallet)'}
+              </Text>
+            </TouchableOpacity>
+
+            <TextInput
+              style={[styles.input, { letterSpacing: importPin ? 8 : 0, textAlign: importPin ? 'center' : 'left', fontSize: importPin ? 18 : 15 }]}
+              placeholder="Enter 4-Digit Export PIN"
+              placeholderTextColor={AppTheme.colors.textSecondary}
+              value={importPin}
+              onChangeText={setImportPin}
+              keyboardType="numeric"
+              secureTextEntry
+              maxLength={4}
+            />
+            <View style={styles.modalActions}>
+              <TouchableOpacity onPress={() => { setImportModalVisible(false); setImportPin(''); setPickedFileContent(null); setPickedFileName(null); }} style={[styles.button, { backgroundColor: AppTheme.colors.border }]}>
+                <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
+              </TouchableOpacity>
+              {(() => {
+                const isImportDisabled = !pickedFileContent || importPin.trim().length !== 4 || isImporting;
+                return (
+                  <TouchableOpacity
+                    onPress={handlePerformImport}
+                    disabled={isImportDisabled}
+                    style={[styles.button, isImportDisabled && { backgroundColor: AppTheme.colors.border, opacity: 0.5 }]}
+                  >
+                    {isImporting ? (
+                      <ActivityIndicator size="small" color="#ffffff" />
+                    ) : (
+                      <Text style={[styles.buttonText, isImportDisabled && { color: AppTheme.colors.textSecondary }]}>Import & Restore</Text>
+                    )}
                   </TouchableOpacity>
                 );
               })()}
