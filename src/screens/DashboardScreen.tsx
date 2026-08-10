@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, KeyboardAvoidingView, Platform } from 'react-native';
 import { useWalletStore } from '../store/useWalletStore';
 import { AppTheme } from '../theme/AppTheme';
 import { Ionicons } from '@expo/vector-icons';
@@ -94,8 +94,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
       {/* CREATE TAB MODAL */}
       <Modal visible={modalVisible} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '95%' }]}>
             <Text style={styles.modalTitle}>New Vault Tab</Text>
             <TextInput style={styles.input} placeholder="Tab Name" placeholderTextColor={AppTheme.colors.textSecondary} value={tabName} onChangeText={setTabName} />
             <TextInput style={styles.input} placeholder="Description" placeholderTextColor={AppTheme.colors.textSecondary} value={tabDesc} onChangeText={setTabDesc} />
@@ -110,7 +110,16 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             )}
 
             <View style={styles.modalActions}>
-              <TouchableOpacity onPress={() => setModalVisible(false)} style={[styles.button, { backgroundColor: AppTheme.colors.border }]}>
+              <TouchableOpacity 
+                onPress={() => {
+                  setModalVisible(false);
+                  setTabName('');
+                  setTabDesc('');
+                  setIsSensitive(false);
+                  setTabPin('');
+                }} 
+                style={[styles.button, { backgroundColor: AppTheme.colors.border }]}
+              >
                 <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity onPress={handleCreateTab} style={styles.button}>
@@ -118,13 +127,13 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* UNLOCK TAB MODAL */}
       <Modal visible={pinModalVisible} animationType="fade" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '95%' }]}>
             <Text style={styles.modalTitle}>Unlock {selectedTab?.name}</Text>
             <TextInput style={styles.input} placeholder="4-Digit PIN" placeholderTextColor={AppTheme.colors.textSecondary} value={unlockPin} onChangeText={setUnlockPin} keyboardType="numeric" secureTextEntry maxLength={4} />
             <View style={styles.modalActions}>
@@ -136,7 +145,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );

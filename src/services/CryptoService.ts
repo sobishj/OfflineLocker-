@@ -33,20 +33,21 @@ export class CryptoService {
    */
   static encryptText(plainText: string, pinKey: string): string {
     try {
+      // If it's already encrypted, don't double encrypt
+      if (plainText.startsWith('ENC::')) return plainText;
+
       const key = this.getKeyFromPin(pinKey);
-      // In the original Flutter app, a zero IV of length 16 bytes was used: `enc.IV.fromLength(16)`
-      // We replicate this 16-byte zero IV for compatibility: 4 words of 32 bits (0)
       const iv = CryptoJS.lib.WordArray.create([0, 0, 0, 0]);
       
       const encrypted = CryptoJS.AES.encrypt(plainText, key, { iv: iv });
       
-      // Return IV + Ciphertext in base64
       const ivBase64 = iv.toString(CryptoJS.enc.Base64);
       const cipherBase64 = encrypted.ciphertext.toString(CryptoJS.enc.Base64);
       
-      return `${ivBase64}:${cipherBase64}`;
+      return `ENC::${ivBase64}:${cipherBase64}`;
     } catch (e) {
-      return plainText; // Fallback
+      console.error('Encryption failed (possibly too large)', e);
+      return plainText; // Fallback to raw text if too large for JS to handle
     }
   }
 
@@ -55,9 +56,22 @@ export class CryptoService {
    */
   static decryptText(cipherText: string, pinKey: string): string {
     try {
-      if (!cipherText.includes(':')) return cipherText; // Not encrypted or old format
+      // Strictly check for the ENC:: prefix. If missing, it's either raw text (fallback) or old format.
+      if (!cipherText.startsWith('ENC::')) {
+        // Handle old format which was just iv:ciphertext without ENC:: prefix
+        // We know old format has exactly one colon, and doesn't start with data: (data URIs have multiple colons)
+        if (cipherText.includes(':') && !cipherText.startsWith('data:') && !cipherText.startsWith('[')) {
+           // Might be old format, let it fall through to try decrypting
+           cipherText = 'ENC::' + cipherText; 
+        } else {
+           return cipherText;
+        }
+      }
       
-      const parts = cipherText.split(':');
+      const payload = cipherText.substring(5); // Remove 'ENC::'
+      const parts = payload.split(':');
+      if (parts.length !== 2) return cipherText;
+
       const iv = CryptoJS.enc.Base64.parse(parts[0]);
       const ciphertext = CryptoJS.enc.Base64.parse(parts[1]);
       
@@ -69,11 +83,20 @@ export class CryptoService {
       
       const decrypted = CryptoJS.AES.decrypt(cipherParams, key, { iv: iv });
       
-      const result = decrypted.toString(CryptoJS.enc.Utf8);
+      let result = '';
+      try {
+        result = decrypted.toString(CryptoJS.enc.Utf8);
+      } catch (utf8Error) {
+        // Fallback for large strings (like 10MB base64 images) that cause Hermes to crash
+        // during escape/decodeURIComponent in Utf8.stringify. Latin1 works fine for base64 ASCII.
+        result = decrypted.toString(CryptoJS.enc.Latin1);
+      }
+      
       if (!result) throw new Error('Decryption resulted in empty string');
       
       return result;
     } catch (e) {
+      console.error('Decryption failed', e);
       return '⚠️ Decryption Failed: Invalid Key or Corrupted Data';
     }
   }

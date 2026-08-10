@@ -1,14 +1,16 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, ActivityIndicator, Image, Platform, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, ActivityIndicator, Image, Platform, ScrollView, KeyboardAvoidingView } from 'react-native';
 import { useWalletStore } from '../store/useWalletStore';
 import { AppTheme } from '../theme/AppTheme';
 import { Ionicons } from '@expo/vector-icons';
 import { CryptoService } from '../services/CryptoService';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import WebCamera from '../components/WebCamera';
+import CustomImageCropper from '../components/CustomImageCropper';
+import { WebView } from 'react-native-webview';
 
 export default function TabDetailScreen({ route }: any) {
   const { tabId, unlockPin } = route.params;
@@ -26,6 +28,9 @@ export default function TabDetailScreen({ route }: any) {
   
   // Web Camera
   const [webCameraVisible, setWebCameraVisible] = useState(false);
+
+  // Active image index for crop modal
+  const [cropIndex, setCropIndex] = useState<number | null>(null);
   
   // Viewing document (Popup)
   const [selectedDoc, setSelectedDoc] = useState<any>(null);
@@ -70,29 +75,38 @@ export default function TabDetailScreen({ route }: any) {
 
     const result = await ImagePicker.launchCameraAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.7,
+      quality: 0.3,
       base64: true,
       allowsEditing: false,
     });
 
     if (!result.canceled && result.assets && result.assets.length > 0) {
-      setFileUris(prev => [...prev, `data:image/jpeg;base64,${result.assets[0].base64}`]);
+      const newUri = `data:image/jpeg;base64,${result.assets[0].base64}`;
+      const newIndex = fileUris.length;
+      setFileUris(prev => [...prev, newUri]);
       setFileType('image');
       setDocContent('');
+      if (Platform.OS !== 'web') {
+        setCropIndex(newIndex);
+      }
     }
   };
 
   const handleWebCameraCapture = (base64DataUri: string) => {
+    const newIndex = fileUris.length;
     setFileUris(prev => [...prev, base64DataUri]);
     setFileType('image');
     setDocContent('');
     setWebCameraVisible(false);
+    if (Platform.OS !== 'web') {
+      setCropIndex(newIndex);
+    }
   };
 
   const handleUploadFile = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: ['image/*', 'application/pdf'],
+        type: '*/*',
         copyToCacheDirectory: true,
         multiple: false,
       });
@@ -113,7 +127,7 @@ export default function TabDetailScreen({ route }: any) {
             });
             newUris.push(dataUri);
           } else {
-            const base64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
+            const base64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: 'base64' });
             const prefix = isImage ? 'image/jpeg' : 'application/pdf';
             newUris.push(`data:${prefix};base64,${base64}`);
           }
@@ -123,8 +137,8 @@ export default function TabDetailScreen({ route }: any) {
         setFileType(determinedType as any);
         setDocContent('');
       }
-    } catch (e) {
-      Alert.alert('Error', 'Failed to pick file');
+    } catch (e: any) {
+      Alert.alert('Error', 'Failed to pick file: ' + (e?.message || String(e)));
     }
   };
 
@@ -159,26 +173,59 @@ export default function TabDetailScreen({ route }: any) {
     return arr;
   };
 
-  const handleViewDoc = (doc: any) => {
+  const getSafeImageUri = (uri: string) => {
+    if (!uri) return '';
+    if (uri.startsWith('data:')) return uri;
+    if (uri.startsWith('http') || uri.startsWith('file://')) return encodeURI(uri);
+    return ''; // Invalid URI prevents crash
+  };
+
+  const prepareLocalFiles = async (dataUris: string[], docTitle: string, type: string): Promise<string[]> => {
+    if (Platform.OS === 'web') return dataUris;
+    
+    const localUris: string[] = [];
+    for (let i = 0; i < dataUris.length; i++) {
+      const uri = dataUris[i];
+      if (uri.startsWith('data:')) {
+         try {
+           const base64Data = uri.includes(',') ? uri.split(',')[1] : uri;
+           const safeTitle = docTitle.replace(/[^a-z0-9]/gi, '_');
+           const ext = type === 'pdf' ? 'pdf' : 'jpg';
+           const tempUri = `${FileSystem.cacheDirectory}${safeTitle}_preview_${i}.${ext}`;
+           await FileSystem.writeAsStringAsync(tempUri, base64Data, { encoding: 'base64' });
+           localUris.push(tempUri);
+         } catch (e) {
+           localUris.push(uri);
+         }
+      } else {
+         localUris.push(uri);
+      }
+    }
+    return localUris;
+  };
+
+  const handleViewDoc = async (doc: any) => {
     const decryptionKey = unlockPin || currentUser?.pinHash || 'default_fallback';
     const plainText = CryptoService.decryptText(doc.encryptedContent, decryptionKey);
     setSelectedDoc(doc);
     setDecryptedText(plainText);
     if (doc.type === 'image' || doc.type === 'pdf') {
-      setDecryptedArray(parseDecryptedContent(plainText));
+      const rawArr = parseDecryptedContent(plainText);
+      setDecryptedArray(await prepareLocalFiles(rawArr, doc.title, doc.type));
     } else {
       setDecryptedArray([]);
     }
     setViewModalVisible(true);
   };
 
-  const handleSelectPreview = (doc: any) => {
+  const handleSelectPreview = async (doc: any) => {
     const decryptionKey = unlockPin || currentUser?.pinHash || 'default_fallback';
     const plainText = CryptoService.decryptText(doc.encryptedContent, decryptionKey);
     setPreviewDoc(doc);
     setPreviewData(plainText);
     if (doc.type === 'image' || doc.type === 'pdf') {
-      const arr = parseDecryptedContent(plainText);
+      const rawArr = parseDecryptedContent(plainText);
+      const arr = await prepareLocalFiles(rawArr, doc.title, doc.type);
       setPreviewDataArray(arr);
       
       const initialSelection: Record<number, boolean> = {};
@@ -223,7 +270,7 @@ export default function TabDetailScreen({ route }: any) {
         const safeTitle = title.replace(/[^a-z0-9]/gi, '_');
         const ext = type === 'pdf' ? 'pdf' : type === 'image' ? 'jpg' : 'txt';
         const tempUri = `${FileSystem.documentDirectory}${safeTitle}${index > 0 ? `_${index + 1}` : ''}.${ext}`;
-        await FileSystem.writeAsStringAsync(tempUri, base64Data, { encoding: FileSystem.EncodingType.Base64 });
+        await FileSystem.writeAsStringAsync(tempUri, base64Data, { encoding: 'base64' });
         await Sharing.shareAsync(tempUri);
       } catch (error) {
         Alert.alert('Error', 'Could not download file.');
@@ -374,17 +421,21 @@ export default function TabDetailScreen({ route }: any) {
               <View style={{ flex: 1, backgroundColor: AppTheme.colors.background, borderRadius: AppTheme.borderRadius.m, overflow: 'hidden', borderWidth: 1, borderColor: AppTheme.colors.border }}>
                 {previewDoc.type === 'image' && (
                   <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16 }}>
-                     {previewDataArray.map((uri, idx) => (
-                        <View key={idx} style={{ marginBottom: 16, position: 'relative' }}>
-                          <Image source={{ uri }} style={{ width: '100%', height: 500, borderRadius: 8 }} resizeMode="contain" />
-                          <TouchableOpacity 
-                             onPress={() => setSelectedForDownload(prev => ({ ...prev, [idx]: !prev[idx] }))} 
-                             style={{ position: 'absolute', top: 10, left: 10, backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center' }}
-                          >
-                             <Ionicons name={selectedForDownload[idx] ? "checkbox" : "square-outline"} size={24} color="#fff" />
-                          </TouchableOpacity>
-                        </View>
-                     ))}
+                     {previewDataArray.map((uri, idx) => {
+                        const safeUri = getSafeImageUri(uri);
+                        if (!safeUri) return null;
+                        return (
+                          <View key={idx} style={{ marginBottom: 16, position: 'relative' }}>
+                            <Image source={{ uri: safeUri }} style={{ width: '100%', height: 500, borderRadius: 8 }} resizeMode="contain" />
+                            <TouchableOpacity 
+                               onPress={() => setSelectedForDownload(prev => ({ ...prev, [idx]: !prev[idx] }))} 
+                               style={{ position: 'absolute', top: 10, left: 10, backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center' }}
+                            >
+                               <Ionicons name={selectedForDownload[idx] ? "checkbox" : "square-outline"} size={24} color="#fff" />
+                            </TouchableOpacity>
+                          </View>
+                        );
+                     })}
                   </ScrollView>
                 )}
                 {previewDoc.type === 'text' && (
@@ -406,10 +457,13 @@ export default function TabDetailScreen({ route }: any) {
                   </ScrollView>
                 )}
                 {previewDoc.type === 'pdf' && Platform.OS !== 'web' && (
-                  <View style={styles.center}>
-                    <Ionicons name="document" size={64} color={AppTheme.colors.primary} />
-                    <Text style={{ color: AppTheme.colors.text, marginTop: 16 }}>PDF preview is only supported on Web.</Text>
-                  </View>
+                  <ScrollView style={{ flex: 1 }}>
+                     {previewDataArray.map((uri, idx) => (
+                       <View key={idx} style={{ height: 600, marginBottom: 16 }}>
+                         <WebView originWhitelist={['*']} source={{ uri }} style={{ flex: 1 }} />
+                       </View>
+                     ))}
+                  </ScrollView>
                 )}
               </View>
             </View>
@@ -429,8 +483,11 @@ export default function TabDetailScreen({ route }: any) {
 
       {/* ADD DOCUMENT MODAL */}
       <Modal visible={modalVisible} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+        <KeyboardAvoidingView 
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'} 
+          style={styles.modalOverlay}
+        >
+          <View style={[styles.modalContent, { maxHeight: '95%' }]}>
             <Text style={styles.modalTitle}>Add Secure Document</Text>
             
             <TextInput style={styles.input} placeholder="Title" placeholderTextColor={AppTheme.colors.textSecondary} value={docTitle} onChangeText={setDocTitle} />
@@ -442,10 +499,17 @@ export default function TabDetailScreen({ route }: any) {
             {fileUris.length > 0 && (
               <View style={styles.filePreviewContainer}>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingVertical: 10 }}>
-                  {fileUris.map((uri, idx) => (
+                  {fileUris.map((uri, idx) => {
+                     const safeUri = getSafeImageUri(uri);
+                     return (
                      <View key={idx} style={styles.thumbnailWrapper}>
-                       {fileType === 'image' ? (
-                          <Image source={{ uri }} style={styles.thumbnailImage} />
+                       {fileType === 'image' && safeUri ? (
+                          <Image source={{ uri: safeUri }} style={styles.thumbnailImage} />
+                       ) : fileType === 'image' && !safeUri ? (
+                          <View style={styles.thumbnailPdf}>
+                             <Ionicons name="warning" size={48} color={AppTheme.colors.error} />
+                             <Text style={{ color: AppTheme.colors.text, marginTop: 8, fontSize: 10 }}>Invalid Image</Text>
+                          </View>
                        ) : (
                           <View style={styles.thumbnailPdf}>
                              <Ionicons name="document" size={48} color={AppTheme.colors.primary} />
@@ -453,18 +517,39 @@ export default function TabDetailScreen({ route }: any) {
                           </View>
                        )}
                        <TouchableOpacity 
-                          style={styles.removeFileBtn} 
-                          onPress={() => {
-                            const newUris = [...fileUris];
-                            newUris.splice(idx, 1);
-                            setFileUris(newUris);
-                            if (newUris.length === 0) setFileType(null);
-                          }}
-                       >
-                         <Ionicons name="close-circle" size={24} color={AppTheme.colors.error} />
-                       </TouchableOpacity>
+                           style={styles.removeFileBtn} 
+                           onPress={() => {
+                             const newUris = [...fileUris];
+                             newUris.splice(idx, 1);
+                             setFileUris(newUris);
+                             if (newUris.length === 0) setFileType(null);
+                           }}
+                        >
+                          <Ionicons name="close-circle" size={24} color={AppTheme.colors.error} />
+                        </TouchableOpacity>
+                        {fileType === 'image' && safeUri && Platform.OS !== 'web' && (
+                          <TouchableOpacity 
+                            style={{
+                              position: 'absolute',
+                              bottom: -6,
+                              left: -6,
+                              backgroundColor: AppTheme.colors.primary,
+                              borderRadius: 12,
+                              padding: 4,
+                              elevation: 3,
+                              shadowColor: '#000',
+                              shadowOffset: { width: 0, height: 2 },
+                              shadowOpacity: 0.2,
+                              shadowRadius: 3,
+                            }}
+                            onPress={() => setCropIndex(idx)}
+                          >
+                            <Ionicons name="crop" size={16} color="#fff" />
+                          </TouchableOpacity>
+                        )}
                      </View>
-                  ))}
+                     );
+                  })}
                   
                   {/* Option to add more photos */}
                   {fileType === 'image' && (
@@ -483,9 +568,33 @@ export default function TabDetailScreen({ route }: any) {
                   <Ionicons name="camera" size={20} color={AppTheme.colors.primary} />
                   <Text style={styles.mediaButtonText}>Camera</Text>
                 </TouchableOpacity>
+                <TouchableOpacity 
+                  onPress={async () => {
+                    const result = await ImagePicker.launchImageLibraryAsync({
+                      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                      quality: 0.3,
+                      base64: true,
+                      allowsEditing: false,
+                    });
+                    if (!result.canceled && result.assets && result.assets.length > 0) {
+                      const newUri = `data:image/jpeg;base64,${result.assets[0].base64}`;
+                      const newIndex = fileUris.length;
+                      setFileUris(prev => [...prev, newUri]);
+                      setFileType('image');
+                      setDocContent('');
+                      if (Platform.OS !== 'web') {
+                        setCropIndex(newIndex);
+                      }
+                    }
+                  }} 
+                  style={styles.mediaButton}
+                >
+                  <Ionicons name="image" size={20} color={AppTheme.colors.primary} />
+                  <Text style={styles.mediaButtonText}>Gallery</Text>
+                </TouchableOpacity>
                 <TouchableOpacity onPress={handleUploadFile} style={styles.mediaButton}>
-                  <Ionicons name="cloud-upload" size={20} color={AppTheme.colors.primary} />
-                  <Text style={styles.mediaButtonText}>Upload File</Text>
+                  <Ionicons name="document-attach" size={20} color={AppTheme.colors.primary} />
+                  <Text style={styles.mediaButtonText}>Files</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -499,7 +608,24 @@ export default function TabDetailScreen({ route }: any) {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+
+          {cropIndex !== null && cropIndex >= 0 && cropIndex < fileUris.length && (
+            <View style={[StyleSheet.absoluteFill, { zIndex: 999999, elevation: 999999, backgroundColor: '#000' }]}>
+              <CustomImageCropper
+                imageUri={fileUris[cropIndex]}
+                onCropDone={(croppedBase64Uri) => {
+                  const updated = [...fileUris];
+                  updated[cropIndex] = croppedBase64Uri;
+                  setFileUris(updated);
+                  setCropIndex(null);
+                }}
+                onCancel={() => {
+                  setCropIndex(null);
+                }}
+              />
+            </View>
+          )}
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* VIEW DOCUMENT MODAL (Popup) */}
@@ -516,9 +642,12 @@ export default function TabDetailScreen({ route }: any) {
           <View style={styles.fullScreenContent}>
             {selectedDoc?.type === 'image' ? (
                <ScrollView style={{ flex: 1 }}>
-                  {decryptedArray.map((uri, idx) => (
+                  {decryptedArray.map((uri, idx) => {
+                    const safeUri = getSafeImageUri(uri);
+                    if (!safeUri) return null;
+                    return (
                     <View key={idx} style={{ marginBottom: 20, position: 'relative' }}>
-                      <Image source={{ uri }} style={{ width: '100%', height: 600 }} resizeMode="contain" />
+                      <Image source={{ uri: safeUri }} style={{ width: '100%', height: 600 }} resizeMode="contain" />
                       <TouchableOpacity 
                          onPress={() => handleDownloadFile(uri, selectedDoc.title, 'image', idx)} 
                          style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center' }}
@@ -527,7 +656,8 @@ export default function TabDetailScreen({ route }: any) {
                          <Text style={{ color: '#fff', marginLeft: 6, fontWeight: 'bold' }}>Download Image</Text>
                       </TouchableOpacity>
                     </View>
-                  ))}
+                    );
+                  })}
                </ScrollView>
             ) : selectedDoc?.type === 'pdf' ? (
                Platform.OS === 'web' ? (
@@ -543,13 +673,20 @@ export default function TabDetailScreen({ route }: any) {
                     ))}
                  </ScrollView>
                ) : (
-                 <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                   <Ionicons name="document" size={64} color={AppTheme.colors.primary} />
-                   <Text style={{ color: AppTheme.colors.text, marginVertical: 10 }}>Secure PDF Document</Text>
-                   <TouchableOpacity onPress={() => handleDownloadFromCard(selectedDoc)} style={styles.button}>
-                     <Text style={styles.buttonText}>Download All / Open PDF</Text>
-                   </TouchableOpacity>
-                 </View>
+                 <ScrollView style={{ flex: 1 }}>
+                    {decryptedArray.map((uri, idx) => (
+                      <View key={idx} style={{ height: 600, marginBottom: 20 }}>
+                         <WebView originWhitelist={['*']} source={{ uri }} style={{ flex: 1 }} nestedScrollEnabled />
+                         <TouchableOpacity 
+                            onPress={() => handleDownloadFile(uri, selectedDoc.title, 'pdf', idx)} 
+                            style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center' }}
+                         >
+                            <Ionicons name="download" size={20} color="#fff" />
+                            <Text style={{ color: '#fff', marginLeft: 6, fontWeight: 'bold' }}>Open / Share PDF</Text>
+                         </TouchableOpacity>
+                      </View>
+                    ))}
+                 </ScrollView>
                )
             ) : (
               <ScrollView style={{ flex: 1 }}>
@@ -564,6 +701,10 @@ export default function TabDetailScreen({ route }: any) {
       <Modal visible={webCameraVisible} animationType="slide" transparent={false}>
          <WebCamera onCapture={handleWebCameraCapture} onClose={() => setWebCameraVisible(false)} />
       </Modal>
+
+
+
+
     </View>
   );
 }
