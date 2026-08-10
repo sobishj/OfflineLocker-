@@ -1,68 +1,13 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, Alert, Modal, ActivityIndicator } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, Alert } from 'react-native';
 import { useWalletStore } from '../store/useWalletStore';
-import { Feather, Ionicons } from '@expo/vector-icons';
-import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system/legacy';
+import { Feather } from '@expo/vector-icons';
 
 export default function AuthScreen() {
-  const { currentUser, registerUser, loginUser, errorMessage, clearError, importBackup } = useWalletStore();
+  const { currentUser, registerUser, loginUser, errorMessage, clearError } = useWalletStore();
   const [username, setUsername] = useState('');
   const [pin, setPin] = useState('');
   const isRegistration = !currentUser;
-
-  // Import Backup state
-  const [importModalVisible, setImportModalVisible] = useState(false);
-  const [importPin, setImportPin] = useState('');
-  const [pickedFileContent, setPickedFileContent] = useState<string | null>(null);
-  const [pickedFileName, setPickedFileName] = useState<string | null>(null);
-  const [isImporting, setIsImporting] = useState(false);
-
-  const handlePickBackupFile = async () => {
-    try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: '*/*',
-        copyToCacheDirectory: true,
-        multiple: false,
-      });
-
-      if (!result.canceled && result.assets && result.assets.length > 0) {
-        const asset = result.assets[0];
-        setPickedFileName(asset.name);
-        if (Platform.OS === 'web') {
-          const reader = new FileReader();
-          const contentPromise = new Promise<string>((resolve) => {
-            reader.onload = (e) => resolve(e.target?.result as string);
-          });
-          reader.readAsText(asset.file as any);
-          const text = await contentPromise;
-          setPickedFileContent(text);
-        } else {
-          const text = await FileSystem.readAsStringAsync(asset.uri, { encoding: 'utf8' });
-          setPickedFileContent(text);
-        }
-      }
-    } catch (err: any) {
-      Alert.alert('Error', 'Failed to read backup file.');
-    }
-  };
-
-  const handlePerformImport = async () => {
-    if (!pickedFileContent || importPin.trim().length !== 4) return;
-    setIsImporting(true);
-    try {
-      const res = await importBackup(pickedFileContent, importPin.trim());
-      setImportModalVisible(false);
-      setImportPin('');
-      setPickedFileContent(null);
-      setPickedFileName(null);
-      Alert.alert('Backup Restored', `Successfully restored ${res.tabsCount} tabs and ${res.docsCount} documents!`);
-    } catch (e: any) {
-      Alert.alert('Import Error', e?.message || 'Failed to import backup. Incorrect PIN or invalid file.');
-    } finally {
-      setIsImporting(false);
-    }
-  };
 
   const handleSubmit = async () => {
     clearError();
@@ -132,69 +77,7 @@ export default function AuthScreen() {
             </TouchableOpacity>
           );
         })()}
-
-        <TouchableOpacity
-          onPress={() => setImportModalVisible(true)}
-          style={{ marginTop: 20, alignItems: 'center' }}
-        >
-          <Text style={{ color: '#007aff', fontWeight: '600', fontSize: 14 }}>
-            📥 Import Encrypted Backup (.ewallet)
-          </Text>
-        </TouchableOpacity>
       </View>
-
-      {/* IMPORT BACKUP MODAL */}
-      <Modal visible={importModalVisible} animationType="slide" transparent>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Import Encrypted Backup</Text>
-            <Text style={{ color: '#86868b', marginBottom: 16, fontSize: 13, textAlign: 'center' }}>
-              Select an encrypted backup file (.ewallet) and enter the 4-digit PIN used when exporting.
-            </Text>
-
-            <TouchableOpacity onPress={handlePickBackupFile} style={[styles.button, { backgroundColor: '#ffffff', borderWidth: 1, borderColor: '#007aff', marginBottom: 16, padding: 12 }]}>
-              <Ionicons name="document-text-outline" size={20} color="#007aff" style={{ marginRight: 6 }} />
-              <Text style={{ color: '#007aff', fontWeight: '600', textAlign: 'center' }}>
-                {pickedFileName ? `Selected: ${pickedFileName}` : 'Choose Backup File (.ewallet)'}
-              </Text>
-            </TouchableOpacity>
-
-            <TextInput
-              style={[styles.input, { letterSpacing: importPin ? 8 : 0, textAlign: importPin ? 'center' : 'left', fontSize: importPin ? 18 : 15 }]}
-              placeholder="Enter 4-Digit Export PIN"
-              placeholderTextColor="#8e8e93"
-              value={importPin}
-              onChangeText={setImportPin}
-              keyboardType="numeric"
-              secureTextEntry
-              maxLength={4}
-            />
-
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 }}>
-              <TouchableOpacity onPress={() => { setImportModalVisible(false); setImportPin(''); setPickedFileContent(null); setPickedFileName(null); }} style={[styles.button, { flex: 1, backgroundColor: '#e5e5ea', marginRight: 6 }]}>
-                <Text style={[styles.buttonText, { color: '#007aff' }]}>Cancel</Text>
-              </TouchableOpacity>
-
-              {(() => {
-                const isImportDisabled = !pickedFileContent || importPin.trim().length !== 4 || isImporting;
-                return (
-                  <TouchableOpacity
-                    onPress={handlePerformImport}
-                    disabled={isImportDisabled}
-                    style={[styles.button, { flex: 1, marginLeft: 6 }, isImportDisabled && styles.disabledButton]}
-                  >
-                    {isImporting ? (
-                      <ActivityIndicator size="small" color="#ffffff" />
-                    ) : (
-                      <Text style={[styles.buttonText, isImportDisabled && styles.disabledButtonText]}>Import & Restore</Text>
-                    )}
-                  </TouchableOpacity>
-                );
-              })()}
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
     </KeyboardAvoidingView>
   );
 }

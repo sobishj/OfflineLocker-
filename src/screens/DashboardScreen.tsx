@@ -27,6 +27,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   const [unlockPin, setUnlockPin] = useState('');
 
   // Export / Import state
+  const [backupModalVisible, setBackupModalVisible] = useState(false);
   const [exportModalVisible, setExportModalVisible] = useState(false);
   const [exportPin, setExportPin] = useState('');
   const [isExporting, setIsExporting] = useState(false);
@@ -52,7 +53,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     }
   };
 
-  const handlePickBackupFile = async () => {
+  const handlePickAndOpenImport = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: '*/*',
@@ -75,6 +76,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
           const text = await FileSystem.readAsStringAsync(asset.uri, { encoding: 'utf8' });
           setPickedFileContent(text);
         }
+        setImportModalVisible(true);
       }
     } catch (err: any) {
       Alert.alert('Error', 'Failed to read backup file.');
@@ -137,11 +139,12 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     navigation.setOptions({
       headerRight: () => (
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          <TouchableOpacity onPress={() => setExportModalVisible(true)} style={{ marginRight: 14 }}>
-            <Ionicons name="cloud-upload-outline" size={22} color={AppTheme.colors.primary} />
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setImportModalVisible(true)} style={{ marginRight: 14 }}>
-            <Ionicons name="cloud-download-outline" size={22} color={AppTheme.colors.primary} />
+          <TouchableOpacity 
+            onPress={() => setBackupModalVisible(true)} 
+            style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0, 122, 255, 0.1)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, marginRight: 14 }}
+          >
+            <Ionicons name="cloud-outline" size={18} color={AppTheme.colors.primary} style={{ marginRight: 4 }} />
+            <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Backup</Text>
           </TouchableOpacity>
           <TouchableOpacity onPress={logout} style={{ marginRight: 10 }}>
             <Ionicons name="log-out-outline" size={22} color={AppTheme.colors.primary} />
@@ -251,6 +254,68 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               })()}
             </View>
           </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* UNIFIED BACKUP MENU MODAL */}
+      <Modal visible={backupModalVisible} animationType="slide" transparent>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '95%' }]}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: AppTheme.spacing.m }}>
+              <Text style={styles.modalTitle}>Vault Backup & Restore</Text>
+              <TouchableOpacity onPress={() => setBackupModalVisible(false)}>
+                <Ionicons name="close-circle-outline" size={24} color={AppTheme.colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={{ color: AppTheme.colors.textSecondary, marginBottom: AppTheme.spacing.l, fontSize: 13 }}>
+              Export your encrypted vault to Google Drive, OneDrive, or local files, or import an existing backup.
+            </Text>
+
+            {/* Option 1: EXPORT */}
+            <TouchableOpacity 
+              onPress={() => { setBackupModalVisible(false); setExportModalVisible(true); }}
+              style={{ backgroundColor: AppTheme.colors.surface, padding: 16, borderRadius: AppTheme.borderRadius.m, borderWidth: 1, borderColor: AppTheme.colors.border, marginBottom: 14, flexDirection: 'row', alignItems: 'center' }}
+            >
+              <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(0, 122, 255, 0.1)', justifyContent: 'center', alignItems: 'center', marginRight: 14 }}>
+                <Ionicons name="cloud-upload-outline" size={24} color={AppTheme.colors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 16, fontWeight: 'bold', color: AppTheme.colors.text }}>Export Backup</Text>
+                <Text style={{ fontSize: 12, color: AppTheme.colors.textSecondary, marginTop: 2 }}>
+                  Encrypt & save to OneDrive, Google Drive, or Local Files
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={AppTheme.colors.textSecondary} />
+            </TouchableOpacity>
+
+            {/* Option 2: IMPORT */}
+            <TouchableOpacity 
+              onPress={() => {
+                setBackupModalVisible(false);
+                handlePickAndOpenImport();
+              }}
+              style={{ backgroundColor: AppTheme.colors.surface, padding: 16, borderRadius: AppTheme.borderRadius.m, borderWidth: 1, borderColor: AppTheme.colors.border, marginBottom: 14, flexDirection: 'row', alignItems: 'center' }}
+            >
+              <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(52, 199, 89, 0.1)', justifyContent: 'center', alignItems: 'center', marginRight: 14 }}>
+                <Ionicons name="cloud-download-outline" size={24} color="#34c759" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 16, fontWeight: 'bold', color: AppTheme.colors.text }}>Import Backup</Text>
+                <Text style={{ fontSize: 12, color: AppTheme.colors.textSecondary, marginTop: 2 }}>
+                  Browse phone files (Google Drive, OneDrive, Storage) & restore
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={AppTheme.colors.textSecondary} />
+            </TouchableOpacity>
+
+            <TouchableOpacity onPress={() => setBackupModalVisible(false)} style={[styles.button, { backgroundColor: AppTheme.colors.border, marginTop: 8 }]}>
+              <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
       {/* EXPORT BACKUP MODAL */}
       <Modal visible={exportModalVisible} animationType="slide" transparent>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
@@ -303,7 +368,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               Select an encrypted backup file (.ewallet) and enter the 4-digit PIN used when exporting.
             </Text>
 
-            <TouchableOpacity onPress={handlePickBackupFile} style={[styles.button, { backgroundColor: AppTheme.colors.surface, borderWidth: 1, borderColor: AppTheme.colors.primary, marginBottom: AppTheme.spacing.m, flex: 0, padding: 12 }]}>
+            <TouchableOpacity onPress={handlePickAndOpenImport} style={[styles.button, { backgroundColor: AppTheme.colors.surface, borderWidth: 1, borderColor: AppTheme.colors.primary, marginBottom: AppTheme.spacing.m, flex: 0, padding: 12 }]}>
               <Ionicons name="document-text-outline" size={20} color={AppTheme.colors.primary} style={{ marginRight: 6 }} />
               <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', textAlign: 'center' }}>
                 {pickedFileName ? `Selected: ${pickedFileName}` : 'Choose Backup File (.ewallet)'}

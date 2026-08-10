@@ -93,7 +93,7 @@ export default function TabDetailScreen({ route }: any) {
         setFileUris(prev => [...prev, newUri]);
         setFileType('image');
         setDocContent('');
-        if (Platform.OS !== 'web') {
+        if ((Platform.OS as string) !== 'web') {
           setCropIndex(newIndex);
         }
       }
