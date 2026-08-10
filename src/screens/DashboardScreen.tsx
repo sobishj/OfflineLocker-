@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, KeyboardAvoidingView, Platform } from 'react-native';
 import { useWalletStore } from '../store/useWalletStore';
 import { AppTheme } from '../theme/AppTheme';
@@ -34,8 +34,14 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     }
   };
 
+  const isNavigatingRef = useRef(false);
+
   const handleTabPress = (tab: any) => {
-    if (tab.isSensitive) {
+    if (isNavigatingRef.current) return;
+    isNavigatingRef.current = true;
+    setTimeout(() => { isNavigatingRef.current = false; }, 500);
+
+    if (tab.isSensitive === 1) {
       setSelectedTab(tab);
       setPinModalVisible(true);
     } else {
@@ -97,8 +103,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
           <View style={[styles.modalContent, { maxHeight: '95%' }]}>
             <Text style={styles.modalTitle}>New Vault Tab</Text>
-            <TextInput style={styles.input} placeholder="Tab Name" placeholderTextColor={AppTheme.colors.textSecondary} value={tabName} onChangeText={setTabName} />
-            <TextInput style={styles.input} placeholder="Description" placeholderTextColor={AppTheme.colors.textSecondary} value={tabDesc} onChangeText={setTabDesc} />
+            <TextInput style={[styles.input, { letterSpacing: 0 }]} placeholder="Tab Name" placeholderTextColor={AppTheme.colors.textSecondary} value={tabName} onChangeText={setTabName} />
+            <TextInput style={[styles.input, { letterSpacing: 0 }]} placeholder="Description" placeholderTextColor={AppTheme.colors.textSecondary} value={tabDesc} onChangeText={setTabDesc} />
             
             <TouchableOpacity style={styles.checkboxRow} onPress={() => setIsSensitive(!isSensitive)}>
               <Ionicons name={isSensitive ? "checkbox" : "square-outline"} size={24} color={AppTheme.colors.primary} />
@@ -106,7 +112,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             </TouchableOpacity>
 
             {isSensitive && (
-              <TextInput style={styles.input} placeholder="4-Digit Tab PIN" placeholderTextColor={AppTheme.colors.textSecondary} value={tabPin} onChangeText={setTabPin} keyboardType="numeric" secureTextEntry maxLength={4} />
+              <TextInput style={[styles.input, { letterSpacing: tabPin ? 6 : 0 }]} placeholder="4-Digit Tab PIN" placeholderTextColor={AppTheme.colors.textSecondary} value={tabPin} onChangeText={setTabPin} keyboardType="numeric" secureTextEntry maxLength={4} />
             )}
 
             <View style={styles.modalActions}>
@@ -144,7 +150,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
           <View style={[styles.modalContent, { maxHeight: '95%' }]}>
             <Text style={styles.modalTitle}>Unlock {selectedTab?.name}</Text>
-            <TextInput style={styles.input} placeholder="4-Digit PIN" placeholderTextColor={AppTheme.colors.textSecondary} value={unlockPin} onChangeText={setUnlockPin} keyboardType="numeric" secureTextEntry maxLength={4} />
+            <TextInput style={[styles.input, { letterSpacing: unlockPin ? 6 : 0 }]} placeholder="4-Digit PIN" placeholderTextColor={AppTheme.colors.textSecondary} value={unlockPin} onChangeText={setUnlockPin} keyboardType="numeric" secureTextEntry maxLength={4} />
             <View style={styles.modalActions}>
               <TouchableOpacity onPress={() => { setPinModalVisible(false); setUnlockPin(''); }} style={[styles.button, { backgroundColor: AppTheme.colors.border }]}>
                 <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
@@ -179,7 +185,7 @@ const styles = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: AppTheme.spacing.l },
   modalContent: { backgroundColor: 'rgba(255, 255, 255, 0.8)', padding: AppTheme.spacing.l, borderRadius: AppTheme.borderRadius.l, borderWidth: 1, borderColor: '#fff', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.1, shadowRadius: 20, elevation: 5 },
   modalTitle: { color: AppTheme.colors.text, fontSize: 20, fontWeight: 'bold', marginBottom: AppTheme.spacing.m },
-  input: { backgroundColor: 'rgba(255, 255, 255, 0.6)', borderWidth: 1, borderColor: '#fff', color: AppTheme.colors.text, padding: 12, borderRadius: AppTheme.borderRadius.s, marginBottom: AppTheme.spacing.m },
+  input: { backgroundColor: 'rgba(255, 255, 255, 0.6)', borderWidth: 1, borderColor: '#fff', color: AppTheme.colors.text, padding: 12, borderRadius: AppTheme.borderRadius.s, marginBottom: AppTheme.spacing.m, fontSize: 15, letterSpacing: 0 },
   checkboxRow: { flexDirection: 'row', alignItems: 'center', marginBottom: AppTheme.spacing.m },
   checkboxText: { color: AppTheme.colors.text, marginLeft: 8 },
   modalActions: { flexDirection: 'row', justifyContent: 'space-between', marginTop: AppTheme.spacing.s },

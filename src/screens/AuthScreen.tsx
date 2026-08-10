@@ -15,11 +15,14 @@ export default function AuthScreen() {
       const success = await registerUser(username, pin);
       if (success) {
         Alert.alert('Success', 'Registered successfully. Please login.');
+        setPin('');
       }
     } else {
-      await loginUser(pin);
+      const success = await loginUser(pin);
+      if (!success) {
+        setPin('');
+      }
     }
-    setPin(''); // clear PIN on fail
   };
 
   return (
@@ -48,8 +51,8 @@ export default function AuthScreen() {
         )}
         
         <TextInput
-          style={styles.input}
-          placeholder="••••"
+          style={[styles.input, { letterSpacing: pin ? 8 : 0, textAlign: pin ? 'center' : 'left', fontSize: pin ? 20 : 16 }]}
+          placeholder="Enter 4-Digit PIN"
           placeholderTextColor="#8e8e93"
           value={pin}
           onChangeText={setPin}
@@ -132,9 +135,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     color: '#1d1d1f',
     marginBottom: 16,
-    fontSize: 24,
-    textAlign: 'center',
-    letterSpacing: 12, // Increased letter spacing for PIN dots
+    fontSize: 16,
+    textAlign: 'left',
+    letterSpacing: 0,
   },
   error: {
     color: '#ff3b30',

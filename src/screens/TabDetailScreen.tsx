@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, ActivityIndicator, Image, Platform, ScrollView, KeyboardAvoidingView } from 'react-native';
 import { useWalletStore } from '../store/useWalletStore';
 import { AppTheme } from '../theme/AppTheme';
@@ -61,34 +61,46 @@ export default function TabDetailScreen({ route }: any) {
     }
   }, [activeDocuments, previewDoc]);
 
+  const isSharingRef = useRef(false);
+  const isPickerBusyRef = useRef(false);
+  const isViewingRef = useRef(false);
+
   const handleTakePhoto = async () => {
-    if (Platform.OS === 'web') {
-      setWebCameraVisible(true);
-      return;
-    }
-
-    const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
-    if (!permissionResult.granted) {
-      Alert.alert('Permission required', 'Camera permission is required to take photos.');
-      return;
-    }
-
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.3,
-      base64: true,
-      allowsEditing: false,
-    });
-
-    if (!result.canceled && result.assets && result.assets.length > 0) {
-      const newUri = `data:image/jpeg;base64,${result.assets[0].base64}`;
-      const newIndex = fileUris.length;
-      setFileUris(prev => [...prev, newUri]);
-      setFileType('image');
-      setDocContent('');
-      if (Platform.OS !== 'web') {
-        setCropIndex(newIndex);
+    if (isPickerBusyRef.current) return;
+    isPickerBusyRef.current = true;
+    try {
+      if (Platform.OS === 'web') {
+        setWebCameraVisible(true);
+        return;
       }
+
+      const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permissionResult.granted) {
+        Alert.alert('Permission required', 'Camera permission is required to take photos.');
+        return;
+      }
+
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.3,
+        base64: true,
+        allowsEditing: false,
+      });
+
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const newUri = `data:image/jpeg;base64,${result.assets[0].base64}`;
+        const newIndex = fileUris.length;
+        setFileUris(prev => [...prev, newUri]);
+        setFileType('image');
+        setDocContent('');
+        if (Platform.OS !== 'web') {
+          setCropIndex(newIndex);
+        }
+      }
+    } catch (e) {
+      console.warn('Camera launch error:', e);
+    } finally {
+      isPickerBusyRef.current = false;
     }
   };
 
@@ -104,6 +116,8 @@ export default function TabDetailScreen({ route }: any) {
   };
 
   const handleUploadFile = async () => {
+    if (isPickerBusyRef.current) return;
+    isPickerBusyRef.current = true;
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: '*/*',
@@ -121,30 +135,33 @@ export default function TabDetailScreen({ route }: any) {
           
           if (Platform.OS === 'web') {
             const reader = new FileReader();
-            const dataUri = await new Promise<string>((resolve) => {
-               reader.onload = () => resolve(reader.result as string);
-               reader.readAsDataURL(asset.file as Blob);
+            const uriPromise = new Promise<string>((resolve) => {
+              reader.onload = (e) => resolve(e.target?.result as string);
             });
+            reader.readAsDataURL(asset.file as any);
+            const dataUri = await uriPromise;
             newUris.push(dataUri);
           } else {
-            const base64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: 'base64' });
-            const prefix = isImage ? 'image/jpeg' : 'application/pdf';
-            newUris.push(`data:${prefix};base64,${base64}`);
+            const base64Data = await FileSystem.readAsStringAsync(asset.uri, { encoding: 'base64' });
+            const mimeType = asset.mimeType || (isImage ? 'image/jpeg' : 'application/pdf');
+            newUris.push(`data:${mimeType};base64,${base64Data}`);
           }
         }
         
-        setFileUris(prev => [...prev, ...newUris]);
         setFileType(determinedType as any);
+        setFileUris(prev => [...prev, ...newUris]);
         setDocContent('');
       }
-    } catch (e: any) {
-      Alert.alert('Error', 'Failed to pick file: ' + (e?.message || String(e)));
+    } catch (error) {
+      Alert.alert('Error', 'Could not pick document.');
+    } finally {
+      isPickerBusyRef.current = false;
     }
   };
 
   const handleAddDocument = async () => {
-    if (!docTitle.trim() || (!docContent.trim() && fileUris.length === 0)) {
-      Alert.alert('Error', 'Please enter a title and content (or add images/pdfs).');
+    if (!docTitle.trim()) {
+      Alert.alert('Error', 'Please enter a title for the document.');
       return;
     }
     
@@ -160,17 +177,18 @@ export default function TabDetailScreen({ route }: any) {
   };
 
   const parseDecryptedContent = (plainText: string) => {
+    if (!plainText || typeof plainText !== 'string') return [];
     let arr: string[] = [];
-    if (plainText.startsWith('[') && plainText.endsWith(']')) {
+    const trimmed = plainText.trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
       try {
-        arr = JSON.parse(plainText);
-      } catch (e) {
-        arr = [plainText];
-      }
-    } else {
-      arr = [plainText];
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          return parsed.filter(item => typeof item === 'string' && item.length > 0);
+        }
+      } catch (e) {}
     }
-    return arr;
+    return [plainText];
   };
 
   const getSafeImageUri = (uri: string) => {
@@ -181,51 +199,63 @@ export default function TabDetailScreen({ route }: any) {
   };
 
   const prepareLocalFiles = async (dataUris: string[], docTitle: string, type: string): Promise<string[]> => {
-    if (Platform.OS === 'web') return dataUris;
+    if (Platform.OS === 'web' || type === 'image') return dataUris;
     
-    const localUris: string[] = [];
-    for (let i = 0; i < dataUris.length; i++) {
-      const uri = dataUris[i];
-      if (uri.startsWith('data:')) {
-         try {
-           const base64Data = uri.includes(',') ? uri.split(',')[1] : uri;
-           const safeTitle = docTitle.replace(/[^a-z0-9]/gi, '_');
-           const ext = type === 'pdf' ? 'pdf' : 'jpg';
-           const tempUri = `${FileSystem.cacheDirectory}${safeTitle}_preview_${i}.${ext}`;
-           await FileSystem.writeAsStringAsync(tempUri, base64Data, { encoding: 'base64' });
-           localUris.push(tempUri);
-         } catch (e) {
-           localUris.push(uri);
-         }
-      } else {
-         localUris.push(uri);
-      }
-    }
-    return localUris;
+    const safeTitle = (docTitle || 'doc').replace(/[^a-z0-9]/gi, '_');
+    return Promise.all(
+      dataUris.map(async (uri, i) => {
+        if (uri.startsWith('data:')) {
+          try {
+            const base64Data = uri.includes(',') ? uri.split(',')[1] : uri;
+            const ext = type === 'pdf' ? 'pdf' : 'jpg';
+            const tempUri = `${FileSystem.cacheDirectory}${safeTitle}_preview_${i}.${ext}`;
+            await FileSystem.writeAsStringAsync(tempUri, base64Data, { encoding: 'base64' });
+            return tempUri;
+          } catch (e) {
+            return uri;
+          }
+        }
+        return uri;
+      })
+    );
   };
 
-  const handleViewDoc = async (doc: any) => {
-    const decryptionKey = unlockPin || currentUser?.pinHash || 'default_fallback';
-    const plainText = CryptoService.decryptText(doc.encryptedContent, decryptionKey);
+  const handleViewDoc = (doc: any) => {
+    if (!doc) return;
+    if (isViewingRef.current) return;
+    isViewingRef.current = true;
+
     setSelectedDoc(doc);
-    setDecryptedText(plainText);
-    if (doc.type === 'image' || doc.type === 'pdf') {
-      const rawArr = parseDecryptedContent(plainText);
-      setDecryptedArray(await prepareLocalFiles(rawArr, doc.title, doc.type));
-    } else {
-      setDecryptedArray([]);
-    }
+    setDecryptedArray([]);
     setViewModalVisible(true);
+
+    setTimeout(async () => {
+      try {
+        const decryptionKey = unlockPin || currentUser?.pinHash || 'default_fallback';
+        const plainText = CryptoService.decryptText(doc.encryptedContent || '', decryptionKey);
+        setDecryptedText(plainText);
+        if (doc.type === 'image' || doc.type === 'pdf') {
+          const rawArr = parseDecryptedContent(plainText);
+          const prepared = await prepareLocalFiles(rawArr, doc.title || 'doc', doc.type);
+          setDecryptedArray(prepared);
+        }
+      } catch (err) {
+        console.warn('handleViewDoc error:', err);
+      } finally {
+        isViewingRef.current = false;
+      }
+    }, 10);
   };
 
   const handleSelectPreview = async (doc: any) => {
-    const decryptionKey = unlockPin || currentUser?.pinHash || 'default_fallback';
-    const plainText = CryptoService.decryptText(doc.encryptedContent, decryptionKey);
+    if (!doc) return;
     setPreviewDoc(doc);
+    const decryptionKey = unlockPin || currentUser?.pinHash || 'default_fallback';
+    const plainText = CryptoService.decryptText(doc.encryptedContent || '', decryptionKey);
     setPreviewData(plainText);
     if (doc.type === 'image' || doc.type === 'pdf') {
       const rawArr = parseDecryptedContent(plainText);
-      const arr = await prepareLocalFiles(rawArr, doc.title, doc.type);
+      const arr = await prepareLocalFiles(rawArr, doc.title || 'doc', doc.type);
       setPreviewDataArray(arr);
       
       const initialSelection: Record<number, boolean> = {};
@@ -238,25 +268,17 @@ export default function TabDetailScreen({ route }: any) {
   };
 
   const handleDownloadFile = async (base64DataUri: string, title: string, type: string, index: number = 0) => {
+    if (!base64DataUri) return;
     if (Platform.OS === 'web') {
       try {
-        const isDataUri = base64DataUri.includes(',');
-        const base64Data = isDataUri ? base64DataUri.split(',')[1] : base64DataUri;
-        const mime = isDataUri ? base64DataUri.split(',')[0].split(':')[1].split(';')[0] : 'application/octet-stream';
-        
-        const byteCharacters = atob(base64Data);
-        const byteNumbers = new Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) {
-            byteNumbers[i] = byteCharacters.charCodeAt(i);
-        }
-        const byteArray = new Uint8Array(byteNumbers);
-        const blob = new Blob([byteArray], {type: mime});
+        const res = await fetch(base64DataUri);
+        const blob = await res.blob();
         const blobUrl = URL.createObjectURL(blob);
         
         const a = document.createElement('a');
         a.href = blobUrl;
         const ext = type === 'pdf' ? 'pdf' : type === 'image' ? 'jpg' : 'txt';
-        a.download = `${title}${index > 0 ? `_${index + 1}` : ''}.${ext}`;
+        a.download = `${title || 'file'}${index > 0 ? `_${index + 1}` : ''}.${ext}`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -265,15 +287,22 @@ export default function TabDetailScreen({ route }: any) {
         Alert.alert('Error', 'Could not process file for download.');
       }
     } else {
+      if (isSharingRef.current) return;
+      isSharingRef.current = true;
       try {
-        const base64Data = base64DataUri.includes(',') ? base64DataUri.split(',')[1] : base64DataUri;
-        const safeTitle = title.replace(/[^a-z0-9]/gi, '_');
-        const ext = type === 'pdf' ? 'pdf' : type === 'image' ? 'jpg' : 'txt';
-        const tempUri = `${FileSystem.documentDirectory}${safeTitle}${index > 0 ? `_${index + 1}` : ''}.${ext}`;
-        await FileSystem.writeAsStringAsync(tempUri, base64Data, { encoding: 'base64' });
-        await Sharing.shareAsync(tempUri);
+        let targetUri = base64DataUri;
+        if (base64DataUri.startsWith('data:')) {
+          const base64Data = base64DataUri.includes(',') ? base64DataUri.split(',')[1] : base64DataUri;
+          const safeTitle = (title || 'file').replace(/[^a-z0-9]/gi, '_');
+          const ext = type === 'pdf' ? 'pdf' : type === 'image' ? 'jpg' : 'txt';
+          targetUri = `${FileSystem.cacheDirectory}${safeTitle}${index > 0 ? `_${index + 1}` : ''}.${ext}`;
+          await FileSystem.writeAsStringAsync(targetUri, base64Data, { encoding: 'base64' });
+        }
+        await Sharing.shareAsync(targetUri);
       } catch (error) {
-        Alert.alert('Error', 'Could not download file.');
+        console.warn('Share error:', error);
+      } finally {
+        isSharingRef.current = false;
       }
     }
   };
@@ -490,10 +519,10 @@ export default function TabDetailScreen({ route }: any) {
           <View style={[styles.modalContent, { maxHeight: '95%' }]}>
             <Text style={styles.modalTitle}>Add Secure Document</Text>
             
-            <TextInput style={styles.input} placeholder="Title" placeholderTextColor={AppTheme.colors.textSecondary} value={docTitle} onChangeText={setDocTitle} />
+            <TextInput style={[styles.input, { letterSpacing: 0 }]} placeholder="Title" placeholderTextColor={AppTheme.colors.textSecondary} value={docTitle} onChangeText={setDocTitle} />
             
             {fileUris.length === 0 && (
-              <TextInput style={[styles.input, { height: 100, textAlignVertical: 'top' }]} placeholder="Secret Content / Notes" placeholderTextColor={AppTheme.colors.textSecondary} value={docContent} onChangeText={setDocContent} multiline />
+              <TextInput style={[styles.input, { height: 100, textAlignVertical: 'top', letterSpacing: 0 }]} placeholder="Secret Content / Notes" placeholderTextColor={AppTheme.colors.textSecondary} value={docContent} onChangeText={setDocContent} multiline />
             )}
 
             {fileUris.length > 0 && (
@@ -640,7 +669,12 @@ export default function TabDetailScreen({ route }: any) {
           </View>
           
           <View style={styles.fullScreenContent}>
-            {selectedDoc?.type === 'image' ? (
+            {decryptedArray.length === 0 && selectedDoc?.type !== 'text' ? (
+              <View style={styles.center}>
+                <ActivityIndicator size="large" color={AppTheme.colors.primary} />
+                <Text style={{ color: AppTheme.colors.textSecondary, marginTop: 12, fontWeight: '500' }}>Opening Document...</Text>
+              </View>
+            ) : selectedDoc?.type === 'image' ? (
                <ScrollView style={{ flex: 1 }}>
                   {decryptedArray.map((uri, idx) => {
                     const safeUri = getSafeImageUri(uri);
@@ -723,7 +757,7 @@ const styles = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: AppTheme.spacing.l },
   modalContent: { backgroundColor: 'rgba(255, 255, 255, 0.85)', padding: AppTheme.spacing.l, borderRadius: AppTheme.borderRadius.l, maxWidth: 600, width: '100%', alignSelf: 'center', borderWidth: 1, borderColor: '#fff', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.1, shadowRadius: 20, elevation: 5 },
   modalTitle: { color: AppTheme.colors.text, fontSize: 20, fontWeight: 'bold', marginBottom: AppTheme.spacing.m },
-  input: { backgroundColor: 'rgba(255, 255, 255, 0.6)', borderWidth: 1, borderColor: '#fff', color: AppTheme.colors.text, padding: 12, borderRadius: AppTheme.borderRadius.s, marginBottom: AppTheme.spacing.m },
+  input: { backgroundColor: 'rgba(255, 255, 255, 0.6)', borderWidth: 1, borderColor: '#fff', color: AppTheme.colors.text, padding: 12, borderRadius: AppTheme.borderRadius.s, marginBottom: AppTheme.spacing.m, fontSize: 15, letterSpacing: 0 },
   mediaActions: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: AppTheme.spacing.m },
   mediaButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255, 255, 255, 0.5)', borderWidth: 1, borderColor: AppTheme.colors.primary, padding: 10, borderRadius: AppTheme.borderRadius.s, marginHorizontal: 2 },
   mediaButtonText: { color: AppTheme.colors.primary, marginLeft: 4, fontWeight: '600', fontSize: 12 },

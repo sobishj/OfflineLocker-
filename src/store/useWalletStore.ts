@@ -79,13 +79,23 @@ export const useWalletStore = create<WalletState>((set, get) => ({
 
   loginUser: async (pin: string) => {
     const { currentUser } = get();
-    if (!currentUser) return false;
+    if (!currentUser) {
+      set({ errorMessage: 'No user registered.' });
+      return false;
+    }
 
     const isValid = CryptoService.verifyPin(pin.trim(), currentUser.pinHash);
     if (!isValid) {
       set({ errorMessage: 'Incorrect PIN.' });
       return false;
     }
+
+    try {
+      await get().loadTabs();
+    } catch (e) {
+      console.warn('Error loading tabs on login:', e);
+    }
+
     set({ errorMessage: null, isAuthenticated: true });
     return true;
   },
