@@ -82,6 +82,14 @@ export class DatabaseHelper {
     await db.runAsync('DELETE FROM tabs WHERE uuid = ?', [uuid]);
   }
 
+  static async updateTab(uuid: string, name: string, description: string): Promise<void> {
+    const db = await this.getDatabase();
+    await db.runAsync(
+      'UPDATE tabs SET name = ?, description = ? WHERE uuid = ?',
+      [name, description, uuid]
+    );
+  }
+
   // --- DOCUMENT OPERATIONS ---
   static async createDocument(doc: Document): Promise<void> {
     const db = await this.getDatabase();
@@ -99,6 +107,23 @@ export class DatabaseHelper {
   static async deleteDocument(id: number): Promise<void> {
     const db = await this.getDatabase();
     await db.runAsync('DELETE FROM documents WHERE id = ?', [id]);
+  }
+
+  static async updateDocument(id: number, title: string, encryptedContent: string): Promise<void> {
+    const db = await this.getDatabase();
+    await db.runAsync('UPDATE documents SET title = ?, encryptedContent = ? WHERE id = ?', [title, encryptedContent, id]);
+  }
+
+  static async getTabDocumentCounts(): Promise<Record<string, number>> {
+    const db = await this.getDatabase();
+    const rows = await db.getAllAsync<{ tabId: string; count: number }>(
+      'SELECT tabId, COUNT(*) as count FROM documents GROUP BY tabId'
+    );
+    const counts: Record<string, number> = {};
+    rows.forEach(r => {
+      counts[r.tabId] = r.count;
+    });
+    return counts;
   }
 
   // --- SYSTEM OPERATIONS ---

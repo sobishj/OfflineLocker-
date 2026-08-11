@@ -12,7 +12,7 @@ type DashboardProps = {
 };
 
 export default function DashboardScreen({ navigation }: DashboardProps) {
-  const { tabs, logout, createTab, deleteTab, verifyTabPin, exportBackup, importBackup } = useWalletStore();
+  const { tabs, tabDocCounts, logout, createTab, updateTab, deleteTab, verifyTabPin, exportBackup, importBackup } = useWalletStore();
   const [modalVisible, setModalVisible] = useState(false);
   const [pinModalVisible, setPinModalVisible] = useState(false);
   
@@ -21,6 +21,12 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   const [tabDesc, setTabDesc] = useState('');
   const [isSensitive, setIsSensitive] = useState(false);
   const [tabPin, setTabPin] = useState('');
+
+  // Edit tab state
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editTabId, setEditTabId] = useState('');
+  const [editTabName, setEditTabName] = useState('');
+  const [editTabDesc, setEditTabDesc] = useState('');
 
   // Unlock tab state
   const [selectedTab, setSelectedTab] = useState<any>(null);
@@ -37,6 +43,44 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   const [pickedFileContent, setPickedFileContent] = useState<string | null>(null);
   const [pickedFileName, setPickedFileName] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
+
+  const handleOpenEditTab = (tab: any) => {
+    setEditTabId(tab.uuid);
+    setEditTabName(tab.name);
+    setEditTabDesc(tab.description || '');
+    setEditModalVisible(true);
+  };
+
+  const handleSaveEditTab = async () => {
+    if (!editTabName.trim()) return;
+    const success = await updateTab(editTabId, editTabName, editTabDesc);
+    if (success) {
+      setEditModalVisible(false);
+      setEditTabId('');
+      setEditTabName('');
+      setEditTabDesc('');
+    } else {
+      Alert.alert('Error', 'Failed to update tab details.');
+    }
+  };
+
+  const handleConfirmDeleteTab = (tab: any) => {
+    const doDelete = () => deleteTab(tab.uuid);
+    if (Platform.OS === 'web') {
+      if (window.confirm(`Are you sure you want to delete tab "${tab.name}" and all its documents?`)) {
+        doDelete();
+      }
+    } else {
+      Alert.alert(
+        'Delete Vault Tab',
+        `Are you sure you want to delete "${tab.name}" and all documents stored inside it?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Delete', style: 'destructive', onPress: doDelete }
+        ]
+      );
+    }
+  };
 
   const handlePerformExport = async () => {
     if (exportPin.trim().length !== 4) return;
@@ -177,22 +221,69 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         data={tabs}
         keyExtractor={item => item.uuid}
         contentContainerStyle={{ padding: AppTheme.spacing.m }}
-        renderItem={({ item }) => (
-          <TouchableOpacity style={styles.tabCard} onPress={() => handleTabPress(item)} onLongPress={() => {
-            Alert.alert('Delete', 'Are you sure you want to delete this tab?', [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Delete', style: 'destructive', onPress: () => deleteTab(item.uuid) }
-            ]);
-          }}>
-            <View>
-              <Text style={styles.tabName}>{item.name}</Text>
-              <Text style={styles.tabDesc}>{item.description}</Text>
-            </View>
-            {item.isSensitive === 1 && (
-              <Ionicons name="lock-closed" size={24} color={AppTheme.colors.sensitive} />
-            )}
-          </TouchableOpacity>
-        )}
+        ListHeaderComponent={
+          <View style={styles.sectionHeaderContainer}>
+            <Text style={styles.sectionTitle}>Your document categories</Text>
+            <Text style={styles.sectionSubtitle}>Organize and protect what matters.</Text>
+          </View>
+        }
+        renderItem={({ item }) => {
+          const docCount = tabDocCounts[item.uuid] || 0;
+          return (
+            <TouchableOpacity style={styles.tabCard} onPress={() => handleTabPress(item)}>
+              {/* Category Folder Icon Badge */}
+              <View style={styles.folderIconContainer}>
+                <Ionicons 
+                  name="folder-open" 
+                  size={26} 
+                  color={AppTheme.colors.primary} 
+                />
+                {item.isSensitive === 1 && (
+                  <View style={styles.lockBadge}>
+                    <Ionicons name="lock-closed" size={10} color="#fff" />
+                  </View>
+                )}
+              </View>
+
+              {/* Category Text & Pill Count */}
+              <View style={{ flex: 1, marginRight: 10 }}>
+                <Text style={styles.tabName}>{item.name}</Text>
+                <Text style={styles.tabDesc}>{item.description}</Text>
+                <View style={styles.countBadge}>
+                  <Text style={styles.countBadgeText}>
+                    {docCount} {docCount === 1 ? 'item' : 'items'}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Action Buttons & Chevron */}
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <TouchableOpacity 
+                  onPress={(e) => {
+                    if (e && e.stopPropagation) e.stopPropagation();
+                    handleOpenEditTab(item);
+                  }} 
+                  style={styles.cardActionBtn}
+                >
+                  <Ionicons name="pencil" size={14} color={AppTheme.colors.primary} />
+                  <Text style={styles.cardActionText}>Edit</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                  onPress={(e) => {
+                    if (e && e.stopPropagation) e.stopPropagation();
+                    handleConfirmDeleteTab(item);
+                  }} 
+                  style={[styles.cardActionBtn, { marginLeft: 6, backgroundColor: 'rgba(239, 68, 68, 0.08)' }]}
+                >
+                  <Ionicons name="trash" size={14} color={AppTheme.colors.error} />
+                </TouchableOpacity>
+
+                <Ionicons name="chevron-forward" size={18} color={AppTheme.colors.textSecondary} style={{ marginLeft: 6 }} />
+              </View>
+            </TouchableOpacity>
+          );
+        }}
         ListEmptyComponent={<Text style={styles.emptyText}>No tabs available. Create one below.</Text>}
       />
 
@@ -242,6 +333,50 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                   </TouchableOpacity>
                 );
               })()}
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* EDIT TAB MODAL */}
+      <Modal visible={editModalVisible} animationType="slide" transparent>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '95%' }]}>
+            <Text style={styles.modalTitle}>Edit Vault Tab</Text>
+            <TextInput 
+              style={[styles.input, { letterSpacing: 0 }]} 
+              placeholder="Tab Name" 
+              placeholderTextColor={AppTheme.colors.textSecondary} 
+              value={editTabName} 
+              onChangeText={setEditTabName} 
+            />
+            <TextInput 
+              style={[styles.input, { letterSpacing: 0 }]} 
+              placeholder="Description" 
+              placeholderTextColor={AppTheme.colors.textSecondary} 
+              value={editTabDesc} 
+              onChangeText={setEditTabDesc} 
+            />
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity 
+                onPress={() => {
+                  setEditModalVisible(false);
+                  setEditTabId('');
+                  setEditTabName('');
+                  setEditTabDesc('');
+                }} 
+                style={[styles.button, { backgroundColor: AppTheme.colors.border }]}
+              >
+                <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                onPress={handleSaveEditTab} 
+                disabled={!editTabName.trim()} 
+                style={[styles.button, !editTabName.trim() && { backgroundColor: AppTheme.colors.border, opacity: 0.5 }]}
+              >
+                <Text style={[styles.buttonText, !editTabName.trim() && { color: AppTheme.colors.textSecondary }]}>Save Changes</Text>
+              </TouchableOpacity>
             </View>
           </View>
         </KeyboardAvoidingView>
@@ -445,5 +580,14 @@ const styles = StyleSheet.create({
   checkboxText: { color: AppTheme.colors.text, marginLeft: 8 },
   modalActions: { flexDirection: 'row', justifyContent: 'space-between', marginTop: AppTheme.spacing.s },
   button: { flex: 1, backgroundColor: AppTheme.colors.primary, padding: 12, borderRadius: AppTheme.borderRadius.s, alignItems: 'center', marginHorizontal: 4 },
-  buttonText: { color: '#fff', fontWeight: 'bold' }
+  buttonText: { color: '#fff', fontWeight: 'bold' },
+  cardActionBtn: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6, paddingHorizontal: 10, backgroundColor: 'rgba(6, 182, 212, 0.08)', borderRadius: 6 },
+  cardActionText: { color: AppTheme.colors.primary, fontSize: 12, marginLeft: 6, fontWeight: '600' },
+  sectionHeaderContainer: { marginBottom: AppTheme.spacing.m, paddingHorizontal: 4 },
+  sectionTitle: { color: AppTheme.colors.text, fontSize: 16, fontWeight: 'bold' },
+  sectionSubtitle: { color: AppTheme.colors.textSecondary, fontSize: 13, marginTop: 2 },
+  folderIconContainer: { width: 48, height: 48, borderRadius: 14, backgroundColor: 'rgba(6, 182, 212, 0.12)', justifyContent: 'center', alignItems: 'center', marginRight: 12, position: 'relative' },
+  lockBadge: { position: 'absolute', bottom: -2, right: -2, backgroundColor: AppTheme.colors.sensitive, borderRadius: 8, padding: 3 },
+  countBadge: { alignSelf: 'flex-start', backgroundColor: 'rgba(6, 182, 212, 0.12)', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 12, marginTop: 6 },
+  countBadgeText: { color: AppTheme.colors.primary, fontSize: 11, fontWeight: '700' }
 });

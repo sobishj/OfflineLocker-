@@ -9,6 +9,7 @@ import { BackupService } from '../services/BackupService';
 interface WalletState {
   currentUser: User | null;
   tabs: Tab[];
+  tabDocCounts: Record<string, number>;
   activeDocuments: Document[];
   isLoading: boolean;
   errorMessage: string | null;
@@ -21,10 +22,12 @@ interface WalletState {
   logout: () => void;
   loadTabs: () => Promise<void>;
   createTab: (name: string, description: string, isSensitive: boolean, tabPin?: string) => Promise<boolean>;
+  updateTab: (tabId: string, name: string, description: string) => Promise<boolean>;
   deleteTab: (tabId: string) => Promise<void>;
   verifyTabPin: (tab: Tab, candidatePin: string) => boolean;
   loadDocumentsForTab: (tabId: string) => Promise<void>;
   addDocument: (tabId: string, title: string, type: string, plainContent: string, encryptionPin: string) => Promise<void>;
+  updateDocument: (id: number, tabId: string, title: string, plainContent: string, encryptionPin: string) => Promise<void>;
   deleteDocument: (id: number, tabId: string) => Promise<void>;
   exportBackup: (exportPin: string) => Promise<boolean>;
   importBackup: (encryptedContent: string, importPin: string) => Promise<{ success: boolean; tabsCount: number; docsCount: number }>;
@@ -34,80 +37,70 @@ interface WalletState {
 export const useWalletStore = create<WalletState>((set, get) => ({
   currentUser: null,
   tabs: [],
+  tabDocCounts: {},
   activeDocuments: [],
   isLoading: false,
   errorMessage: null,
   isAuthenticated: false,
 
   checkExistingUsers: async () => {
-    set({ isLoading: true });
     try {
       const users = await DatabaseHelper.getAllUsers();
       if (users.length > 0) {
-        // Auto-select first user, prompt for login
-        set({ currentUser: users[0] });
-        await get().loadTabs();
+        set({ currentUser: users[0], isAuthenticated: false });
       }
     } catch (error) {
-      console.error(error);
+      console.error('Error checking existing user', error);
     }
-    set({ isLoading: false });
   },
 
   registerUser: async (username: string, pin: string) => {
-    if (!username.trim() || pin.trim().length !== 4) {
-      set({ errorMessage: 'Please provide a valid username and mandatory 4-digit PIN.' });
-      return false;
-    }
-    set({ isLoading: true });
     try {
-      // Clear previous user data if any
       await DatabaseHelper.clearAllData();
 
-      const pinHash = CryptoService.hashPin(pin.trim());
       const newUser: User = {
         uuid: uuidv4(),
         username: username.trim(),
-        pinHash,
+        pinHash: CryptoService.hashPin(pin.trim()),
         createdAt: new Date().toISOString(),
       };
-
       await DatabaseHelper.createUser(newUser);
-      set({ currentUser: newUser, errorMessage: null, isAuthenticated: true, tabs: [], activeDocuments: [] });
+      
+      const defaultTab: Tab = {
+        uuid: uuidv4(),
+        userId: newUser.uuid,
+        name: 'General Vault',
+        description: 'Default secure storage tab',
+        isSensitive: 0,
+        tabPinHash: null,
+        createdAt: new Date().toISOString(),
+      };
+      await DatabaseHelper.createTab(defaultTab);
+
+      set({ currentUser: newUser, isAuthenticated: true });
       await get().loadTabs();
-      set({ isLoading: false });
       return true;
     } catch (error) {
-      set({ isLoading: false, errorMessage: 'Failed to register.' });
+      console.error('Registration failed', error);
       return false;
     }
   },
 
   loginUser: async (pin: string) => {
     const { currentUser } = get();
-    if (!currentUser) {
-      set({ errorMessage: 'No user registered.' });
-      return false;
-    }
+    if (!currentUser) return false;
 
     const isValid = CryptoService.verifyPin(pin.trim(), currentUser.pinHash);
-    if (!isValid) {
-      set({ errorMessage: 'Incorrect PIN.' });
-      return false;
-    }
-
-    try {
+    if (isValid) {
+      set({ isAuthenticated: true });
       await get().loadTabs();
-    } catch (e) {
-      console.warn('Error loading tabs on login:', e);
+      return true;
     }
-
-    set({ errorMessage: null, isAuthenticated: true });
-    return true;
+    return false;
   },
 
   logout: () => {
-    set({ isAuthenticated: false, tabs: [], activeDocuments: [] });
+    set({ isAuthenticated: false, activeDocuments: [] });
   },
 
   loadTabs: async () => {
@@ -115,7 +108,8 @@ export const useWalletStore = create<WalletState>((set, get) => ({
     if (!currentUser) return;
     try {
       const tabs = await DatabaseHelper.getTabs(currentUser.uuid);
-      set({ tabs });
+      const tabDocCounts = await DatabaseHelper.getTabDocumentCounts();
+      set({ tabs, tabDocCounts });
     } catch (error) {
       console.error('Error loading tabs', error);
     }
@@ -157,6 +151,18 @@ export const useWalletStore = create<WalletState>((set, get) => ({
     await get().loadTabs();
   },
 
+  updateTab: async (tabId: string, name: string, description: string) => {
+    if (!name.trim()) return false;
+    try {
+      await DatabaseHelper.updateTab(tabId, name.trim(), description.trim() ? description.trim() : 'Custom Vault Tab');
+      await get().loadTabs();
+      return true;
+    } catch (error) {
+      console.error('Error updating tab', error);
+      return false;
+    }
+  },
+
   verifyTabPin: (tab: Tab, candidatePin: string) => {
     if (!tab.tabPinHash) return true;
     return CryptoService.verifyPin(candidatePin.trim(), tab.tabPinHash);
@@ -165,7 +171,8 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   loadDocumentsForTab: async (tabId: string) => {
     try {
       const activeDocuments = await DatabaseHelper.getDocumentsByTab(tabId);
-      set({ activeDocuments });
+      const tabDocCounts = await DatabaseHelper.getTabDocumentCounts();
+      set({ activeDocuments, tabDocCounts });
     } catch (error) {
       console.error('Error loading documents', error);
     }
@@ -191,6 +198,16 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   deleteDocument: async (id: number, tabId: string) => {
     await DatabaseHelper.deleteDocument(id);
     await get().loadDocumentsForTab(tabId);
+  },
+
+  updateDocument: async (id: number, tabId: string, title: string, plainContent: string, encryptionPin: string) => {
+    try {
+      const encrypted = CryptoService.encryptText(plainContent, encryptionPin);
+      await DatabaseHelper.updateDocument(id, title.trim(), encrypted);
+      await get().loadDocumentsForTab(tabId);
+    } catch (error) {
+      console.error('Error updating document', error);
+    }
   },
 
   exportBackup: async (exportPin: string) => {
