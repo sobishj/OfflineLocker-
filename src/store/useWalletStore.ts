@@ -61,6 +61,9 @@ export const useWalletStore = create<WalletState>((set, get) => ({
     }
     set({ isLoading: true });
     try {
+      // Clear previous user data if any
+      await DatabaseHelper.clearAllData();
+
       const pinHash = CryptoService.hashPin(pin.trim());
       const newUser: User = {
         uuid: uuidv4(),
@@ -70,7 +73,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       };
 
       await DatabaseHelper.createUser(newUser);
-      set({ currentUser: newUser, errorMessage: null });
+      set({ currentUser: newUser, errorMessage: null, isAuthenticated: true, tabs: [], activeDocuments: [] });
       await get().loadTabs();
       set({ isLoading: false });
       return true;
@@ -104,7 +107,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   },
 
   logout: () => {
-    set({ currentUser: null, isAuthenticated: false, tabs: [], activeDocuments: [] });
+    set({ isAuthenticated: false, tabs: [], activeDocuments: [] });
   },
 
   loadTabs: async () => {

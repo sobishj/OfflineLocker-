@@ -135,6 +135,23 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     }
   };
 
+  const handleSignOut = () => {
+    if (Platform.OS === 'web') {
+      if (window.confirm('Are you sure you want to sign out?')) {
+        logout();
+      }
+    } else {
+      Alert.alert(
+        'Sign Out',
+        'Are you sure you want to sign out of your vault?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Sign Out', style: 'destructive', onPress: logout }
+        ]
+      );
+    }
+  };
+
   React.useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
@@ -146,7 +163,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             <Ionicons name="cloud-outline" size={18} color={AppTheme.colors.primary} style={{ marginRight: 4 }} />
             <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Backup</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={logout} style={{ marginRight: 10 }}>
+          <TouchableOpacity onPress={handleSignOut} style={{ marginRight: 10 }}>
             <Ionicons name="log-out-outline" size={22} color={AppTheme.colors.primary} />
           </TouchableOpacity>
         </View>

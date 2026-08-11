@@ -100,4 +100,14 @@ export class DatabaseHelper {
     const db = await this.getDatabase();
     await db.runAsync('DELETE FROM documents WHERE id = ?', [id]);
   }
+
+  // --- SYSTEM OPERATIONS ---
+  static async clearAllData(): Promise<void> {
+    const db = await this.getDatabase();
+    await db.execAsync(`
+      DELETE FROM documents;
+      DELETE FROM tabs;
+      DELETE FROM users;
+    `);
+  }
 }

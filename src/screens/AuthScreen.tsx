@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, Alert } from 'react-native';
 import { useWalletStore } from '../store/useWalletStore';
 import { Feather } from '@expo/vector-icons';
@@ -7,15 +7,41 @@ export default function AuthScreen() {
   const { currentUser, registerUser, loginUser, errorMessage, clearError } = useWalletStore();
   const [username, setUsername] = useState('');
   const [pin, setPin] = useState('');
-  const isRegistration = !currentUser;
+  const [isRegisterMode, setIsRegisterMode] = useState(!currentUser);
+
+  useEffect(() => {
+    setIsRegisterMode(!currentUser);
+  }, [currentUser]);
+
+  const executeRegistration = async () => {
+    const success = await registerUser(username, pin);
+    if (success) {
+      setPin('');
+      setUsername('');
+    }
+  };
 
   const handleSubmit = async () => {
     clearError();
-    if (isRegistration) {
-      const success = await registerUser(username, pin);
-      if (success) {
-        Alert.alert('Success', 'Registered successfully. Please login.');
-        setPin('');
+    if (isRegisterMode) {
+      if (currentUser) {
+        const confirmMsg = `Creating a new user will permanently delete the previous account (${currentUser.username}) and all saved vault documents. Continue?`;
+        if (Platform.OS === 'web') {
+          if (window.confirm(confirmMsg)) {
+            await executeRegistration();
+          }
+        } else {
+          Alert.alert(
+            'Create New User',
+            confirmMsg,
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Delete & Create', style: 'destructive', onPress: executeRegistration }
+            ]
+          );
+        }
+      } else {
+        await executeRegistration();
       }
     } else {
       const success = await loginUser(pin);
@@ -34,12 +60,23 @@ export default function AuthScreen() {
         <View style={styles.iconContainer}>
           <Feather name="lock" size={24} color="#86868b" />
         </View>
-        <Text style={styles.title}>{isRegistration ? 'Create Vault' : 'Unlock Vault'}</Text>
+        
+        <Text style={styles.title}>{isRegisterMode ? 'Create Vault' : 'Unlock Vault'}</Text>
         <Text style={styles.subtitle}>
-          {isRegistration ? 'Enter a username and 4-digit PIN' : 'Enter your 4-digit PIN to continue'}
+          {isRegisterMode 
+            ? 'Enter a username and 4-digit PIN for the new account' 
+            : `Welcome back, ${currentUser?.username || 'User'}! Enter your 4-digit PIN`}
         </Text>
         
-        {isRegistration && (
+        {isRegisterMode && currentUser && (
+          <View style={styles.warningBox}>
+            <Text style={styles.warningText}>
+              ⚠️ Registering a new user will permanently delete existing vault data for "{currentUser.username}".
+            </Text>
+          </View>
+        )}
+
+        {isRegisterMode && (
           <TextInput
             style={[styles.input, { letterSpacing: 0, textAlign: 'left', fontSize: 16 }]}
             placeholder="Username"
@@ -64,7 +101,7 @@ export default function AuthScreen() {
         {errorMessage ? <Text style={styles.error}>{errorMessage}</Text> : null}
 
         {(() => {
-          const isValid = isRegistration ? (username.trim().length > 0 && pin.trim().length === 4) : (pin.trim().length === 4);
+          const isValid = isRegisterMode ? (username.trim().length > 0 && pin.trim().length === 4) : (pin.trim().length === 4);
           return (
             <TouchableOpacity 
               style={[styles.button, !isValid && styles.disabledButton]} 
@@ -72,11 +109,26 @@ export default function AuthScreen() {
               disabled={!isValid}
             >
               <Text style={[styles.buttonText, !isValid && styles.disabledButtonText]}>
-                {isRegistration ? 'Register' : 'Unlock Vault'}
+                {isRegisterMode ? 'Register & Create Vault' : 'Unlock Vault'}
               </Text>
             </TouchableOpacity>
           );
         })()}
+
+        {currentUser && (
+          <TouchableOpacity 
+            style={styles.toggleButton} 
+            onPress={() => {
+              clearError();
+              setPin('');
+              setIsRegisterMode(!isRegisterMode);
+            }}
+          >
+            <Text style={styles.toggleText}>
+              {isRegisterMode ? `← Back to Login (${currentUser.username})` : '+ Register New User / Reset Vault'}
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
     </KeyboardAvoidingView>
   );
@@ -122,8 +174,23 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 14,
     color: '#86868b',
-    marginBottom: 24,
+    marginBottom: 20,
     textAlign: 'center',
+  },
+  warningBox: {
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 16,
+    width: '100%',
+  },
+  warningText: {
+    color: '#dc2626',
+    fontSize: 12,
+    textAlign: 'center',
+    fontWeight: '500',
   },
   input: {
     width: '100%',
@@ -167,7 +234,18 @@ const styles = StyleSheet.create({
   disabledButtonText: {
     color: '#94a3b8',
   },
+  toggleButton: {
+    marginTop: 20,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  toggleText: {
+    color: '#0284c7',
+    fontSize: 14,
+    fontWeight: '600',
+  },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: 24 },
   modalContent: { backgroundColor: 'rgba(255, 255, 255, 0.95)', padding: 24, borderRadius: 20, borderWidth: 1, borderColor: '#fff', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.1, shadowRadius: 20, elevation: 5 },
   modalTitle: { color: '#1d1d1f', fontSize: 20, fontWeight: 'bold', marginBottom: 12, textAlign: 'center' },
 });
+
