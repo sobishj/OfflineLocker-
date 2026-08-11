@@ -367,7 +367,10 @@ export default function TabDetailScreen({ route }: any) {
               return (
                 <TouchableOpacity 
                   style={[styles.docCard, isSelected && { borderColor: AppTheme.colors.primary, backgroundColor: 'rgba(6, 182, 212, 0.05)' }]} 
-                  onPress={() => handleSelectPreview(item)}
+                  onPress={() => {
+                    handleSelectPreview(item);
+                    handleViewDoc(item);
+                  }}
                 >
                   <View style={{ flex: 1, flexDirection: 'row' }}>
                     <Ionicons name={getIconForType(item.type)} size={24} color={AppTheme.colors.primary} style={{ marginRight: 12, marginTop: 2 }} />
@@ -376,13 +379,19 @@ export default function TabDetailScreen({ route }: any) {
                       <Text style={styles.docDate}>{new Date(item.createdAt).toLocaleDateString()}</Text>
                       
                       <View style={styles.cardActionsRow}>
-                        <TouchableOpacity onPress={() => handleViewDoc(item)} style={styles.cardActionBtn}>
-                          <Ionicons name="eye" size={16} color={AppTheme.colors.primary} />
-                          <Text style={styles.cardActionText}>View</Text>
-                        </TouchableOpacity>
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                          <Ionicons name="eye-outline" size={14} color={AppTheme.colors.primary} style={{ marginRight: 4 }} />
+                          <Text style={{ color: AppTheme.colors.primary, fontSize: 12, fontWeight: '500' }}>Tap to view</Text>
+                        </View>
                         
                         {(item.type === 'image' || item.type === 'pdf') && (
-                          <TouchableOpacity onPress={() => handleDownloadFromCard(item)} style={[styles.cardActionBtn, { marginLeft: 16 }]}>
+                          <TouchableOpacity 
+                            onPress={(e) => {
+                              if (e && e.stopPropagation) e.stopPropagation();
+                              handleDownloadFromCard(item);
+                            }} 
+                            style={[styles.cardActionBtn, { marginLeft: 16 }]}
+                          >
                             <Ionicons name="download" size={16} color={AppTheme.colors.primary} />
                             <Text style={styles.cardActionText}>Download</Text>
                           </TouchableOpacity>
