@@ -24,7 +24,6 @@ export class CryptoService {
    */
   private static getKeyFromPin(pin: string) {
     // Hash the pin to get a consistent 32-byte (256-bit) key
-    // We use SHA256 which outputs a 256-bit WordArray directly compatible with AES
     return CryptoJS.SHA256(pin);
   }
 
@@ -33,8 +32,9 @@ export class CryptoService {
    */
   static encryptText(plainText: string, pinKey: string): string {
     try {
+      if (!plainText) return '';
       // If it's already encrypted, don't double encrypt
-      if (plainText.startsWith('ENC::')) return plainText;
+      if (plainText.startsWith('ENC::') || plainText.startsWith('ENC_V2::')) return plainText;
 
       const key = this.getKeyFromPin(pinKey);
       const iv = CryptoJS.lib.WordArray.create([0, 0, 0, 0]);
@@ -47,28 +47,28 @@ export class CryptoService {
       return `ENC::${ivBase64}:${cipherBase64}`;
     } catch (e) {
       console.error('Encryption failed (possibly too large)', e);
-      return plainText; // Fallback to raw text if too large for JS to handle
+      return plainText; // Fallback to raw text if error
     }
   }
 
   /**
-   * Decrypt ciphertext back to plaintext using AES-256
+   * Decrypt ciphertext back to plaintext using AES-256 with fast single-pass fallback
    */
   static decryptText(cipherText: string, pinKey: string): string {
     try {
-      // Strictly check for the ENC:: prefix. If missing, it's either raw text (fallback) or old format.
-      if (!cipherText.startsWith('ENC::')) {
-        // Handle old format which was just iv:ciphertext without ENC:: prefix
-        // We know old format has exactly one colon, and doesn't start with data: (data URIs have multiple colons)
+      if (!cipherText) return '';
+
+      // Strictly check for the ENC:: or ENC_V2:: prefix. If missing, it's raw text or old format.
+      if (!cipherText.startsWith('ENC::') && !cipherText.startsWith('ENC_V2::')) {
         if (cipherText.includes(':') && !cipherText.startsWith('data:') && !cipherText.startsWith('[')) {
-           // Might be old format, let it fall through to try decrypting
            cipherText = 'ENC::' + cipherText; 
         } else {
            return cipherText;
         }
       }
       
-      const payload = cipherText.substring(5); // Remove 'ENC::'
+      const isV1 = cipherText.startsWith('ENC::');
+      const payload = cipherText.substring(isV1 ? 5 : 8); // Remove 'ENC::' or 'ENC_V2::'
       const parts = payload.split(':');
       if (parts.length !== 2) return cipherText;
 
@@ -83,25 +83,23 @@ export class CryptoService {
       
       const decrypted = CryptoJS.AES.decrypt(cipherParams, key, { iv: iv });
       
-      let result = '';
-      try {
-        // Fast-path: Latin1 decoding is 10x faster for Base64 image/PDF/JSON strings
-        result = decrypted.toString(CryptoJS.enc.Latin1);
-        if (result && (result.startsWith('data:') || result.startsWith('[') || result.startsWith('{'))) {
-          return result;
-        }
-      } catch (e) {}
-
+      // Single-pass UTF-8 decoding (valid for ASCII, JSON, Base64 data URIs, and UTF-8 text)
       try {
         const utf8Result = decrypted.toString(CryptoJS.enc.Utf8);
         if (utf8Result) return utf8Result;
-      } catch (utf8Error) {}
-      
-      if (!result) throw new Error('Decryption resulted in empty string');
-      return result;
+      } catch (e) {}
+
+      // Fast Latin1 fallback if UTF-8 fails
+      try {
+        const latin1Result = decrypted.toString(CryptoJS.enc.Latin1);
+        if (latin1Result) return latin1Result;
+      } catch (e) {}
+
+      throw new Error('Decryption resulted in empty string');
     } catch (e) {
       console.error('Decryption failed', e);
       return '⚠️ Decryption Failed: Invalid Key or Corrupted Data';
     }
   }
 }
+

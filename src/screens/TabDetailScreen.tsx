@@ -8,6 +8,7 @@ import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import * as ImageManipulator from 'expo-image-manipulator';
 import WebCamera from '../components/WebCamera';
 import CustomImageCropper from '../components/CustomImageCropper';
 import { WebView } from 'react-native-webview';
@@ -19,6 +20,7 @@ export default function TabDetailScreen({ route }: any) {
   const [loading, setLoading] = useState(true);
   const [modalVisible, setModalVisible] = useState(false);
   const [viewModalVisible, setViewModalVisible] = useState(false);
+  const [isEncrypting, setIsEncrypting] = useState(false);
   
   // New document
   const [docTitle, setDocTitle] = useState('');
@@ -43,6 +45,9 @@ export default function TabDetailScreen({ route }: any) {
   const [previewDataArray, setPreviewDataArray] = useState<string[]>([]);
   const [selectedForDownload, setSelectedForDownload] = useState<Record<number, boolean>>({});
 
+  // In-memory cache for decrypted document content to prevent duplicate decryptions
+  const decryptionCacheRef = useRef<Map<string | number, { plainText: string; array: string[] }>>(new Map());
+
   useEffect(() => {
     const fetchDocs = async () => {
       await loadDocumentsForTab(tabId);
@@ -65,6 +70,23 @@ export default function TabDetailScreen({ route }: any) {
   const isPickerBusyRef = useRef(false);
   const isViewingRef = useRef(false);
 
+  const optimizeImageUri = async (uri: string): Promise<string> => {
+    if (!uri || !uri.startsWith('data:image')) return uri;
+    try {
+      const res = await ImageManipulator.manipulateAsync(
+        uri,
+        [{ resize: { width: 1600 } }],
+        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      );
+      if (res && res.base64) {
+        return `data:image/jpeg;base64,${res.base64}`;
+      }
+    } catch (e) {
+      // Return original URI if optimization fails or isn't needed
+    }
+    return uri;
+  };
+
   const handleTakePhoto = async () => {
     if (isPickerBusyRef.current) return;
     isPickerBusyRef.current = true;
@@ -82,13 +104,14 @@ export default function TabDetailScreen({ route }: any) {
 
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.3,
+        quality: 0.5,
         base64: true,
         allowsEditing: false,
       });
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
-        const newUri = `data:image/jpeg;base64,${result.assets[0].base64}`;
+        let newUri = `data:image/jpeg;base64,${result.assets[0].base64}`;
+        newUri = await optimizeImageUri(newUri);
         const newIndex = fileUris.length;
         setFileUris(prev => [...prev, newUri]);
         setFileType('image');
@@ -104,9 +127,10 @@ export default function TabDetailScreen({ route }: any) {
     }
   };
 
-  const handleWebCameraCapture = (base64DataUri: string) => {
+  const handleWebCameraCapture = async (base64DataUri: string) => {
+    const optimized = await optimizeImageUri(base64DataUri);
     const newIndex = fileUris.length;
-    setFileUris(prev => [...prev, base64DataUri]);
+    setFileUris(prev => [...prev, optimized]);
     setFileType('image');
     setDocContent('');
     setWebCameraVisible(false);
@@ -133,19 +157,24 @@ export default function TabDetailScreen({ route }: any) {
           const isImage = asset.mimeType?.startsWith('image/') || asset.name.match(/\.(jpg|jpeg|png|gif)$/i);
           if (!determinedType) determinedType = isImage ? 'image' : 'pdf';
           
+          let dataUri = '';
           if (Platform.OS === 'web') {
             const reader = new FileReader();
             const uriPromise = new Promise<string>((resolve) => {
               reader.onload = (e) => resolve(e.target?.result as string);
             });
             reader.readAsDataURL(asset.file as any);
-            const dataUri = await uriPromise;
-            newUris.push(dataUri);
+            dataUri = await uriPromise;
           } else {
             const base64Data = await FileSystem.readAsStringAsync(asset.uri, { encoding: 'base64' });
             const mimeType = asset.mimeType || (isImage ? 'image/jpeg' : 'application/pdf');
-            newUris.push(`data:${mimeType};base64,${base64Data}`);
+            dataUri = `data:${mimeType};base64,${base64Data}`;
           }
+
+          if (isImage) {
+            dataUri = await optimizeImageUri(dataUri);
+          }
+          newUris.push(dataUri);
         }
         
         setFileType(determinedType as any);
@@ -164,16 +193,32 @@ export default function TabDetailScreen({ route }: any) {
       Alert.alert('Error', 'Please enter a title for the document.');
       return;
     }
-    
-    const encryptionKey = unlockPin || currentUser?.pinHash || 'default_fallback';
-    const type = fileType ? fileType : 'text';
-    
-    // Convert array of URIs to a JSON string if multiple files are selected
-    const contentToEncrypt = fileUris.length > 0 ? JSON.stringify(fileUris) : docContent;
-    
-    await addDocument(tabId, docTitle, type, contentToEncrypt, encryptionKey);
-    setModalVisible(false);
-    setDocTitle(''); setDocContent(''); setFileUris([]); setFileType(null);
+    if (isEncrypting) return;
+
+    setIsEncrypting(true);
+
+    setTimeout(async () => {
+      try {
+        const encryptionKey = unlockPin || currentUser?.pinHash || 'default_fallback';
+        const type = fileType ? fileType : 'text';
+        
+        let processedUris = fileUris;
+        if (type === 'image' && fileUris.length > 0) {
+          processedUris = await Promise.all(fileUris.map(uri => optimizeImageUri(uri)));
+        }
+
+        const contentToEncrypt = processedUris.length > 0 ? JSON.stringify(processedUris) : docContent;
+        
+        await addDocument(tabId, docTitle, type, contentToEncrypt, encryptionKey);
+        setModalVisible(false);
+        setDocTitle(''); setDocContent(''); setFileUris([]); setFileType(null);
+      } catch (e) {
+        console.error('handleAddDocument error:', e);
+        Alert.alert('Error', 'Could not encrypt and save document.');
+      } finally {
+        setIsEncrypting(false);
+      }
+    }, 50);
   };
 
   const parseDecryptedContent = (plainText: string) => {
@@ -226,18 +271,31 @@ export default function TabDetailScreen({ route }: any) {
     isViewingRef.current = true;
 
     setSelectedDoc(doc);
-    setDecryptedArray([]);
     setViewModalVisible(true);
+
+    if (doc.id && decryptionCacheRef.current.has(doc.id)) {
+      const cached = decryptionCacheRef.current.get(doc.id)!;
+      setDecryptedText(cached.plainText);
+      setDecryptedArray(cached.array);
+      isViewingRef.current = false;
+      return;
+    }
+
+    setDecryptedArray([]);
 
     setTimeout(async () => {
       try {
         const decryptionKey = unlockPin || currentUser?.pinHash || 'default_fallback';
         const plainText = CryptoService.decryptText(doc.encryptedContent || '', decryptionKey);
         setDecryptedText(plainText);
+        let prepared: string[] = [];
         if (doc.type === 'image' || doc.type === 'pdf') {
           const rawArr = parseDecryptedContent(plainText);
-          const prepared = await prepareLocalFiles(rawArr, doc.title || 'doc', doc.type);
+          prepared = await prepareLocalFiles(rawArr, doc.title || 'doc', doc.type);
           setDecryptedArray(prepared);
+        }
+        if (doc.id) {
+          decryptionCacheRef.current.set(doc.id, { plainText, array: prepared });
         }
       } catch (err) {
         console.warn('handleViewDoc error:', err);
@@ -250,12 +308,29 @@ export default function TabDetailScreen({ route }: any) {
   const handleSelectPreview = async (doc: any) => {
     if (!doc) return;
     setPreviewDoc(doc);
+
+    if (doc.id && decryptionCacheRef.current.has(doc.id)) {
+      const cached = decryptionCacheRef.current.get(doc.id)!;
+      setPreviewData(cached.plainText);
+      setPreviewDataArray(cached.array);
+      if (cached.array.length > 0) {
+        const initialSelection: Record<number, boolean> = {};
+        cached.array.forEach((_, idx) => { initialSelection[idx] = true; });
+        setSelectedForDownload(initialSelection);
+      } else {
+        setSelectedForDownload({});
+      }
+      return;
+    }
+
     const decryptionKey = unlockPin || currentUser?.pinHash || 'default_fallback';
     const plainText = CryptoService.decryptText(doc.encryptedContent || '', decryptionKey);
     setPreviewData(plainText);
+
+    let arr: string[] = [];
     if (doc.type === 'image' || doc.type === 'pdf') {
       const rawArr = parseDecryptedContent(plainText);
-      const arr = await prepareLocalFiles(rawArr, doc.title || 'doc', doc.type);
+      arr = await prepareLocalFiles(rawArr, doc.title || 'doc', doc.type);
       setPreviewDataArray(arr);
       
       const initialSelection: Record<number, boolean> = {};
@@ -264,6 +339,10 @@ export default function TabDetailScreen({ route }: any) {
     } else {
       setPreviewDataArray([]);
       setSelectedForDownload({});
+    }
+
+    if (doc.id) {
+      decryptionCacheRef.current.set(doc.id, { plainText, array: arr });
     }
   };
 
@@ -610,12 +689,13 @@ export default function TabDetailScreen({ route }: any) {
                   onPress={async () => {
                     const result = await ImagePicker.launchImageLibraryAsync({
                       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-                      quality: 0.3,
+                      quality: 0.5,
                       base64: true,
                       allowsEditing: false,
                     });
                     if (!result.canceled && result.assets && result.assets.length > 0) {
-                      const newUri = `data:image/jpeg;base64,${result.assets[0].base64}`;
+                      let newUri = `data:image/jpeg;base64,${result.assets[0].base64}`;
+                      newUri = await optimizeImageUri(newUri);
                       const newIndex = fileUris.length;
                       setFileUris(prev => [...prev, newUri]);
                       setFileType('image');
@@ -638,11 +718,15 @@ export default function TabDetailScreen({ route }: any) {
             )}
             
             <View style={styles.modalActions}>
-              <TouchableOpacity onPress={() => { setModalVisible(false); setFileUris([]); setFileType(null); setDocTitle(''); setDocContent(''); }} style={[styles.button, { backgroundColor: AppTheme.colors.border }]}>
+              <TouchableOpacity onPress={() => { setModalVisible(false); setFileUris([]); setFileType(null); setDocTitle(''); setDocContent(''); }} style={[styles.button, { backgroundColor: AppTheme.colors.border }]} disabled={isEncrypting}>
                 <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity onPress={handleAddDocument} style={styles.button}>
-                <Text style={styles.buttonText}>Encrypt & Save</Text>
+              <TouchableOpacity onPress={handleAddDocument} style={styles.button} disabled={isEncrypting}>
+                {isEncrypting ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.buttonText}>Encrypt & Save</Text>
+                )}
               </TouchableOpacity>
             </View>
           </View>
