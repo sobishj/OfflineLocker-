@@ -46,6 +46,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   const [pickedFileName, setPickedFileName] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
 
+  const isPickerActiveRef = useRef(false);
+
   const handleOpenEditTab = (tab: any) => {
     setEditTabId(tab.uuid);
     setEditTabName(tab.name);
@@ -100,6 +102,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   };
 
   const handlePickAndOpenImport = async () => {
+    if (isPickerActiveRef.current) return;
+    isPickerActiveRef.current = true;
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: '*/*',
@@ -109,23 +113,48 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const asset = result.assets[0];
-        setPickedFileName(asset.name);
-        if (Platform.OS === 'web') {
-          const reader = new FileReader();
-          const contentPromise = new Promise<string>((resolve) => {
-            reader.onload = (e) => resolve(e.target?.result as string);
-          });
-          reader.readAsText(asset.file as any);
-          const text = await contentPromise;
-          setPickedFileContent(text);
-        } else {
-          const text = await FileSystem.readAsStringAsync(asset.uri, { encoding: 'utf8' });
-          setPickedFileContent(text);
+        
+        if (!asset.name || !asset.name.toLowerCase().endsWith('.ewallet')) {
+          Alert.alert('Invalid File', 'Please select an eWallet backup file (*.ewallet).');
+          return;
         }
+
+        setPickedFileName(asset.name);
+        
+        let text = '';
+        if (Platform.OS === 'web') {
+          if (asset.file) {
+            const reader = new FileReader();
+            const contentPromise = new Promise<string>((resolve, reject) => {
+              reader.onload = (e) => resolve((e.target?.result as string) || '');
+              reader.onerror = (err) => reject(err);
+              reader.readAsText(asset.file as File);
+            });
+            text = await contentPromise;
+          } else if (asset.uri) {
+            const res = await fetch(asset.uri);
+            text = await res.text();
+          }
+        } else {
+          text = await FileSystem.readAsStringAsync(asset.uri, { encoding: 'utf8' });
+        }
+
+        if (!text || !text.trim()) {
+          Alert.alert('Error', 'The selected backup file is empty or corrupted.');
+          return;
+        }
+
+        setPickedFileContent(text);
         setImportModalVisible(true);
       }
     } catch (err: any) {
+      if (err?.message?.includes('Different document picking in progress') || err?.toString()?.includes('Different document picking in progress')) {
+        return;
+      }
+      console.error('File pick error:', err);
       Alert.alert('Error', 'Failed to read backup file.');
+    } finally {
+      isPickerActiveRef.current = false;
     }
   };
 
@@ -445,7 +474,9 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             <TouchableOpacity 
               onPress={() => {
                 setBackupModalVisible(false);
-                handlePickAndOpenImport();
+                setTimeout(() => {
+                  handlePickAndOpenImport();
+                }, 350);
               }}
               style={{ backgroundColor: AppTheme.colors.surface, padding: 16, borderRadius: AppTheme.borderRadius.m, borderWidth: 1, borderColor: AppTheme.colors.border, marginBottom: 14, flexDirection: 'row', alignItems: 'center' }}
             >
@@ -516,20 +547,30 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
           <View style={[styles.modalContent, { maxHeight: '95%' }]}>
             <Text style={styles.modalTitle}>Import Encrypted Backup</Text>
+            
+            {pickedFileName && (
+              <View style={{ backgroundColor: 'rgba(6, 182, 212, 0.1)', padding: 10, borderRadius: 8, marginBottom: 12, flexDirection: 'row', alignItems: 'center' }}>
+                <Ionicons name="document-text-outline" size={20} color={AppTheme.colors.primary} style={{ marginRight: 8 }} />
+                <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13, flex: 1 }} numberOfLines={1}>
+                  File: {pickedFileName}
+                </Text>
+              </View>
+            )}
+
             <Text style={{ color: AppTheme.colors.textSecondary, marginBottom: AppTheme.spacing.m, fontSize: 13 }}>
-              Select an encrypted backup file (.ewallet) and enter the 4-digit PIN used when exporting.
+              Enter the 4-digit password / PIN that was used to export this backup file.
             </Text>
 
-            <TouchableOpacity onPress={handlePickAndOpenImport} style={[styles.button, { backgroundColor: AppTheme.colors.surface, borderWidth: 1, borderColor: AppTheme.colors.primary, marginBottom: AppTheme.spacing.m, flex: 0, padding: 12 }]}>
-              <Ionicons name="document-text-outline" size={20} color={AppTheme.colors.primary} style={{ marginRight: 6 }} />
+            <TouchableOpacity onPress={handlePickAndOpenImport} style={[styles.button, { backgroundColor: AppTheme.colors.surface, borderWidth: 1, borderColor: AppTheme.colors.primary, marginBottom: AppTheme.spacing.m, flex: 0, padding: 10 }]}>
+              <Ionicons name="folder-open-outline" size={18} color={AppTheme.colors.primary} style={{ marginRight: 6 }} />
               <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', textAlign: 'center' }}>
-                {pickedFileName ? `Selected: ${pickedFileName}` : 'Choose Backup File (.ewallet)'}
+                {pickedFileName ? 'Change Backup File (.ewallet)' : 'Select Backup File (.ewallet)'}
               </Text>
             </TouchableOpacity>
 
             <TextInput
               style={[styles.input, { letterSpacing: importPin ? 8 : 0, textAlign: importPin ? 'center' : 'left', fontSize: importPin ? 18 : 15 }]}
-              placeholder="Enter 4-Digit Export PIN"
+              placeholder="Enter 4-Digit Export Password"
               placeholderTextColor={AppTheme.colors.textSecondary}
               value={importPin}
               onChangeText={setImportPin}
@@ -552,7 +593,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                     {isImporting ? (
                       <ActivityIndicator size="small" color="#ffffff" />
                     ) : (
-                      <Text style={[styles.buttonText, isImportDisabled && { color: AppTheme.colors.textSecondary }]}>Import & Restore</Text>
+                      <Text style={[styles.buttonText, isImportDisabled && { color: AppTheme.colors.textSecondary }]}>Decrypt & Restore</Text>
                     )}
                   </TouchableOpacity>
                 );

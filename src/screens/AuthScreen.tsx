@@ -4,14 +4,35 @@ import { useWalletStore } from '../store/useWalletStore';
 import { Feather } from '@expo/vector-icons';
 
 export default function AuthScreen() {
-  const { currentUser, registerUser, loginUser, errorMessage, clearError } = useWalletStore();
+  const { currentUser, registerUser, loginUser, errorMessage, clearError, lockoutState, refreshLockoutState } = useWalletStore();
   const [username, setUsername] = useState('');
   const [pin, setPin] = useState('');
   const [isRegisterMode, setIsRegisterMode] = useState(!currentUser);
+  const [remainingSec, setRemainingSec] = useState(0);
 
   useEffect(() => {
     setIsRegisterMode(!currentUser);
   }, [currentUser]);
+
+  useEffect(() => {
+    let timer: any = null;
+    const checkLockout = async () => {
+      const state = await refreshLockoutState();
+      if (state && state.remainingSeconds > 0) {
+        setRemainingSec(state.remainingSeconds);
+      } else {
+        setRemainingSec(0);
+      }
+    };
+
+    checkLockout();
+    timer = setInterval(checkLockout, 1000);
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, []);
+
+  const isLockedOut = !isRegisterMode && remainingSec > 0;
 
   const executeRegistration = async () => {
     const success = await registerUser(username, pin);
@@ -22,6 +43,7 @@ export default function AuthScreen() {
   };
 
   const handleSubmit = async () => {
+    if (isLockedOut) return;
     clearError();
     if (isRegisterMode) {
       if (currentUser) {
@@ -51,6 +73,15 @@ export default function AuthScreen() {
     }
   };
 
+  const formatTime = (secs: number) => {
+    const mins = Math.floor(secs / 60);
+    const s = secs % 60;
+    if (mins > 0) {
+      return `${mins}m ${s}s`;
+    }
+    return `${s}s`;
+  };
+
   return (
     <KeyboardAvoidingView 
       style={styles.container}
@@ -58,7 +89,7 @@ export default function AuthScreen() {
     >
       <View style={styles.content}>
         <View style={styles.iconContainer}>
-          <Feather name="lock" size={24} color="#86868b" />
+          <Feather name={isLockedOut ? "lock" : "lock"} size={24} color={isLockedOut ? "#ef4444" : "#86868b"} />
         </View>
         
         <Text style={styles.title}>{isRegisterMode ? 'Create Vault' : 'Unlock Vault'}</Text>
@@ -76,6 +107,39 @@ export default function AuthScreen() {
           </View>
         )}
 
+        {isLockedOut && (
+          <View style={[styles.warningBox, { backgroundColor: 'rgba(239, 68, 68, 0.1)', borderColor: '#ef4444' }]}>
+            <Text style={[styles.warningText, { color: '#ef4444', fontWeight: 'bold' }]}>
+              🔒 Vault Locked: Please wait {formatTime(remainingSec)} before trying again.
+            </Text>
+          </View>
+        )}
+
+        {!isRegisterMode && lockoutState && lockoutState.failedAttempts > 0 && (
+          <View style={[
+            styles.warningBox, 
+            { 
+              backgroundColor: lockoutState.failedAttempts >= 5 ? 'rgba(239, 68, 68, 0.12)' : 'rgba(245, 158, 11, 0.12)', 
+              borderColor: lockoutState.failedAttempts >= 5 ? '#ef4444' : '#f59e0b',
+              marginTop: isLockedOut ? 4 : 10
+            }
+          ]}>
+            <Text style={[
+              styles.warningText, 
+              { 
+                color: lockoutState.failedAttempts >= 5 ? '#dc2626' : '#d97706', 
+                fontWeight: lockoutState.failedAttempts >= 5 ? 'bold' : '600' 
+              }
+            ]}>
+              {lockoutState.failedAttempts >= 5 
+                ? `🚨 CRITICAL WARNING: ${lockoutState.failedAttempts}/6 failed PIN attempts! 1 attempt remaining before PERMANENT DATA WIPE & APP RESET!`
+                : lockoutState.failedAttempts >= 3
+                ? `⚠️ Security Warning: ${lockoutState.failedAttempts}/6 failed PIN attempts. Next failed attempt will trigger 5-minute lockout!`
+                : `⚠️ Security Warning: ${lockoutState.failedAttempts}/6 failed PIN attempts.`}
+            </Text>
+          </View>
+        )}
+
         {isRegisterMode && (
           <TextInput
             style={[styles.input, { letterSpacing: 0, textAlign: 'left', fontSize: 16 }]}
@@ -88,20 +152,25 @@ export default function AuthScreen() {
         )}
         
         <TextInput
-          style={[styles.input, { letterSpacing: pin ? 8 : 0, textAlign: pin ? 'center' : 'left', fontSize: pin ? 20 : 16 }]}
-          placeholder="Enter 4-Digit PIN"
+          style={[
+            styles.input, 
+            { letterSpacing: pin ? 8 : 0, textAlign: pin ? 'center' : 'left', fontSize: pin ? 20 : 16 },
+            isLockedOut && { opacity: 0.5, backgroundColor: 'rgba(0,0,0,0.05)' }
+          ]}
+          placeholder={isLockedOut ? `Locked (${formatTime(remainingSec)})` : "Enter 4-Digit PIN"}
           placeholderTextColor="#8e8e93"
           value={pin}
           onChangeText={setPin}
           keyboardType="numeric"
           secureTextEntry
           maxLength={4}
+          editable={!isLockedOut}
         />
 
         {errorMessage ? <Text style={styles.error}>{errorMessage}</Text> : null}
 
         {(() => {
-          const isValid = isRegisterMode ? (username.trim().length > 0 && pin.trim().length === 4) : (pin.trim().length === 4);
+          const isValid = !isLockedOut && (isRegisterMode ? (username.trim().length > 0 && pin.trim().length === 4) : (pin.trim().length === 4));
           return (
             <TouchableOpacity 
               style={[styles.button, !isValid && styles.disabledButton]} 

@@ -5,6 +5,7 @@ import { User, Tab, Document } from '../models';
 import { DatabaseHelper } from '../services/DatabaseHelper';
 import { CryptoService } from '../services/CryptoService';
 import { BackupService } from '../services/BackupService';
+import { LockoutService, LockoutState } from '../services/LockoutService';
 
 interface WalletState {
   currentUser: User | null;
@@ -14,6 +15,7 @@ interface WalletState {
   isLoading: boolean;
   errorMessage: string | null;
   isAuthenticated: boolean;
+  lockoutState: LockoutState | null;
 
   // Actions
   checkExistingUsers: () => Promise<void>;
@@ -31,6 +33,7 @@ interface WalletState {
   deleteDocument: (id: number, tabId: string) => Promise<void>;
   exportBackup: (exportPin: string) => Promise<boolean>;
   importBackup: (encryptedContent: string, importPin: string) => Promise<{ success: boolean; tabsCount: number; docsCount: number }>;
+  refreshLockoutState: () => Promise<LockoutState>;
   clearError: () => void;
 }
 
@@ -42,12 +45,16 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   isLoading: false,
   errorMessage: null,
   isAuthenticated: false,
+  lockoutState: null,
 
   checkExistingUsers: async () => {
     try {
       const users = await DatabaseHelper.getAllUsers();
+      const lockoutState = await LockoutService.getLockoutState();
       if (users.length > 0) {
-        set({ currentUser: users[0], isAuthenticated: false });
+        set({ currentUser: users[0], isAuthenticated: false, lockoutState });
+      } else {
+        set({ lockoutState });
       }
     } catch (error) {
       console.error('Error checking existing user', error);
@@ -57,6 +64,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   registerUser: async (username: string, pin: string) => {
     try {
       await DatabaseHelper.clearAllData();
+      await LockoutService.resetLockoutState();
 
       const newUser: User = {
         uuid: uuidv4(),
@@ -77,7 +85,8 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       };
       await DatabaseHelper.createTab(defaultTab);
 
-      set({ currentUser: newUser, isAuthenticated: true });
+      const lockoutState = await LockoutService.getLockoutState();
+      set({ currentUser: newUser, isAuthenticated: true, lockoutState, errorMessage: null });
       await get().loadTabs();
       return true;
     } catch (error) {
@@ -90,13 +99,51 @@ export const useWalletStore = create<WalletState>((set, get) => ({
     const { currentUser } = get();
     if (!currentUser) return false;
 
+    const currentLockout = await LockoutService.getLockoutState();
+    if (currentLockout.remainingSeconds > 0) {
+      set({ lockoutState: currentLockout, errorMessage: `Vault locked. Please try again in ${currentLockout.remainingSeconds}s.` });
+      return false;
+    }
+
     const isValid = CryptoService.verifyPin(pin.trim(), currentUser.pinHash);
     if (isValid) {
-      set({ isAuthenticated: true });
+      await LockoutService.resetLockoutState();
+      const cleanLockout = await LockoutService.getLockoutState();
+      set({ isAuthenticated: true, lockoutState: cleanLockout, errorMessage: null });
       await get().loadTabs();
       return true;
     }
+
+    // Failed attempt
+    const { state, isWiped } = await LockoutService.recordFailedAttempt();
+    if (isWiped) {
+      set({
+        currentUser: null,
+        tabs: [],
+        tabDocCounts: {},
+        activeDocuments: [],
+        isAuthenticated: false,
+        lockoutState: state,
+        errorMessage: '⚠️ App reset: Vault data was permanently wiped due to 6 consecutive failed PIN attempts.',
+      });
+      return false;
+    }
+
+    let msg = `Incorrect PIN. Attempt ${state.failedAttempts}/6.`;
+    if (state.failedAttempts === 3) {
+      msg = `🔒 3 failed attempts. Vault is locked for 30 seconds.`;
+    } else if (state.failedAttempts === 5) {
+      msg = `⚠️ 5 failed attempts! Vault is locked for 5 minutes. WARNING: 6th failed attempt will wipe all data!`;
+    }
+
+    set({ lockoutState: state, errorMessage: msg });
     return false;
+  },
+
+  refreshLockoutState: async () => {
+    const lockoutState = await LockoutService.getLockoutState();
+    set({ lockoutState });
+    return lockoutState;
   },
 
   logout: () => {
