@@ -12,6 +12,7 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import WebCamera from '../components/WebCamera';
 import CustomImageCropper from '../components/CustomImageCropper';
 import { WebView } from 'react-native-webview';
+import DraggableFAB from '../components/DraggableFAB';
 
 export default function TabDetailScreen({ route }: any) {
   const { tabId, unlockPin } = route.params;
@@ -838,9 +839,7 @@ export default function TabDetailScreen({ route }: any) {
 
       </View>
 
-      <TouchableOpacity style={styles.fab} onPress={() => setModalVisible(true)}>
-        <Ionicons name="add" size={32} color={AppTheme.colors.background} />
-      </TouchableOpacity>
+      <DraggableFAB onPress={() => setModalVisible(true)} />
 
       {/* ADD DOCUMENT MODAL */}
       <Modal visible={modalVisible} animationType="slide" transparent>

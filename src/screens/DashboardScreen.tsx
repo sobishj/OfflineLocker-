@@ -7,6 +7,8 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 
+import DraggableFAB from '../components/DraggableFAB';
+
 type DashboardProps = {
   navigation: NativeStackNavigationProp<any>;
 };
@@ -287,9 +289,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         ListEmptyComponent={<Text style={styles.emptyText}>No tabs available. Create one below.</Text>}
       />
 
-      <TouchableOpacity style={styles.fab} onPress={() => setModalVisible(true)}>
-        <Ionicons name="add" size={32} color={AppTheme.colors.background} />
-      </TouchableOpacity>
+      <DraggableFAB onPress={() => setModalVisible(true)} />
 
       {/* CREATE TAB MODAL */}
       <Modal visible={modalVisible} animationType="slide" transparent>
