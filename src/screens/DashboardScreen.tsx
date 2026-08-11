@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
 import { useWalletStore } from '../store/useWalletStore';
 import { AppTheme } from '../theme/AppTheme';
@@ -46,7 +46,57 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   const [pickedFileName, setPickedFileName] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
 
-  const isPickerActiveRef = useRef(false);
+  // Imperative hidden file input for Web — native DOM event, immune to React Modal layering
+  const webFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.ewallet';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+    webFileInputRef.current = input;
+
+    const handleChange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      // Reset so same file can be selected again
+      input.value = '';
+
+      if (!file.name.toLowerCase().endsWith('.ewallet')) {
+        Alert.alert('Invalid File', 'Please select an eWallet backup file (*.ewallet).');
+        return;
+      }
+
+      try {
+        const text = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (ev) => resolve((ev.target?.result as string) || '');
+          reader.onerror = reject;
+          reader.readAsText(file);
+        });
+
+        if (!text || !text.trim()) {
+          Alert.alert('Error', 'The selected backup file appears to be empty or inaccessible.');
+          return;
+        }
+
+        setPickedFileName(file.name);
+        setPickedFileContent(text.trim());
+      } catch (err: any) {
+        console.error('Web file read error:', err);
+        Alert.alert('File Read Error', 'Could not read the selected file.');
+      }
+    };
+
+    input.addEventListener('change', handleChange);
+    return () => {
+      input.removeEventListener('change', handleChange);
+      document.body.removeChild(input);
+      webFileInputRef.current = null;
+    };
+  }, []);
 
   const handleOpenEditTab = (tab: any) => {
     setEditTabId(tab.uuid);
@@ -101,9 +151,32 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     }
   };
 
-  const handlePickAndOpenImport = async () => {
-    if (isPickerActiveRef.current) return;
-    isPickerActiveRef.current = true;
+  const readFileFromAsset = async (asset: any): Promise<string> => {
+    if (Platform.OS === 'web') {
+      if (asset.file) {
+        return new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (e) => resolve((e.target?.result as string) || '');
+          reader.onerror = (err) => reject(err);
+          reader.readAsText(asset.file as File);
+        });
+      } else if (asset.uri) {
+        const res = await fetch(asset.uri);
+        return res.text();
+      }
+      return '';
+    } else {
+      try {
+        return await FileSystem.readAsStringAsync(asset.uri, { encoding: 'utf8' });
+      } catch {
+        const res = await fetch(asset.uri);
+        return res.text();
+      }
+    }
+  };
+
+  // Native: DocumentPicker called directly from within a fully-presented modal (safe)
+  const handlePickFileNative = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: '*/*',
@@ -113,48 +186,26 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const asset = result.assets[0];
-        
-        if (!asset.name || !asset.name.toLowerCase().endsWith('.ewallet')) {
+        const fileName = asset.name || '';
+
+        if (!fileName.toLowerCase().endsWith('.ewallet')) {
           Alert.alert('Invalid File', 'Please select an eWallet backup file (*.ewallet).');
           return;
         }
 
-        setPickedFileName(asset.name);
-        
-        let text = '';
-        if (Platform.OS === 'web') {
-          if (asset.file) {
-            const reader = new FileReader();
-            const contentPromise = new Promise<string>((resolve, reject) => {
-              reader.onload = (e) => resolve((e.target?.result as string) || '');
-              reader.onerror = (err) => reject(err);
-              reader.readAsText(asset.file as File);
-            });
-            text = await contentPromise;
-          } else if (asset.uri) {
-            const res = await fetch(asset.uri);
-            text = await res.text();
-          }
-        } else {
-          text = await FileSystem.readAsStringAsync(asset.uri, { encoding: 'utf8' });
-        }
+        const text = await readFileFromAsset(asset);
 
         if (!text || !text.trim()) {
-          Alert.alert('Error', 'The selected backup file is empty or corrupted.');
+          Alert.alert('Error', 'The selected backup file appears to be empty or inaccessible.');
           return;
         }
 
-        setPickedFileContent(text);
-        setImportModalVisible(true);
+        setPickedFileName(fileName);
+        setPickedFileContent(text.trim());
       }
     } catch (err: any) {
-      if (err?.message?.includes('Different document picking in progress') || err?.toString()?.includes('Different document picking in progress')) {
-        return;
-      }
       console.error('File pick error:', err);
-      Alert.alert('Error', 'Failed to read backup file.');
-    } finally {
-      isPickerActiveRef.current = false;
+      Alert.alert('File Picker Error', err?.message || 'Could not open the file picker. Please try again.');
     }
   };
 
@@ -473,10 +524,11 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             {/* Option 2: IMPORT */}
             <TouchableOpacity 
               onPress={() => {
+                setPickedFileName(null);
+                setPickedFileContent(null);
+                setImportPin('');
                 setBackupModalVisible(false);
-                setTimeout(() => {
-                  handlePickAndOpenImport();
-                }, 350);
+                setImportModalVisible(true);
               }}
               style={{ backgroundColor: AppTheme.colors.surface, padding: 16, borderRadius: AppTheme.borderRadius.m, borderWidth: 1, borderColor: AppTheme.colors.border, marginBottom: 14, flexDirection: 'row', alignItems: 'center' }}
             >
@@ -561,7 +613,18 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               Enter the 4-digit password / PIN that was used to export this backup file.
             </Text>
 
-            <TouchableOpacity onPress={handlePickAndOpenImport} style={[styles.button, { backgroundColor: AppTheme.colors.surface, borderWidth: 1, borderColor: AppTheme.colors.primary, marginBottom: AppTheme.spacing.m, flex: 0, padding: 10 }]}>
+            {/* Web file input is rendered to document.body via useEffect — no JSX needed here */}
+
+            <TouchableOpacity 
+              onPress={() => {
+                if (Platform.OS === 'web') {
+                  webFileInputRef.current?.click();
+                } else {
+                  handlePickFileNative();
+                }
+              }}
+              style={[styles.button, { backgroundColor: AppTheme.colors.surface, borderWidth: 1, borderColor: AppTheme.colors.primary, marginBottom: AppTheme.spacing.m, flex: 0, padding: 10 }]}
+            >
               <Ionicons name="folder-open-outline" size={18} color={AppTheme.colors.primary} style={{ marginRight: 6 }} />
               <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', textAlign: 'center' }}>
                 {pickedFileName ? 'Change Backup File (.ewallet)' : 'Select Backup File (.ewallet)'}

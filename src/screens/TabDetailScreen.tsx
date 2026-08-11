@@ -805,19 +805,51 @@ export default function TabDetailScreen({ route }: any) {
                     <Text style={{ color: AppTheme.colors.text, fontSize: 18, lineHeight: 28 }}>{previewData}</Text>
                   </ScrollView>
                 )}
-                {previewDoc.type === 'pdf' && Platform.OS === 'web' && (
-                  <ScrollView style={{ flex: 1 }}>
-                     {previewDataArray.map((uri, idx) => (
-                       <View key={idx} style={{ height: 600, marginBottom: 16 }}>
-                         {React.createElement('iframe', {
-                           src: uri,
-                           style: { width: '100%', height: '100%', border: 'none' },
-                           title: `${previewDoc.title} ${idx+1}`
-                         })}
-                       </View>
-                     ))}
-                  </ScrollView>
-                )}
+                {previewDoc.type === 'pdf' && Platform.OS === 'web' && (() => {
+                   // Convert base64 data URIs → Blob URLs so browsers can render them in iframes
+                   // (browsers block data: URIs inside iframes for security)
+                   const blobUrls = previewDataArray.map(uri => {
+                     if (!uri) return '';
+                     if (uri.startsWith('blob:')) return uri;
+                     if (uri.startsWith('data:')) {
+                       try {
+                         const [header, base64] = uri.split(',');
+                         const mimeMatch = header.match(/data:([^;]+)/);
+                         const mime = mimeMatch ? mimeMatch[1] : 'application/pdf';
+                         const binary = atob(base64);
+                         const bytes = new Uint8Array(binary.length);
+                         for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                         return URL.createObjectURL(new Blob([bytes], { type: mime }));
+                       } catch {
+                         return uri;
+                       }
+                     }
+                     return uri;
+                   });
+                   return (
+                     <ScrollView style={{ flex: 1 }}>
+                       {blobUrls.map((blobUrl, idx) => (
+                         <View key={idx} style={{ marginBottom: 16 }}>
+                           <View style={{ height: 700 }}>
+                             {React.createElement('iframe', {
+                               src: blobUrl,
+                               style: { width: '100%', height: '100%', border: 'none', borderRadius: 8 },
+                               title: `${previewDoc.title} ${idx + 1}`,
+                             })}
+                           </View>
+                           <TouchableOpacity
+                             onPress={() => window.open(blobUrl, '_blank')}
+                             style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 8, padding: 10, backgroundColor: AppTheme.colors.primary, borderRadius: 8 }}
+                           >
+                             <Ionicons name="open-outline" size={18} color="#fff" style={{ marginRight: 8 }} />
+                             <Text style={{ color: '#fff', fontWeight: '600' }}>Open in New Tab</Text>
+                           </TouchableOpacity>
+                         </View>
+                       ))}
+                     </ScrollView>
+                   );
+                 })()
+                }
                 {previewDoc.type === 'pdf' && Platform.OS !== 'web' && (
                   <ScrollView style={{ flex: 1 }}>
                      {previewDataArray.map((uri, idx) => (
