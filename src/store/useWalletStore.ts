@@ -24,7 +24,7 @@ interface WalletState {
   logout: () => void;
   loadTabs: () => Promise<void>;
   createTab: (name: string, description: string, isSensitive: boolean, tabPin?: string) => Promise<boolean>;
-  updateTab: (tabId: string, name: string, description: string) => Promise<boolean>;
+  updateTab: (tabId: string, name: string, description: string, isSensitive: boolean, tabPin?: string) => Promise<boolean>;
   deleteTab: (tabId: string) => Promise<void>;
   verifyTabPin: (tab: Tab, candidatePin: string) => boolean;
   loadDocumentsForTab: (tabId: string) => Promise<void>;
@@ -198,10 +198,28 @@ export const useWalletStore = create<WalletState>((set, get) => ({
     await get().loadTabs();
   },
 
-  updateTab: async (tabId: string, name: string, description: string) => {
+  updateTab: async (tabId: string, name: string, description: string, isSensitive: boolean, tabPin?: string) => {
     if (!name.trim()) return false;
     try {
-      await DatabaseHelper.updateTab(tabId, name.trim(), description.trim() ? description.trim() : 'Custom Vault Tab');
+      const currentTab = get().tabs.find(tab => tab.uuid === tabId);
+      if (isSensitive && tabPin?.trim() && tabPin.trim().length !== 4) {
+        set({ errorMessage: 'Sensitive tabs require a 4-digit PIN.' });
+        return false;
+      }
+      if (isSensitive && (!tabPin || tabPin.trim().length !== 4) && !currentTab?.tabPinHash) {
+        set({ errorMessage: 'Sensitive tabs require a mandatory 4-digit PIN.' });
+        return false;
+      }
+      const tabPinHash = isSensitive
+        ? (tabPin?.trim() ? CryptoService.hashPin(tabPin.trim()) : currentTab?.tabPinHash || null)
+        : null;
+      await DatabaseHelper.updateTab(
+        tabId,
+        name.trim(),
+        description.trim() ? description.trim() : 'Custom Vault Tab',
+        isSensitive ? 1 : 0,
+        tabPinHash
+      );
       await get().loadTabs();
       return true;
     } catch (error) {

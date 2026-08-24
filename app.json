@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "eWallet_RN",
-    "slug": "eWallet_RN",
+    "name": "OfflineVault",
+    "slug": "offlinevault",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -16,7 +16,8 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.anonymous.offlinevault"
     },
     "web": {
       "favicon": "./assets/favicon.png"

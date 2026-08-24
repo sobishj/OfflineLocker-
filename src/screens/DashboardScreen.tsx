@@ -29,6 +29,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   const [editTabId, setEditTabId] = useState('');
   const [editTabName, setEditTabName] = useState('');
   const [editTabDesc, setEditTabDesc] = useState('');
+  const [editIsSensitive, setEditIsSensitive] = useState(false);
+  const [editTabPin, setEditTabPin] = useState('');
 
   // Unlock tab state
   const [selectedTab, setSelectedTab] = useState<any>(null);
@@ -65,7 +67,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       input.value = '';
 
       if (!file.name.toLowerCase().endsWith('.ewallet')) {
-        Alert.alert('Invalid File', 'Please select an eWallet backup file (*.ewallet).');
+        Alert.alert('Invalid File', 'Please select an OfflineVault backup file (*.ewallet).');
         return;
       }
 
@@ -102,17 +104,21 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     setEditTabId(tab.uuid);
     setEditTabName(tab.name);
     setEditTabDesc(tab.description || '');
+    setEditIsSensitive(tab.isSensitive === 1);
+    setEditTabPin('');
     setEditModalVisible(true);
   };
 
   const handleSaveEditTab = async () => {
     if (!editTabName.trim()) return;
-    const success = await updateTab(editTabId, editTabName, editTabDesc);
+    const success = await updateTab(editTabId, editTabName, editTabDesc, editIsSensitive, editTabPin);
     if (success) {
       setEditModalVisible(false);
       setEditTabId('');
       setEditTabName('');
       setEditTabDesc('');
+      setEditIsSensitive(false);
+      setEditTabPin('');
     } else {
       Alert.alert('Error', 'Failed to update tab details.');
     }
@@ -189,7 +195,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         const fileName = asset.name || '';
 
         if (!fileName.toLowerCase().endsWith('.ewallet')) {
-          Alert.alert('Invalid File', 'Please select an eWallet backup file (*.ewallet).');
+          Alert.alert('Invalid File', 'Please select an OfflineVault backup file (*.ewallet).');
           return;
         }
 
@@ -438,6 +444,24 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               onChangeText={setEditTabDesc} 
             />
 
+            <TouchableOpacity style={styles.checkboxRow} onPress={() => setEditIsSensitive(!editIsSensitive)}>
+              <Ionicons name={editIsSensitive ? "checkbox" : "square-outline"} size={24} color={AppTheme.colors.primary} />
+              <Text style={styles.checkboxText}>Sensitive Tab (Requires PIN)</Text>
+            </TouchableOpacity>
+
+            {editIsSensitive && (
+              <TextInput
+                style={[styles.input, { letterSpacing: editTabPin ? 6 : 0 }]}
+                placeholder="New 4-Digit Tab PIN (optional to keep current)"
+                placeholderTextColor={AppTheme.colors.textSecondary}
+                value={editTabPin}
+                onChangeText={setEditTabPin}
+                keyboardType="numeric"
+                secureTextEntry
+                maxLength={4}
+              />
+            )}
+
             <View style={styles.modalActions}>
               <TouchableOpacity 
                 onPress={() => {
@@ -445,6 +469,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                   setEditTabId('');
                   setEditTabName('');
                   setEditTabDesc('');
+                  setEditIsSensitive(false);
+                  setEditTabPin('');
                 }} 
                 style={[styles.button, { backgroundColor: AppTheme.colors.border }]}
               >
@@ -627,7 +653,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             >
               <Ionicons name="folder-open-outline" size={18} color={AppTheme.colors.primary} style={{ marginRight: 6 }} />
               <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', textAlign: 'center' }}>
-                {pickedFileName ? 'Change Backup File (.ewallet)' : 'Select Backup File (.ewallet)'}
+                {pickedFileName ? 'Change OfflineVault Backup File (.ewallet)' : 'Select OfflineVault Backup File (.ewallet)'}
               </Text>
             </TouchableOpacity>
 

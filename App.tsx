@@ -38,7 +38,7 @@ export default function App() {
           <Stack.Screen name="Auth" component={AuthScreen} options={{ headerShown: false }} />
         ) : (
           <>
-            <Stack.Screen name="Dashboard" component={DashboardScreen} options={{ title: 'eWallet Vault' }} />
+            <Stack.Screen name="Dashboard" component={DashboardScreen} options={{ title: 'OfflineVault' }} />
             <Stack.Screen 
               name="TabDetail" 
               component={TabDetailScreen} 

@@ -1,6 +1,6 @@
-# eWallet Mobile Application (Flutter for Android & iOS)
+# OfflineVault Mobile Application
 
-A feature-rich, secure, cross-platform mobile eWallet built with **Flutter**. This application replicates and expands upon the Svelte web eWallet, offering native performance, hardware encryption, camera receipt scanning, and sleek dark mode glassmorphism UI for both Android and iOS devices.
+A feature-rich, secure, cross-platform OfflineVault built with React Native and Expo for Android, iOS, and web.
 
 ## 🚀 Features
 - **Biometric & PIN Authentication**: Secure login and registration with PIN hashing.
@@ -29,7 +29,7 @@ flutter doctor
 ### 3. Install Dependencies
 Navigate to this directory and install required Dart/Flutter packages:
 ```bash
-cd c:\AntiGravity\eWallet\ewallet_flutter
+cd C:\VSCode\eWallet_Mobile
 flutter pub get
 ```
 

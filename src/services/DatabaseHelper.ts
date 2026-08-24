@@ -82,11 +82,11 @@ export class DatabaseHelper {
     await db.runAsync('DELETE FROM tabs WHERE uuid = ?', [uuid]);
   }
 
-  static async updateTab(uuid: string, name: string, description: string): Promise<void> {
+  static async updateTab(uuid: string, name: string, description: string, isSensitive: number, tabPinHash: string | null): Promise<void> {
     const db = await this.getDatabase();
     await db.runAsync(
-      'UPDATE tabs SET name = ?, description = ? WHERE uuid = ?',
-      [name, description, uuid]
+      'UPDATE tabs SET name = ?, description = ?, isSensitive = ?, tabPinHash = ? WHERE uuid = ?',
+      [name, description, isSensitive, tabPinHash, uuid]
     );
   }
 

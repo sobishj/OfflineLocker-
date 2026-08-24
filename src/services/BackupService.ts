@@ -41,7 +41,7 @@ export class BackupService {
       const encryptedData = CryptoService.encryptText(jsonStr, exportPin.trim());
 
       const dateStr = new Date().toISOString().split('T')[0];
-      const fileName = `eWallet_Backup_${dateStr}.ewallet`;
+      const fileName = `OfflineVault_Backup_${dateStr}.ewallet`;
 
       if (Platform.OS === 'web') {
         const blob = new Blob([encryptedData], { type: 'application/octet-stream' });
@@ -59,7 +59,7 @@ export class BackupService {
         await FileSystem.writeAsStringAsync(fileUri, encryptedData, { encoding: 'utf8' });
         await Sharing.shareAsync(fileUri, {
           mimeType: 'application/octet-stream',
-          dialogTitle: 'Export eWallet Encrypted Backup',
+          dialogTitle: 'Export OfflineVault Encrypted Backup',
           UTI: 'public.data',
         });
         return true;
