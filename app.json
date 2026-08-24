@@ -4,7 +4,7 @@
     "slug": "offlinevault",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/offlinevault-icon.png",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true
@@ -12,7 +12,7 @@
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
+        "foregroundImage": "./assets/offlinevault-icon.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
@@ -20,7 +20,7 @@
       "package": "com.anonymous.offlinevault"
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/offlinevault-icon.png"
     }
   }
 }
