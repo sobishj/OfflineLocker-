@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, Alert } from 'react-native';
-import { useWalletStore } from '../store/useWalletStore';
+import { useLockerStore } from '../store/useLockerStore';
 import { Feather } from '@expo/vector-icons';
 
 export default function AuthScreen() {
-  const { currentUser, registerUser, loginUser, errorMessage, clearError, lockoutState, refreshLockoutState } = useWalletStore();
+  const { currentUser, registerUser, loginUser, errorMessage, clearError, lockoutState, refreshLockoutState } = useLockerStore();
   const [username, setUsername] = useState('');
   const [pin, setPin] = useState('');
   const [isRegisterMode, setIsRegisterMode] = useState(!currentUser);

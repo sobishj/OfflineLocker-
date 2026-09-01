@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { useWalletStore } from './src/store/useWalletStore';
+import { useLockerStore } from './src/store/useLockerStore';
 import AuthScreen from './src/screens/AuthScreen';
 import DashboardScreen from './src/screens/DashboardScreen';
 import TabDetailScreen from './src/screens/TabDetailScreen';
@@ -11,7 +11,7 @@ import { AppTheme } from './src/theme/AppTheme';
 const Stack = createNativeStackNavigator();
 
 export default function App() {
-  const { isLoading, isAuthenticated, checkExistingUsers } = useWalletStore();
+  const { isLoading, isAuthenticated, checkExistingUsers } = useLockerStore();
 
   useEffect(() => {
     checkExistingUsers();
@@ -38,7 +38,7 @@ export default function App() {
           <Stack.Screen name="Auth" component={AuthScreen} options={{ headerShown: false }} />
         ) : (
           <>
-            <Stack.Screen name="Dashboard" component={DashboardScreen} options={{ title: 'OfflineVault' }} />
+            <Stack.Screen name="Dashboard" component={DashboardScreen} options={{ title: 'OfflineLocker' }} />
             <Stack.Screen 
               name="TabDetail" 
               component={TabDetailScreen} 

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
-import { useWalletStore } from '../store/useWalletStore';
+import { useLockerStore } from '../store/useLockerStore';
 import { AppTheme } from '../theme/AppTheme';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -14,7 +14,7 @@ type DashboardProps = {
 };
 
 export default function DashboardScreen({ navigation }: DashboardProps) {
-  const { tabs, tabDocCounts, logout, createTab, updateTab, deleteTab, verifyTabPin, exportBackup, importBackup } = useWalletStore();
+  const { tabs, tabDocCounts, logout, createTab, updateTab, deleteTab, verifyTabPin, exportBackup, importBackup } = useLockerStore();
   const [modalVisible, setModalVisible] = useState(false);
   const [pinModalVisible, setPinModalVisible] = useState(false);
   
@@ -55,7 +55,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     if (Platform.OS !== 'web') return;
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.ewallet';
+    input.accept = '.olocker';
     input.style.display = 'none';
     document.body.appendChild(input);
     webFileInputRef.current = input;
@@ -66,8 +66,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       // Reset so same file can be selected again
       input.value = '';
 
-      if (!file.name.toLowerCase().endsWith('.ewallet')) {
-        Alert.alert('Invalid File', 'Please select an OfflineVault backup file (*.ewallet).');
+      if (!file.name.toLowerCase().endsWith('.olocker')) {
+        Alert.alert('Invalid File', 'Please select an OfflineLocker backup file (*.olocker).');
         return;
       }
 
@@ -194,8 +194,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         const asset = result.assets[0];
         const fileName = asset.name || '';
 
-        if (!fileName.toLowerCase().endsWith('.ewallet')) {
-          Alert.alert('Invalid File', 'Please select an OfflineVault backup file (*.ewallet).');
+        if (!fileName.toLowerCase().endsWith('.olocker')) {
+          Alert.alert('Invalid File', 'Please select an OfflineLocker backup file (*.olocker).');
           return;
         }
 
@@ -653,7 +653,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             >
               <Ionicons name="folder-open-outline" size={18} color={AppTheme.colors.primary} style={{ marginRight: 6 }} />
               <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', textAlign: 'center' }}>
-                {pickedFileName ? 'Change OfflineVault Backup File (.ewallet)' : 'Select OfflineVault Backup File (.ewallet)'}
+                {pickedFileName ? 'Change OfflineLocker Backup File (.olocker)' : 'Select OfflineLocker Backup File (.olocker)'}
               </Text>
             </TouchableOpacity>
 

@@ -1,10 +1,10 @@
 {
   "expo": {
-    "name": "OfflineVault",
-    "slug": "offlinevault",
+    "name": "OfflineLocker",
+    "slug": "offlinelocker",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/offlinevault-icon.png",
+    "icon": "./assets/offlinelocker-icon.png",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true
@@ -12,15 +12,15 @@
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/offlinevault-icon.png",
+        "foregroundImage": "./assets/offlinelocker-icon.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.anonymous.offlinevault"
+      "package": "com.anonymous.offlinelocker"
     },
     "web": {
-      "favicon": "./assets/offlinevault-icon.png"
+      "favicon": "./assets/offlinelocker-icon.png"
     }
   }
 }

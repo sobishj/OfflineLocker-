@@ -7,7 +7,7 @@ import { CryptoService } from '../services/CryptoService';
 import { BackupService } from '../services/BackupService';
 import { LockoutService, LockoutState } from '../services/LockoutService';
 
-interface WalletState {
+interface LockerState {
   currentUser: User | null;
   tabs: Tab[];
   tabDocCounts: Record<string, number>;
@@ -37,7 +37,7 @@ interface WalletState {
   clearError: () => void;
 }
 
-export const useWalletStore = create<WalletState>((set, get) => ({
+export const useLockerStore = create<LockerState>((set, get) => ({
   currentUser: null,
   tabs: [],
   tabDocCounts: {},
