@@ -1171,7 +1171,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                           }}
                           {...(Platform.OS === 'web' ? { title: 'Remove Attachment' } : {})}
                         >
-                          <Ionicons name="close-circle" size={24} color={AppTheme.colors.error} />
+                          <Ionicons name="close" size={16} color={AppTheme.colors.error} />
                         </TouchableOpacity>
                         {fileType === 'image' && safeUri && (
                           <TouchableOpacity
@@ -1326,7 +1326,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                           }}
                           {...(Platform.OS === 'web' ? { title: 'Remove Attachment' } : {})}
                         >
-                          <Ionicons name="close-circle" size={24} color={AppTheme.colors.error} />
+                          <Ionicons name="close" size={16} color={AppTheme.colors.error} />
                         </TouchableOpacity>
                         {editFileType === 'image' && safeUri && (
                           <TouchableOpacity
@@ -1566,7 +1566,7 @@ const styles = StyleSheet.create({
   thumbnailWrapper: { position: 'relative', marginRight: 16, width: 120, height: 120, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 8 },
   thumbnailImage: { width: 120, height: 120, borderRadius: AppTheme.borderRadius.m },
   thumbnailPdf: { width: 120, height: 120, backgroundColor: '#f8fafc', borderRadius: AppTheme.borderRadius.m, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#e2e8f0' },
-  removeFileBtn: { position: 'absolute', top: -10, right: -10, backgroundColor: '#ef4444', borderRadius: 12 },
+  removeFileBtn: { position: 'absolute', top: -8, right: -8, width: 26, height: 26, borderRadius: 13, backgroundColor: '#ffffff', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#fee2e2', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3, zIndex: 10, elevation: 4 },
   addMoreTile: { width: 120, height: 120, borderRadius: AppTheme.borderRadius.m, borderWidth: 1.5, borderColor: AppTheme.colors.primary, borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center', backgroundColor: AppTheme.colors.primaryLight },
 
   modalActions: { flexDirection: 'row', justifyContent: 'space-between', marginTop: AppTheme.spacing.s },

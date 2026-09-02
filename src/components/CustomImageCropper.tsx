@@ -37,9 +37,30 @@ export default function CustomImageCropper({ imageUri, onCropDone, onCancel }: P
     let isCurrent = true;
     const prepare = async () => {
       setPreparing(true);
+      if (Platform.OS === 'web') {
+        setNormalizedUri(imageUri);
+        const img = new (window as any).Image();
+        img.onload = () => {
+          if (isCurrent) {
+            setNormW(img.width || 800);
+            setNormH(img.height || 600);
+            setPreparing(false);
+          }
+        };
+        img.onerror = () => {
+          if (isCurrent) {
+            setNormW(800);
+            setNormH(600);
+            setPreparing(false);
+          }
+        };
+        img.src = imageUri;
+        return;
+      }
+
       try {
         let inputUri = imageUri;
-        if (imageUri.startsWith('data:') && Platform.OS !== 'web') {
+        if (imageUri.startsWith('data:')) {
           const parts = imageUri.split(',');
           const b64 = parts.length > 1 ? parts[1] : parts[0];
           inputUri = `${FileSystem.cacheDirectory}crop_raw_${Date.now()}.jpg`;
@@ -158,6 +179,34 @@ export default function CustomImageCropper({ imageUri, onCropDone, onCancel }: P
         const originY = Math.max(0, Math.min(normH - 1, Math.round(rawOriginY)));
         const width = Math.max(1, Math.min(normW - originX, Math.round(rawWidth)));
         const height = Math.max(1, Math.min(normH - originY, Math.round(rawHeight)));
+
+        if (Platform.OS === 'web') {
+          const img = new (window as any).Image();
+          img.onload = () => {
+            try {
+              const canvas = document.createElement('canvas');
+              canvas.width = width;
+              canvas.height = height;
+              const ctx = canvas.getContext('2d');
+              if (ctx) {
+                ctx.drawImage(img, originX, originY, width, height, 0, 0, width, height);
+                const croppedDataUri = canvas.toDataURL('image/jpeg', 0.85);
+                onCropDone(croppedDataUri);
+              } else {
+                onCropDone(imageUri);
+              }
+            } catch (e) {
+              onCropDone(imageUri);
+            }
+            setSaving(false);
+          };
+          img.onerror = () => {
+            onCropDone(imageUri);
+            setSaving(false);
+          };
+          img.src = targetUri;
+          return;
+        }
 
         const res = await ImageManipulator.manipulateAsync(
           targetUri,
