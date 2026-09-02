@@ -334,9 +334,9 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     });
   }, [navigation]);
 
-  const renderWithTooltip = (element: React.ReactElement, tooltipText: string) => {
+  const renderWithTooltip = (element: React.ReactElement, tooltipText: string, display: 'inline-flex' | 'flex' | 'block' = 'inline-flex') => {
     if (Platform.OS === 'web' && tooltipText) {
-      return React.cloneElement(element, { title: tooltipText } as any);
+      return React.createElement('div', { title: tooltipText, style: { display, cursor: 'pointer', maxWidth: '100%', alignItems: 'center' } }, element);
     }
     return element;
   };
@@ -416,7 +416,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 <Ionicons name="chevron-forward" size={20} color={AppTheme.colors.textMuted} style={{ marginLeft: 10 }} />
               </View>
             </TouchableOpacity>,
-            `Open ${item.name} Vault Category`
+            `Open ${item.name} Vault Category`,
+            'block'
           );
         }}
         ListEmptyComponent={<Text style={styles.emptyText}>No tabs available. Create one below.</Text>}
