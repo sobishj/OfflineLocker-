@@ -4,6 +4,7 @@ import {
   PanResponder,
   StyleSheet,
   TouchableOpacity,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { AppTheme } from '../theme/AppTheme';
@@ -15,6 +16,7 @@ interface DraggableFABProps {
   iconName?: keyof typeof Ionicons.glyphMap;
   initialBottom?: number;
   initialRight?: number;
+  title?: string;
 }
 
 export default function DraggableFAB({
@@ -22,6 +24,7 @@ export default function DraggableFAB({
   iconName = 'add',
   initialBottom = 30,
   initialRight = 30,
+  title = 'Add New Item',
 }: DraggableFABProps) {
   const pan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
 
@@ -70,6 +73,7 @@ export default function DraggableFAB({
         activeOpacity={0.8}
         onPress={onPress}
         style={styles.fabButton}
+        {...(Platform.OS === 'web' ? { title } : {})}
       >
         <Ionicons name={iconName} size={32} color="#ffffff" />
       </TouchableOpacity>

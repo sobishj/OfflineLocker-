@@ -834,7 +834,10 @@ export default function TabDetailScreen({ route, navigation }: any) {
                       alignItems: 'center',
                     }}
                     onPress={() => handleItemPress(item)}
-                    {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(item) } : {})}
+                    {...(Platform.OS === 'web' ? { 
+                      title: `${item.title} (${formatFileSize(item.encryptedContent)})`,
+                      onDoubleClick: () => handleViewDoc(item) 
+                    } : {})}
                   >
                     {/* Icon / Thumbnail Box */}
                     <View style={{
@@ -911,7 +914,11 @@ export default function TabDetailScreen({ route, navigation }: any) {
               <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
                 {/* PREVIEW TOP BAR */}
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-                  <Text style={{ fontSize: isMobile ? 16 : 20, fontWeight: '700', color: AppTheme.colors.text, flex: 1, marginRight: 10 }} numberOfLines={1}>
+                  <Text 
+                    style={{ fontSize: isMobile ? 16 : 20, fontWeight: '700', color: AppTheme.colors.text, flex: 1, marginRight: 10 }} 
+                    numberOfLines={1}
+                    {...(Platform.OS === 'web' ? { title: previewDoc.title } : {})}
+                  >
                     {previewDoc.title}
                   </Text>
 
@@ -930,6 +937,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                         borderRadius: 8, 
                         marginRight: 8 
                       }}
+                      {...(Platform.OS === 'web' ? { title: `Open ${previewDoc.title} in Fullscreen Viewer` } : {})}
                     >
                       <Ionicons name="eye-outline" size={16} color={AppTheme.colors.primary} style={{ marginRight: 4 }} />
                       <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Open</Text>
@@ -939,6 +947,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                       <TouchableOpacity 
                         onPress={handleDownloadSelected}
                         style={{ padding: 6, marginRight: 6 }}
+                        {...(Platform.OS === 'web' ? { title: 'Download File' } : {})}
                       >
                         <Ionicons name="download-outline" size={20} color={AppTheme.colors.primary} />
                       </TouchableOpacity>
@@ -947,6 +956,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                     <TouchableOpacity 
                       onPress={() => handleOpenEditDoc(previewDoc)}
                       style={{ padding: 6, marginRight: 6 }}
+                      {...(Platform.OS === 'web' ? { title: 'Edit Document' } : {})}
                     >
                       <Ionicons name="create-outline" size={20} color={AppTheme.colors.primary} />
                     </TouchableOpacity>
@@ -954,6 +964,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                     <TouchableOpacity 
                       onPress={() => handleViewDoc(previewDoc)}
                       style={{ padding: 6, marginRight: 6 }}
+                      {...(Platform.OS === 'web' ? { title: 'Fullscreen Viewer' } : {})}
                     >
                       <Ionicons name="expand-outline" size={20} color={AppTheme.colors.primary} />
                     </TouchableOpacity>
@@ -961,6 +972,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                     <TouchableOpacity 
                       onPress={() => handleDeleteClick(previewDoc)}
                       style={{ padding: 6 }}
+                      {...(Platform.OS === 'web' ? { title: 'Delete Document' } : {})}
                     >
                       <Ionicons name="trash-outline" size={20} color={AppTheme.colors.error} />
                     </TouchableOpacity>
@@ -1148,6 +1160,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                             setFileUris(newUris);
                             if (newUris.length === 0) setFileType(null);
                           }}
+                          {...(Platform.OS === 'web' ? { title: 'Remove Attachment' } : {})}
                         >
                           <Ionicons name="close-circle" size={24} color={AppTheme.colors.error} />
                         </TouchableOpacity>
@@ -1170,6 +1183,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                               setCropTarget('add');
                               setCropIndex(idx);
                             }}
+                            {...(Platform.OS === 'web' ? { title: 'Crop / Adjust Borders' } : {})}
                           >
                             <Ionicons name="crop" size={16} color="#fff" />
                           </TouchableOpacity>
@@ -1301,6 +1315,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                             setEditFileUris(newUris);
                             if (newUris.length === 0) setEditFileType(null);
                           }}
+                          {...(Platform.OS === 'web' ? { title: 'Remove Attachment' } : {})}
                         >
                           <Ionicons name="close-circle" size={24} color={AppTheme.colors.error} />
                         </TouchableOpacity>
@@ -1323,6 +1338,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                               setCropTarget('edit');
                               setCropIndex(idx);
                             }}
+                            {...(Platform.OS === 'web' ? { title: 'Crop / Adjust Borders' } : {})}
                           >
                             <Ionicons name="crop" size={16} color="#fff" />
                           </TouchableOpacity>

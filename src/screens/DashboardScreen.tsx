@@ -317,11 +317,16 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               borderColor: AppTheme.colors.primaryBorder, 
               marginRight: 12 
             }}
+            {...(Platform.OS === 'web' ? { title: 'Backup & Restore Vault Data' } : {})}
           >
             <Ionicons name="cloud-outline" size={18} color={AppTheme.colors.primary} style={{ marginRight: 6 }} />
             <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 14 }}>Backup</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={handleSignOut} style={{ padding: 4, marginRight: 6 }}>
+          <TouchableOpacity 
+            onPress={handleSignOut} 
+            style={{ padding: 4, marginRight: 6 }}
+            {...(Platform.OS === 'web' ? { title: 'Sign Out' } : {})}
+          >
             <Ionicons name="log-out-outline" size={22} color={AppTheme.colors.primary} />
           </TouchableOpacity>
         </View>
@@ -344,7 +349,11 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         renderItem={({ item }) => {
           const docCount = tabDocCounts[item.uuid] || 0;
           return (
-            <TouchableOpacity style={styles.tabCard} onPress={() => handleTabPress(item)}>
+            <TouchableOpacity 
+              style={styles.tabCard} 
+              onPress={() => handleTabPress(item)}
+              {...(Platform.OS === 'web' ? { title: `Open ${item.name} Vault Category` } : {})}
+            >
               {/* Category Folder Icon Badge */}
               <View style={styles.folderIconContainer}>
                 <Ionicons 
@@ -378,8 +387,9 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                     handleOpenEditTab(item);
                   }} 
                   style={styles.editBtn}
+                  {...(Platform.OS === 'web' ? { title: `Edit ${item.name}` } : {})}
                 >
-                  <Ionicons name="pencil" size={18} color={AppTheme.colors.primary} />
+                  <Ionicons name="create-outline" size={18} color={AppTheme.colors.primary} />
                 </TouchableOpacity>
 
                 <TouchableOpacity 
@@ -388,8 +398,9 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                     handleConfirmDeleteTab(item);
                   }} 
                   style={styles.deleteBtn}
+                  {...(Platform.OS === 'web' ? { title: `Delete ${item.name}` } : {})}
                 >
-                  <Ionicons name="trash" size={18} color={AppTheme.colors.error} />
+                  <Ionicons name="trash-outline" size={18} color={AppTheme.colors.error} />
                 </TouchableOpacity>
 
                 <Ionicons name="chevron-forward" size={20} color={AppTheme.colors.textMuted} style={{ marginLeft: 10 }} />
