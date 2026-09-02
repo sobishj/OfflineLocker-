@@ -1229,18 +1229,28 @@ export default function TabDetailScreen({ route, navigation }: any) {
               </View>
             )}
 
-            <View style={styles.modalActions}>
-              <TouchableOpacity onPress={() => { setModalVisible(false); setFileUris([]); setFileType(null); setDocTitle(''); setDocContent(''); }} style={[styles.button, { backgroundColor: AppTheme.colors.border }]} disabled={isEncrypting}>
-                <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={handleAddDocument} style={styles.button} disabled={isEncrypting}>
-                {isEncrypting ? (
-                  <ActivityIndicator color="#fff" size="small" />
-                ) : (
-                  <Text style={styles.buttonText}>Encrypt & Save</Text>
-                )}
-              </TouchableOpacity>
-            </View>
+            {(() => {
+              const isAddSaveEnabled = docTitle.trim().length > 0 && (docContent.trim().length > 0 || fileUris.length > 0) && !isEncrypting;
+              return (
+                <View style={styles.modalActions}>
+                  <TouchableOpacity onPress={() => { setModalVisible(false); setFileUris([]); setFileType(null); setDocTitle(''); setDocContent(''); }} style={[styles.button, { backgroundColor: AppTheme.colors.border }]} disabled={isEncrypting}>
+                    <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    onPress={handleAddDocument} 
+                    style={[styles.button, { opacity: isAddSaveEnabled ? 1 : 0.4 }]} 
+                    disabled={!isAddSaveEnabled}
+                    {...(Platform.OS === 'web' ? { title: isAddSaveEnabled ? 'Encrypt & Save Document' : 'Please enter a title and add notes or attach a file' } : {})}
+                  >
+                    {isEncrypting ? (
+                      <ActivityIndicator color="#fff" size="small" />
+                    ) : (
+                      <Text style={styles.buttonText}>Encrypt & Save</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              );
+            })()}
           </View>
 
           {cropIndex !== null && cropIndex >= 0 && (
@@ -1385,29 +1395,39 @@ export default function TabDetailScreen({ route, navigation }: any) {
               </View>
             )}
 
-            <View style={styles.modalActions}>
-              <TouchableOpacity
-                onPress={() => {
-                  setEditModalVisible(false);
-                  setEditingDoc(null);
-                  setEditDocTitle('');
-                  setEditDocContent('');
-                  setEditFileUris([]);
-                  setEditFileType(null);
-                }}
-                style={[styles.button, { backgroundColor: AppTheme.colors.border }]}
-                disabled={isUpdating}
-              >
-                <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={handleSaveEditDoc} style={styles.button} disabled={isUpdating}>
-                {isUpdating ? (
-                  <ActivityIndicator color="#fff" size="small" />
-                ) : (
-                  <Text style={styles.buttonText}>Save Changes</Text>
-                )}
-              </TouchableOpacity>
-            </View>
+            {(() => {
+              const isEditSaveEnabled = editDocTitle.trim().length > 0 && (editDocContent.trim().length > 0 || editFileUris.length > 0) && !isUpdating;
+              return (
+                <View style={styles.modalActions}>
+                  <TouchableOpacity
+                    onPress={() => {
+                      setEditModalVisible(false);
+                      setEditingDoc(null);
+                      setEditDocTitle('');
+                      setEditDocContent('');
+                      setEditFileUris([]);
+                      setEditFileType(null);
+                    }}
+                    style={[styles.button, { backgroundColor: AppTheme.colors.border }]}
+                    disabled={isUpdating}
+                  >
+                    <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    onPress={handleSaveEditDoc} 
+                    style={[styles.button, { opacity: isEditSaveEnabled ? 1 : 0.4 }]} 
+                    disabled={!isEditSaveEnabled}
+                    {...(Platform.OS === 'web' ? { title: isEditSaveEnabled ? 'Save Changes' : 'Please enter a title and add notes or attach a file' } : {})}
+                  >
+                    {isUpdating ? (
+                      <ActivityIndicator color="#fff" size="small" />
+                    ) : (
+                      <Text style={styles.buttonText}>Save Changes</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              );
+            })()}
           </View>
         </KeyboardAvoidingView>
       </Modal>
