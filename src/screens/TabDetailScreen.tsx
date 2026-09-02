@@ -134,18 +134,14 @@ export default function TabDetailScreen({ route, navigation }: any) {
           const newIndex = editFileUris.length;
           setEditFileUris(prev => [...prev, newUri]);
           setEditFileType('image');
-          if ((Platform.OS as string) !== 'web') {
-            setCropTarget('edit');
-            setCropIndex(newIndex);
-          }
+          setCropTarget('edit');
+          setCropIndex(newIndex);
         } else {
           const newIndex = fileUris.length;
           setFileUris(prev => [...prev, newUri]);
           setFileType('image');
-          if ((Platform.OS as string) !== 'web') {
-            setCropTarget('add');
-            setCropIndex(newIndex);
-          }
+          setCropTarget('add');
+          setCropIndex(newIndex);
         }
       }
     } catch (e) {
@@ -162,19 +158,15 @@ export default function TabDetailScreen({ route, navigation }: any) {
       setEditFileUris(prev => [...prev, optimized]);
       setEditFileType('image');
       setWebCameraVisible(false);
-      if (Platform.OS !== 'web') {
-        setCropTarget('edit');
-        setCropIndex(newIndex);
-      }
+      setCropTarget('edit');
+      setCropIndex(newIndex);
     } else {
       const newIndex = fileUris.length;
       setFileUris(prev => [...prev, optimized]);
       setFileType('image');
       setWebCameraVisible(false);
-      if (Platform.OS !== 'web') {
-        setCropTarget('add');
-        setCropIndex(newIndex);
-      }
+      setCropTarget('add');
+      setCropIndex(newIndex);
     }
   };
 
@@ -195,18 +187,14 @@ export default function TabDetailScreen({ route, navigation }: any) {
           const newIndex = editFileUris.length;
           setEditFileUris(prev => [...prev, newUri]);
           setEditFileType('image');
-          if (Platform.OS !== 'web') {
-            setCropTarget('edit');
-            setCropIndex(newIndex);
-          }
+          setCropTarget('edit');
+          setCropIndex(newIndex);
         } else {
           const newIndex = fileUris.length;
           setFileUris(prev => [...prev, newUri]);
           setFileType('image');
-          if (Platform.OS !== 'web') {
-            setCropTarget('add');
-            setCropIndex(newIndex);
-          }
+          setCropTarget('add');
+          setCropIndex(newIndex);
         }
       }
     } catch (e) {
@@ -1156,7 +1144,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                         >
                           <Ionicons name="close-circle" size={24} color={AppTheme.colors.error} />
                         </TouchableOpacity>
-                        {fileType === 'image' && safeUri && Platform.OS !== 'web' && (
+                        {fileType === 'image' && safeUri && (
                           <TouchableOpacity
                             style={{
                               position: 'absolute',
@@ -1309,7 +1297,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                         >
                           <Ionicons name="close-circle" size={24} color={AppTheme.colors.error} />
                         </TouchableOpacity>
-                        {editFileType === 'image' && safeUri && Platform.OS !== 'web' && (
+                        {editFileType === 'image' && safeUri && (
                           <TouchableOpacity
                             style={{
                               position: 'absolute',

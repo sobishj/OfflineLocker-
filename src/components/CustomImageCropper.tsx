@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { View, Image, StyleSheet, PanResponder, TouchableOpacity, Text, ActivityIndicator, GestureResponderEvent, PanResponderGestureState } from 'react-native';
+import { View, Image, StyleSheet, PanResponder, TouchableOpacity, Text, ActivityIndicator, GestureResponderEvent, PanResponderGestureState, Platform } from 'react-native';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system/legacy';
 import { AppTheme } from '../theme/AppTheme';
@@ -39,7 +39,7 @@ export default function CustomImageCropper({ imageUri, onCropDone, onCancel }: P
       setPreparing(true);
       try {
         let inputUri = imageUri;
-        if (imageUri.startsWith('data:')) {
+        if (imageUri.startsWith('data:') && Platform.OS !== 'web') {
           const parts = imageUri.split(',');
           const b64 = parts.length > 1 ? parts[1] : parts[0];
           inputUri = `${FileSystem.cacheDirectory}crop_raw_${Date.now()}.jpg`;
