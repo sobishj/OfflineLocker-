@@ -325,7 +325,6 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             }}
             {...(Platform.OS === 'web' ? { title: 'Backup & Restore Vault Data' } : {})}
           >
-            <Ionicons name="cloud-outline" size={18} color={AppTheme.colors.primary} style={{ marginRight: 6 }} />
             <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 14 }}>Backup</Text>
           </TouchableOpacity>
           <TouchableOpacity 

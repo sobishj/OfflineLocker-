@@ -781,7 +781,6 @@ export default function TabDetailScreen({ route, navigation }: any) {
               marginRight: 12 
             }}
           >
-            <Ionicons name="cloud-outline" size={18} color={AppTheme.colors.primary} style={{ marginRight: 6 }} />
             <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Backup</Text>
           </TouchableOpacity>
           <TouchableOpacity onPress={() => logout()} style={{ padding: 4 }}>
@@ -845,7 +844,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
           {/* LEFT PANE: List of Documents ("All Files") */}
           <View style={{
-            width: isMobile ? 165 : 360,
+            width: isMobile ? '45%' : '40%',
             borderRightWidth: 1,
             borderColor: '#e2e8f0',
             backgroundColor: '#ffffff',
