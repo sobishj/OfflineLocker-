@@ -657,6 +657,13 @@ export default function TabDetailScreen({ route, navigation }: any) {
     return (totalBytes / (1024 * 1024)).toFixed(1);
   };
 
+  const renderWithTooltip = (element: React.ReactElement, tooltipText: string, display: 'inline-flex' | 'flex' | 'block' = 'inline-flex') => {
+    if (Platform.OS === 'web' && tooltipText) {
+      return React.createElement('div', { title: tooltipText, style: { display, cursor: 'pointer', maxWidth: '100%', alignItems: 'center' } }, element);
+    }
+    return element;
+  };
+
   const handleItemPress = (item: any) => {
     const now = Date.now();
     if (lastTapRef.current && lastTapRef.current.id === item.id && (now - lastTapRef.current.time) < 350) {
@@ -821,7 +828,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                 const thumbUri = getThumbnailForItem(item);
                 const formattedDate = new Date(item.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 
-                return (
+                return renderWithTooltip(
                   <TouchableOpacity
                     style={{
                       backgroundColor: isSelected ? AppTheme.colors.primaryLight : '#ffffff',
@@ -834,10 +841,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                       alignItems: 'center',
                     }}
                     onPress={() => handleItemPress(item)}
-                    {...(Platform.OS === 'web' ? { 
-                      title: `${item.title} (${formatFileSize(item.encryptedContent)})`,
-                      onDoubleClick: () => handleViewDoc(item) 
-                    } : {})}
+                    {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(item) } : {})}
                   >
                     {/* Icon / Thumbnail Box */}
                     <View style={{
@@ -889,7 +893,9 @@ export default function TabDetailScreen({ route, navigation }: any) {
                         marginLeft: 4,
                       }} />
                     )}
-                  </TouchableOpacity>
+                  </TouchableOpacity>,
+                  `${item.title} (${formatFileSize(item.encryptedContent)})`,
+                  'flex'
                 );
               }}
               ListEmptyComponent={
@@ -914,68 +920,71 @@ export default function TabDetailScreen({ route, navigation }: any) {
               <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
                 {/* PREVIEW TOP BAR */}
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-                  <Text 
-                    style={{ fontSize: isMobile ? 16 : 20, fontWeight: '700', color: AppTheme.colors.text, flex: 1, marginRight: 10 }} 
-                    numberOfLines={1}
-                    {...(Platform.OS === 'web' ? { title: previewDoc.title } : {})}
-                  >
-                    {previewDoc.title}
-                  </Text>
+                  {renderWithTooltip(
+                    <Text 
+                      style={{ fontSize: isMobile ? 16 : 20, fontWeight: '700', color: AppTheme.colors.text, flex: 1, marginRight: 10 }} 
+                      numberOfLines={1}
+                    >
+                      {previewDoc.title}
+                    </Text>,
+                    previewDoc.title,
+                    'flex'
+                  )}
 
                   <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                     {/* Open Button for ALL files */}
-                    <TouchableOpacity 
-                      onPress={() => handleViewDoc(previewDoc)}
-                      style={{ 
-                        flexDirection: 'row', 
-                        alignItems: 'center', 
-                        backgroundColor: AppTheme.colors.primaryLight, 
-                        borderWidth: 1, 
-                        borderColor: AppTheme.colors.primaryBorder, 
-                        paddingHorizontal: 12, 
-                        paddingVertical: 6, 
-                        borderRadius: 8, 
-                        marginRight: 8 
-                      }}
-                      {...(Platform.OS === 'web' ? { title: `Open ${previewDoc.title} in Fullscreen Viewer` } : {})}
-                    >
-                      <Ionicons name="eye-outline" size={16} color={AppTheme.colors.primary} style={{ marginRight: 4 }} />
-                      <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Open</Text>
-                    </TouchableOpacity>
-
-                    {(previewDoc.type === 'image' || previewDoc.type === 'pdf') && (
+                    {renderWithTooltip(
                       <TouchableOpacity 
-                        onPress={handleDownloadSelected}
-                        style={{ padding: 6, marginRight: 6 }}
-                        {...(Platform.OS === 'web' ? { title: 'Download File' } : {})}
+                        onPress={() => handleViewDoc(previewDoc)}
+                        style={{ 
+                          flexDirection: 'row', 
+                          alignItems: 'center', 
+                          backgroundColor: AppTheme.colors.primaryLight, 
+                          borderWidth: 1, 
+                          borderColor: AppTheme.colors.primaryBorder, 
+                          paddingHorizontal: 12, 
+                          paddingVertical: 6, 
+                          borderRadius: 8, 
+                          marginRight: 8 
+                        }}
                       >
-                        <Ionicons name="download-outline" size={20} color={AppTheme.colors.primary} />
-                      </TouchableOpacity>
+                        <Ionicons name="eye-outline" size={16} color={AppTheme.colors.primary} style={{ marginRight: 4 }} />
+                        <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Open</Text>
+                      </TouchableOpacity>,
+                      `Open ${previewDoc.title} in Fullscreen Viewer`
                     )}
 
-                    <TouchableOpacity 
-                      onPress={() => handleOpenEditDoc(previewDoc)}
-                      style={{ padding: 6, marginRight: 6 }}
-                      {...(Platform.OS === 'web' ? { title: 'Edit Document' } : {})}
-                    >
-                      <Ionicons name="create-outline" size={20} color={AppTheme.colors.primary} />
-                    </TouchableOpacity>
+                    {(previewDoc.type === 'image' || previewDoc.type === 'pdf') && (
+                      renderWithTooltip(
+                        <TouchableOpacity 
+                          onPress={handleDownloadSelected}
+                          style={{ padding: 6, marginRight: 6 }}
+                        >
+                          <Ionicons name="download-outline" size={20} color={AppTheme.colors.primary} />
+                        </TouchableOpacity>,
+                        'Download File'
+                      )
+                    )}
 
-                    <TouchableOpacity 
-                      onPress={() => handleViewDoc(previewDoc)}
-                      style={{ padding: 6, marginRight: 6 }}
-                      {...(Platform.OS === 'web' ? { title: 'Fullscreen Viewer' } : {})}
-                    >
-                      <Ionicons name="expand-outline" size={20} color={AppTheme.colors.primary} />
-                    </TouchableOpacity>
+                    {renderWithTooltip(
+                      <TouchableOpacity 
+                        onPress={() => handleOpenEditDoc(previewDoc)}
+                        style={{ padding: 6, marginRight: 6 }}
+                      >
+                        <Ionicons name="create-outline" size={20} color={AppTheme.colors.primary} />
+                      </TouchableOpacity>,
+                      'Edit Document'
+                    )}
 
-                    <TouchableOpacity 
-                      onPress={() => handleDeleteClick(previewDoc)}
-                      style={{ padding: 6 }}
-                      {...(Platform.OS === 'web' ? { title: 'Delete Document' } : {})}
-                    >
-                      <Ionicons name="trash-outline" size={20} color={AppTheme.colors.error} />
-                    </TouchableOpacity>
+                    {renderWithTooltip(
+                      <TouchableOpacity 
+                        onPress={() => handleDeleteClick(previewDoc)}
+                        style={{ padding: 6 }}
+                      >
+                        <Ionicons name="trash-outline" size={20} color={AppTheme.colors.error} />
+                      </TouchableOpacity>,
+                      'Delete Document'
+                    )}
                   </View>
                 </View>
 

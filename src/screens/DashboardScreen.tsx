@@ -334,6 +334,13 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     });
   }, [navigation]);
 
+  const renderWithTooltip = (element: React.ReactElement, tooltipText: string, display: 'inline-flex' | 'flex' | 'block' = 'inline-flex') => {
+    if (Platform.OS === 'web' && tooltipText) {
+      return React.createElement('div', { title: tooltipText, style: { display, cursor: 'pointer', maxWidth: '100%', alignItems: 'center' } }, element);
+    }
+    return element;
+  };
+
   return (
     <View style={styles.container}>
       <FlatList
@@ -348,11 +355,10 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         }
         renderItem={({ item }) => {
           const docCount = tabDocCounts[item.uuid] || 0;
-          return (
+          return renderWithTooltip(
             <TouchableOpacity 
               style={styles.tabCard} 
               onPress={() => handleTabPress(item)}
-              {...(Platform.OS === 'web' ? { title: `Open ${item.name} Vault Category` } : {})}
             >
               {/* Category Folder Icon Badge */}
               <View style={styles.folderIconContainer}>
@@ -381,31 +387,37 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
               {/* Action Buttons & Chevron */}
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <TouchableOpacity 
-                  onPress={(e) => {
-                    if (e && e.stopPropagation) e.stopPropagation();
-                    handleOpenEditTab(item);
-                  }} 
-                  style={styles.editBtn}
-                  {...(Platform.OS === 'web' ? { title: `Edit ${item.name}` } : {})}
-                >
-                  <Ionicons name="create-outline" size={18} color={AppTheme.colors.primary} />
-                </TouchableOpacity>
+                {renderWithTooltip(
+                  <TouchableOpacity 
+                    onPress={(e) => {
+                      if (e && e.stopPropagation) e.stopPropagation();
+                      handleOpenEditTab(item);
+                    }} 
+                    style={styles.editBtn}
+                  >
+                    <Ionicons name="create-outline" size={18} color={AppTheme.colors.primary} />
+                  </TouchableOpacity>,
+                  `Edit ${item.name}`
+                )}
 
-                <TouchableOpacity 
-                  onPress={(e) => {
-                    if (e && e.stopPropagation) e.stopPropagation();
-                    handleConfirmDeleteTab(item);
-                  }} 
-                  style={styles.deleteBtn}
-                  {...(Platform.OS === 'web' ? { title: `Delete ${item.name}` } : {})}
-                >
-                  <Ionicons name="trash-outline" size={18} color={AppTheme.colors.error} />
-                </TouchableOpacity>
+                {renderWithTooltip(
+                  <TouchableOpacity 
+                    onPress={(e) => {
+                      if (e && e.stopPropagation) e.stopPropagation();
+                      handleConfirmDeleteTab(item);
+                    }} 
+                    style={styles.deleteBtn}
+                  >
+                    <Ionicons name="trash-outline" size={18} color={AppTheme.colors.error} />
+                  </TouchableOpacity>,
+                  `Delete ${item.name}`
+                )}
 
                 <Ionicons name="chevron-forward" size={20} color={AppTheme.colors.textMuted} style={{ marginLeft: 10 }} />
               </View>
-            </TouchableOpacity>
+            </TouchableOpacity>,
+            `Open ${item.name} Vault Category`,
+            'block'
           );
         }}
         ListEmptyComponent={<Text style={styles.emptyText}>No tabs available. Create one below.</Text>}
