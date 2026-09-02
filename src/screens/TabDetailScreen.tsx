@@ -626,24 +626,28 @@ export default function TabDetailScreen({ route, navigation }: any) {
   const getPdfBlobUrl = (uri: string): string => {
     if (!uri) return '';
     if (uri.startsWith('blob:')) return uri;
-    if (uri.startsWith('data:')) {
-      try {
+    try {
+      let base64 = uri;
+      let mime = 'application/pdf';
+      if (uri.startsWith('data:')) {
         const parts = uri.split(',');
         const header = parts[0];
-        const base64 = parts[1] || parts[0];
+        base64 = parts[1] || parts[0];
         const mimeMatch = header.match(/data:([^;]+)/);
-        const mime = mimeMatch ? mimeMatch[1] : 'application/pdf';
-        const binary = atob(base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) {
-          bytes[i] = binary.charCodeAt(i);
-        }
-        return URL.createObjectURL(new Blob([bytes], { type: mime }));
-      } catch (e) {
-        return uri;
+        if (mimeMatch) mime = mimeMatch[1];
       }
+      const cleanBase64 = base64.replace(/[\s\r\n]/g, '');
+      const binary = atob(cleanBase64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], { type: mime });
+      return URL.createObjectURL(blob);
+    } catch (e) {
+      console.error('getPdfBlobUrl error:', e);
+      return uri;
     }
-    return uri;
   };
 
   const formatFileSize = (encryptedContent: string): string => {
@@ -990,16 +994,36 @@ export default function TabDetailScreen({ route, navigation }: any) {
                       {previewDataArray.map((uri, idx) => {
                         const blobUrl = getPdfBlobUrl(uri);
                         return (
-                          <View key={idx} style={{ height: isMobile ? 300 : 480, marginBottom: 12, borderRadius: 12, overflow: 'hidden' }}>
-                            {React.createElement('object', {
-                              data: blobUrl,
-                              type: 'application/pdf',
-                              style: { width: '100%', height: '100%', borderRadius: 12, border: 'none' },
-                            }, React.createElement('iframe', {
-                              src: blobUrl,
-                              style: { width: '100%', height: '100%', borderRadius: 12, border: 'none' },
-                              title: `${previewDoc.title}_${idx}`,
-                            }))}
+                          <View key={idx} style={{ marginBottom: 16, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#e2e8f0' }}>
+                            <View style={{
+                              flexDirection: 'row',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              backgroundColor: '#eef2ff',
+                              paddingHorizontal: 12,
+                              paddingVertical: 8,
+                              borderBottomWidth: 1,
+                              borderBottomColor: '#dbeafe'
+                            }}>
+                              <Text style={{ fontSize: 13, fontWeight: '600', color: AppTheme.colors.primary }}>
+                                PDF Document ({idx + 1}/{previewDataArray.length})
+                              </Text>
+                              <TouchableOpacity
+                                onPress={() => window.open(blobUrl, '_blank')}
+                                style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: AppTheme.colors.primary, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6 }}
+                              >
+                                <Ionicons name="open-outline" size={14} color="#ffffff" style={{ marginRight: 4 }} />
+                                <Text style={{ color: '#ffffff', fontSize: 12, fontWeight: '600' }}>Open in New Tab</Text>
+                              </TouchableOpacity>
+                            </View>
+
+                            <View style={{ height: isMobile ? 320 : 500, backgroundColor: '#ffffff' }}>
+                              {React.createElement('embed', {
+                                src: blobUrl,
+                                type: 'application/pdf',
+                                style: { width: '100%', height: '100%', border: 'none' },
+                              })}
+                            </View>
                           </View>
                         );
                       })}
