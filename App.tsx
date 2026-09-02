@@ -31,7 +31,8 @@ export default function App() {
       <Stack.Navigator screenOptions={{ 
         headerStyle: { backgroundColor: AppTheme.colors.surface },
         headerTintColor: AppTheme.colors.text,
-        headerBackTitle: '',
+        headerTitleStyle: { fontWeight: '700', fontSize: 18, color: AppTheme.colors.text },
+        headerShadowVisible: false,
         contentStyle: { backgroundColor: AppTheme.colors.background }
       }}>
         {!isAuthenticated ? (
@@ -42,10 +43,7 @@ export default function App() {
             <Stack.Screen 
               name="TabDetail" 
               component={TabDetailScreen} 
-              options={({ route }: any) => ({ 
-                title: route.params.tabName,
-                headerBackTitle: ''
-              })} 
+              options={{ headerShown: false }} 
             />
           </>
         )}

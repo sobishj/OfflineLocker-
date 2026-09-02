@@ -286,16 +286,42 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
   React.useLayoutEffect(() => {
     navigation.setOptions({
+      headerTitle: () => (
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <View style={{
+            width: 32,
+            height: 32,
+            borderRadius: 10,
+            backgroundColor: AppTheme.colors.primary,
+            justifyContent: 'center',
+            alignItems: 'center',
+            marginRight: 10,
+          }}>
+            <Ionicons name="lock-closed" size={18} color="#ffffff" />
+          </View>
+          <Text style={{ fontSize: 20, fontWeight: '700', color: AppTheme.colors.text }}>OfflineLocker</Text>
+        </View>
+      ),
       headerRight: () => (
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           <TouchableOpacity 
             onPress={() => setBackupModalVisible(true)} 
-            style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0, 122, 255, 0.1)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, marginRight: 14 }}
+            style={{ 
+              flexDirection: 'row', 
+              alignItems: 'center', 
+              backgroundColor: AppTheme.colors.primaryLight, 
+              paddingHorizontal: 14, 
+              paddingVertical: 7, 
+              borderRadius: 20, 
+              borderWidth: 1, 
+              borderColor: AppTheme.colors.primaryBorder, 
+              marginRight: 12 
+            }}
           >
-            <Ionicons name="cloud-outline" size={18} color={AppTheme.colors.primary} style={{ marginRight: 4 }} />
-            <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Backup</Text>
+            <Ionicons name="cloud-outline" size={18} color={AppTheme.colors.primary} style={{ marginRight: 6 }} />
+            <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 14 }}>Backup</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={handleSignOut} style={{ marginRight: 10 }}>
+          <TouchableOpacity onPress={handleSignOut} style={{ padding: 4, marginRight: 6 }}>
             <Ionicons name="log-out-outline" size={22} color={AppTheme.colors.primary} />
           </TouchableOpacity>
         </View>
@@ -308,7 +334,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       <FlatList
         data={tabs}
         keyExtractor={item => item.uuid}
-        contentContainerStyle={{ padding: AppTheme.spacing.m }}
+        contentContainerStyle={{ padding: AppTheme.spacing.m, paddingBottom: 100 }}
         ListHeaderComponent={
           <View style={styles.sectionHeaderContainer}>
             <Text style={styles.sectionTitle}>Your document categories</Text>
@@ -322,8 +348,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               {/* Category Folder Icon Badge */}
               <View style={styles.folderIconContainer}>
                 <Ionicons 
-                  name="folder-open" 
-                  size={26} 
+                  name="folder" 
+                  size={28} 
                   color={AppTheme.colors.primary} 
                 />
                 {item.isSensitive === 1 && (
@@ -351,10 +377,9 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                     if (e && e.stopPropagation) e.stopPropagation();
                     handleOpenEditTab(item);
                   }} 
-                  style={styles.cardActionBtn}
+                  style={styles.editBtn}
                 >
-                  <Ionicons name="pencil" size={14} color={AppTheme.colors.primary} />
-                  <Text style={styles.cardActionText}>Edit</Text>
+                  <Ionicons name="pencil" size={18} color={AppTheme.colors.primary} />
                 </TouchableOpacity>
 
                 <TouchableOpacity 
@@ -362,12 +387,12 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                     if (e && e.stopPropagation) e.stopPropagation();
                     handleConfirmDeleteTab(item);
                   }} 
-                  style={[styles.cardActionBtn, { marginLeft: 6, backgroundColor: 'rgba(239, 68, 68, 0.08)' }]}
+                  style={styles.deleteBtn}
                 >
-                  <Ionicons name="trash" size={14} color={AppTheme.colors.error} />
+                  <Ionicons name="trash" size={18} color={AppTheme.colors.error} />
                 </TouchableOpacity>
 
-                <Ionicons name="chevron-forward" size={18} color={AppTheme.colors.textSecondary} style={{ marginLeft: 6 }} />
+                <Ionicons name="chevron-forward" size={20} color={AppTheme.colors.textMuted} style={{ marginLeft: 10 }} />
               </View>
             </TouchableOpacity>
           );
@@ -697,27 +722,42 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: AppTheme.colors.background },
-  tabCard: { backgroundColor: AppTheme.colors.surface, padding: AppTheme.spacing.m, borderRadius: AppTheme.borderRadius.m, marginBottom: AppTheme.spacing.m, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 1, borderColor: AppTheme.colors.border, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 2 },
-  tabName: { color: AppTheme.colors.text, fontSize: 18, fontWeight: 'bold' },
+  tabCard: { 
+    backgroundColor: AppTheme.colors.surface, 
+    padding: AppTheme.spacing.l, 
+    borderRadius: AppTheme.borderRadius.l, 
+    marginBottom: AppTheme.spacing.m, 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center', 
+    borderWidth: 1, 
+    borderColor: AppTheme.colors.cardBorder, 
+    shadowColor: '#000', 
+    shadowOffset: { width: 0, height: 4 }, 
+    shadowOpacity: 0.03, 
+    shadowRadius: 12, 
+    elevation: 2 
+  },
+  tabName: { color: AppTheme.colors.text, fontSize: 19, fontWeight: '700' },
   tabDesc: { color: AppTheme.colors.textSecondary, fontSize: 14, marginTop: 4 },
-  emptyText: { color: AppTheme.colors.textSecondary, textAlign: 'center', marginTop: 40 },
-  fab: { position: 'absolute', bottom: 30, right: 30, width: 60, height: 60, borderRadius: 30, backgroundColor: AppTheme.colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 5, shadowColor: AppTheme.colors.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: AppTheme.spacing.l },
-  modalContent: { backgroundColor: 'rgba(255, 255, 255, 0.8)', padding: AppTheme.spacing.l, borderRadius: AppTheme.borderRadius.l, borderWidth: 1, borderColor: '#fff', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.1, shadowRadius: 20, elevation: 5 },
+  emptyText: { color: AppTheme.colors.textSecondary, textAlign: 'center', marginTop: 40, fontSize: 15 },
+  fab: { position: 'absolute', bottom: 30, right: 30, width: 60, height: 60, borderRadius: 30, backgroundColor: AppTheme.colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 6, shadowColor: AppTheme.colors.primary, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.35, shadowRadius: 10 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.4)', justifyContent: 'center', padding: AppTheme.spacing.l },
+  modalContent: { backgroundColor: '#ffffff', padding: AppTheme.spacing.l, borderRadius: AppTheme.borderRadius.xl, borderWidth: 1, borderColor: '#f1f5f9', shadowColor: '#000', shadowOffset: { width: 0, height: 12 }, shadowOpacity: 0.08, shadowRadius: 24, elevation: 8 },
   modalTitle: { color: AppTheme.colors.text, fontSize: 20, fontWeight: 'bold', marginBottom: AppTheme.spacing.m },
-  input: { backgroundColor: 'rgba(255, 255, 255, 0.6)', borderWidth: 1, borderColor: '#fff', color: AppTheme.colors.text, padding: 12, borderRadius: AppTheme.borderRadius.s, marginBottom: AppTheme.spacing.m, fontSize: 15, letterSpacing: 0 },
+  input: { backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0', color: AppTheme.colors.text, padding: 14, borderRadius: AppTheme.borderRadius.s, marginBottom: AppTheme.spacing.m, fontSize: 15, letterSpacing: 0 },
   checkboxRow: { flexDirection: 'row', alignItems: 'center', marginBottom: AppTheme.spacing.m },
-  checkboxText: { color: AppTheme.colors.text, marginLeft: 8 },
+  checkboxText: { color: AppTheme.colors.text, marginLeft: 8, fontSize: 15, fontWeight: '500' },
   modalActions: { flexDirection: 'row', justifyContent: 'space-between', marginTop: AppTheme.spacing.s },
-  button: { flex: 1, backgroundColor: AppTheme.colors.primary, padding: 12, borderRadius: AppTheme.borderRadius.s, alignItems: 'center', marginHorizontal: 4 },
-  buttonText: { color: '#fff', fontWeight: 'bold' },
-  cardActionBtn: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6, paddingHorizontal: 10, backgroundColor: 'rgba(6, 182, 212, 0.08)', borderRadius: 6 },
-  cardActionText: { color: AppTheme.colors.primary, fontSize: 12, marginLeft: 6, fontWeight: '600' },
-  sectionHeaderContainer: { marginBottom: AppTheme.spacing.m, paddingHorizontal: 4 },
-  sectionTitle: { color: AppTheme.colors.text, fontSize: 16, fontWeight: 'bold' },
-  sectionSubtitle: { color: AppTheme.colors.textSecondary, fontSize: 13, marginTop: 2 },
-  folderIconContainer: { width: 48, height: 48, borderRadius: 14, backgroundColor: 'rgba(6, 182, 212, 0.12)', justifyContent: 'center', alignItems: 'center', marginRight: 12, position: 'relative' },
-  lockBadge: { position: 'absolute', bottom: -2, right: -2, backgroundColor: AppTheme.colors.sensitive, borderRadius: 8, padding: 3 },
-  countBadge: { alignSelf: 'flex-start', backgroundColor: 'rgba(6, 182, 212, 0.12)', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 12, marginTop: 6 },
-  countBadgeText: { color: AppTheme.colors.primary, fontSize: 11, fontWeight: '700' }
+  button: { flex: 1, backgroundColor: AppTheme.colors.primary, paddingVertical: 14, borderRadius: AppTheme.borderRadius.s, alignItems: 'center', marginHorizontal: 4 },
+  buttonText: { color: '#fff', fontWeight: 'bold', fontSize: 15 },
+  editBtn: { width: 40, height: 40, borderRadius: 12, backgroundColor: AppTheme.colors.primaryLight, justifyContent: 'center', alignItems: 'center' },
+  deleteBtn: { width: 40, height: 40, borderRadius: 12, backgroundColor: AppTheme.colors.errorLight, justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
+  sectionHeaderContainer: { marginTop: 8, marginBottom: AppTheme.spacing.l, paddingHorizontal: 4 },
+  sectionTitle: { color: AppTheme.colors.text, fontSize: 24, fontWeight: 'bold', letterSpacing: -0.3 },
+  sectionSubtitle: { color: AppTheme.colors.textSecondary, fontSize: 15, marginTop: 4 },
+  folderIconContainer: { width: 56, height: 56, borderRadius: 16, backgroundColor: AppTheme.colors.iconFolderBg, justifyContent: 'center', alignItems: 'center', marginRight: 16, position: 'relative' },
+  lockBadge: { position: 'absolute', bottom: -2, right: -2, backgroundColor: AppTheme.colors.sensitive, borderRadius: 10, padding: 3, borderWidth: 1.5, borderColor: '#ffffff' },
+  countBadge: { alignSelf: 'flex-start', backgroundColor: AppTheme.colors.primaryLight, paddingHorizontal: 12, paddingVertical: 4, borderRadius: 16, marginTop: 10 },
+  countBadgeText: { color: AppTheme.colors.primary, fontSize: 12, fontWeight: '600' }
 });

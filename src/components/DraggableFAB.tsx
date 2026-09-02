@@ -71,7 +71,7 @@ export default function DraggableFAB({
         onPress={onPress}
         style={styles.fabButton}
       >
-        <Ionicons name={iconName} size={32} color={AppTheme.colors.background} />
+        <Ionicons name={iconName} size={32} color="#ffffff" />
       </TouchableOpacity>
     </Animated.View>
   );

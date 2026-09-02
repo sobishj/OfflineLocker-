@@ -14,9 +14,10 @@ import CustomImageCropper from '../components/CustomImageCropper';
 import { WebView } from 'react-native-webview';
 import DraggableFAB from '../components/DraggableFAB';
 
-export default function TabDetailScreen({ route }: any) {
-  const { tabId, unlockPin } = route.params;
-  const { activeDocuments, loadDocumentsForTab, addDocument, updateDocument, deleteDocument, currentUser } = useLockerStore();
+export default function TabDetailScreen({ route, navigation }: any) {
+  const tabId = route?.params?.tabId;
+  const unlockPin = route?.params?.unlockPin;
+  const { tabs, activeDocuments, loadDocumentsForTab, addDocument, updateDocument, deleteDocument, logout, currentUser } = useLockerStore();
   const { width: screenWidth } = useWindowDimensions();
   const isMobile = screenWidth < 768;
 
@@ -82,6 +83,7 @@ export default function TabDetailScreen({ route }: any) {
   const isSharingRef = useRef(false);
   const isPickerBusyRef = useRef(false);
   const isViewingRef = useRef(false);
+  const lastTapRef = useRef<{ id: string | number; time: number } | null>(null);
 
   const optimizeImageUri = async (uri: string): Promise<string> => {
     if (!uri || !uri.startsWith('data:image')) return uri;
@@ -621,260 +623,455 @@ export default function TabDetailScreen({ route }: any) {
     return 'document-text';
   };
 
+  const getPdfBlobUrl = (uri: string): string => {
+    if (!uri) return '';
+    if (uri.startsWith('blob:')) return uri;
+    if (uri.startsWith('data:')) {
+      try {
+        const parts = uri.split(',');
+        const header = parts[0];
+        const base64 = parts[1] || parts[0];
+        const mimeMatch = header.match(/data:([^;]+)/);
+        const mime = mimeMatch ? mimeMatch[1] : 'application/pdf';
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        return URL.createObjectURL(new Blob([bytes], { type: mime }));
+      } catch (e) {
+        return uri;
+      }
+    }
+    return uri;
+  };
+
+  const formatFileSize = (encryptedContent: string): string => {
+    if (!encryptedContent) return '0 KB';
+    const bytes = Math.round(encryptedContent.length * 0.75);
+    if (bytes >= 1024 * 1024) {
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+    return `${Math.round(bytes / 1024)} KB`;
+  };
+
+  const calculateTotalSizeMB = (): string => {
+    let totalBytes = 0;
+    activeDocuments.forEach(doc => {
+      if (doc.encryptedContent) {
+        totalBytes += Math.round(doc.encryptedContent.length * 0.75);
+      }
+    });
+    return (totalBytes / (1024 * 1024)).toFixed(1);
+  };
+
+  const handleItemPress = (item: any) => {
+    const now = Date.now();
+    if (lastTapRef.current && lastTapRef.current.id === item.id && (now - lastTapRef.current.time) < 350) {
+      lastTapRef.current = null;
+      handleViewDoc(item);
+    } else {
+      lastTapRef.current = { id: item.id, time: now };
+      handleSelectPreview(item);
+    }
+  };
+
+  const handleDeleteClick = (item: any) => {
+    if (!item) return;
+    const doDelete = () => {
+      deleteDocument(item.id!, tabId);
+      if (previewDoc?.id === item.id) {
+        setPreviewDoc(null);
+        setPreviewData('');
+        setPreviewDataArray([]);
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      if (window.confirm(`Are you sure you want to delete "${item.title}"?`)) {
+        doDelete();
+      }
+    } else {
+      Alert.alert('Delete Document', `Are you sure you want to delete "${item.title}"?`, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: doDelete }
+      ]);
+    }
+  };
+
+  const currentTab = (tabs || []).find(t => t.uuid === tabId);
+  const displayTabName = route?.params?.tabName || currentTab?.name || 'General Vault';
+  const displayTabDesc = currentTab?.description || 'Default secure storage tab';
 
   return (
     <View style={styles.container}>
-      <View style={{ flex: 1, flexDirection: isMobile ? 'column' : 'row' }}>
+      {/* TOP HEADER BAR matching main app */}
+      <View style={{
+        backgroundColor: '#ffffff',
+        paddingHorizontal: 16,
+        paddingVertical: 10,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        borderBottomWidth: 1,
+        borderBottomColor: '#e2e8f0',
+      }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <View style={{
+            width: 32,
+            height: 32,
+            borderRadius: 10,
+            backgroundColor: AppTheme.colors.primary,
+            justifyContent: 'center',
+            alignItems: 'center',
+            marginRight: 10,
+          }}>
+            <Ionicons name="lock-closed" size={18} color="#ffffff" />
+          </View>
+          <Text style={{ fontSize: 19, fontWeight: '700', color: AppTheme.colors.text }}>OfflineLocker</Text>
+        </View>
 
-        {/* LEFT PANE: List of Documents */}
-        <View style={isMobile ? { flex: 1 } : { width: 400, borderRightWidth: 1, borderColor: AppTheme.colors.border }}>
-          <FlatList
-            data={activeDocuments}
-            keyExtractor={item => item.id!.toString()}
-            contentContainerStyle={{ padding: AppTheme.spacing.m }}
-            ListHeaderComponent={
-              <View style={{ marginBottom: 12, paddingHorizontal: 4 }}>
-                <Text style={{ fontSize: 13, color: AppTheme.colors.textSecondary, fontWeight: '500' }}>
-                  {activeDocuments.length} {activeDocuments.length === 1 ? 'item' : 'items'} · Sorted by Date
-                </Text>
-              </View>
-            }
-            renderItem={({ item }) => {
-              const isSelected = previewDoc?.id === item.id;
-              const thumbUri = getThumbnailForItem(item);
-              const formattedDate = new Date(item.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
-              const badgeType = item.type === 'image' ? 'JPG' : item.type === 'pdf' ? 'PDF' : 'NOTE';
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <TouchableOpacity 
+            onPress={() => navigation.navigate('Dashboard')} 
+            style={{ 
+              flexDirection: 'row', 
+              alignItems: 'center', 
+              backgroundColor: AppTheme.colors.primaryLight, 
+              paddingHorizontal: 14, 
+              paddingVertical: 6, 
+              borderRadius: 20, 
+              borderWidth: 1, 
+              borderColor: AppTheme.colors.primaryBorder, 
+              marginRight: 12 
+            }}
+          >
+            <Ionicons name="cloud-outline" size={18} color={AppTheme.colors.primary} style={{ marginRight: 6 }} />
+            <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Backup</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => logout()} style={{ padding: 4 }}>
+            <Ionicons name="log-out-outline" size={22} color={AppTheme.colors.primary} />
+          </TouchableOpacity>
+        </View>
+      </View>
 
-              const doDelete = () => {
-                deleteDocument(item.id!, tabId);
-                if (previewDoc?.id === item.id) {
-                  setPreviewDoc(null);
-                  setPreviewData('');
-                  setPreviewDataArray([]);
-                }
-              };
+      {/* VAULT TITLE & COUNTER HEADER (matching attached image) */}
+      <View style={{ paddingHorizontal: isMobile ? 16 : 24, paddingTop: 16, paddingBottom: 16 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <TouchableOpacity 
+            onPress={() => navigation.goBack()} 
+            style={{
+              marginRight: 12,
+              padding: 6,
+            }}
+          >
+            <Ionicons name="chevron-back" size={22} color={AppTheme.colors.textSecondary} />
+          </TouchableOpacity>
 
-              const handleDeleteClick = (e: any) => {
-                if (e && e.stopPropagation) e.stopPropagation();
-                if (Platform.OS === 'web') {
-                  if (window.confirm('Are you sure you want to delete this document?')) {
-                    doDelete();
-                  }
-                } else {
-                  Alert.alert('Delete', 'Are you sure you want to delete this document?', [
-                    { text: 'Cancel', style: 'cancel' },
-                    { text: 'Delete', style: 'destructive', onPress: doDelete }
-                  ]);
-                }
-              };
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: isMobile ? 20 : 24, fontWeight: '700', color: AppTheme.colors.text, letterSpacing: -0.3 }}>
+              {displayTabName}
+            </Text>
+            <Text style={{ fontSize: 14, color: AppTheme.colors.textSecondary, marginTop: 2 }}>
+              {displayTabDesc}
+            </Text>
+            <View style={{ 
+              alignSelf: 'flex-start', 
+              backgroundColor: AppTheme.colors.primaryLight, 
+              paddingHorizontal: 12, 
+              paddingVertical: 4, 
+              borderRadius: 16, 
+              marginTop: 8 
+            }}>
+              <Text style={{ color: AppTheme.colors.primary, fontSize: 12, fontWeight: '600' }}>
+                {activeDocuments.length} {activeDocuments.length === 1 ? 'item' : 'items'}
+              </Text>
+            </View>
+          </View>
+        </View>
+      </View>
 
-              return (
-                <TouchableOpacity
-                  style={[styles.docCard, isSelected && { borderColor: AppTheme.colors.primary, backgroundColor: 'rgba(6, 182, 212, 0.04)' }]}
-                  onPress={() => {
-                    handleSelectPreview(item);
-                    handleViewDoc(item);
-                  }}
-                >
-                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    {/* Square Thumbnail Box */}
-                    <View style={styles.docThumbBox}>
+      {/* MAIN SPLIT CONTENT CARD (Left List + Right Preview) */}
+      <View style={{ flex: 1, paddingHorizontal: isMobile ? 10 : 24, paddingBottom: 20 }}>
+        <View style={{
+          flex: 1,
+          flexDirection: 'row',
+          backgroundColor: '#ffffff',
+          borderRadius: 20,
+          borderWidth: 1,
+          borderColor: '#f1f5f9',
+          overflow: 'hidden',
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 4 },
+          shadowOpacity: 0.03,
+          shadowRadius: 12,
+          elevation: 3,
+        }}>
+
+          {/* LEFT PANE: List of Documents ("All Files") */}
+          <View style={{
+            width: isMobile ? 165 : 360,
+            borderRightWidth: 1,
+            borderColor: '#e2e8f0',
+            backgroundColor: '#ffffff',
+            flexDirection: 'column',
+          }}>
+            <View style={{ paddingHorizontal: 12, paddingVertical: 12, borderBottomWidth: 1, borderColor: '#e2e8f0' }}>
+              <Text style={{ fontSize: 14, fontWeight: '700', color: AppTheme.colors.text }}>All Files</Text>
+            </View>
+
+            <FlatList
+              data={activeDocuments}
+              keyExtractor={item => item.id!.toString()}
+              contentContainerStyle={{ padding: 8 }}
+              renderItem={({ item }) => {
+                const isSelected = previewDoc?.id === item.id;
+                const thumbUri = getThumbnailForItem(item);
+                const formattedDate = new Date(item.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+
+                return (
+                  <TouchableOpacity
+                    style={{
+                      backgroundColor: isSelected ? AppTheme.colors.primaryLight : '#ffffff',
+                      padding: isMobile ? 8 : 12,
+                      borderRadius: 12,
+                      marginBottom: 6,
+                      borderWidth: 1,
+                      borderColor: isSelected ? AppTheme.colors.primaryBorder : 'transparent',
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                    }}
+                    onPress={() => handleItemPress(item)}
+                    {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(item) } : {})}
+                  >
+                    {/* Icon / Thumbnail Box */}
+                    <View style={{
+                      width: isMobile ? 34 : 44,
+                      height: isMobile ? 34 : 44,
+                      borderRadius: 10,
+                      backgroundColor: item.type === 'pdf' ? '#fee2e2' : item.type === 'image' ? '#e0e7ff' : '#f1f5f9',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      marginRight: isMobile ? 8 : 12,
+                      overflow: 'hidden',
+                    }}>
                       {thumbUri ? (
-                        <Image source={{ uri: thumbUri }} style={{ width: 56, height: 56, borderRadius: 8 }} resizeMode="cover" />
+                        <Image source={{ uri: thumbUri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                      ) : item.type === 'pdf' ? (
+                        <Ionicons name="document-text" size={isMobile ? 18 : 22} color="#ef4444" />
+                      ) : item.type === 'image' ? (
+                        <Ionicons name="image" size={isMobile ? 18 : 22} color="#2563eb" />
                       ) : (
-                        <Ionicons name={getIconForType(item.type)} size={28} color={AppTheme.colors.primary} />
+                        <Ionicons name="document-text" size={isMobile ? 18 : 22} color="#2563eb" />
                       )}
                     </View>
 
-                    {/* Document Meta */}
-                    <View style={{ flex: 1, marginRight: 8 }}>
-                      <Text style={styles.docTitle} numberOfLines={1}>{item.title}</Text>
-                      <Text style={styles.docDate}>{formattedDate}</Text>
-
-                      <View style={styles.typeBadge}>
-                        <Text style={styles.typeBadgeText}>{badgeType}</Text>
-                      </View>
+                    {/* Meta */}
+                    <View style={{ flex: 1, marginRight: 4 }}>
+                      <Text style={{ 
+                        fontSize: isMobile ? 12 : 14, 
+                        fontWeight: '700', 
+                        color: AppTheme.colors.text 
+                      }} numberOfLines={1}>
+                        {item.title}
+                      </Text>
+                      <Text style={{ 
+                        fontSize: isMobile ? 10 : 12, 
+                        color: AppTheme.colors.textSecondary, 
+                        marginTop: 2 
+                      }} numberOfLines={1}>
+                        {formatFileSize(item.encryptedContent)} • {formattedDate}
+                      </Text>
                     </View>
-                  </View>
 
-                  {/* Divider line */}
-                  <View style={{ height: 1, backgroundColor: AppTheme.colors.border, marginVertical: 10 }} />
+                    {/* Blue Selection Dot */}
+                    {isSelected && (
+                      <View style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: 4,
+                        backgroundColor: AppTheme.colors.primary,
+                        marginLeft: 4,
+                      }} />
+                    )}
+                  </TouchableOpacity>
+                );
+              }}
+              ListEmptyComponent={
+                <View style={{ padding: 20, alignItems: 'center' }}>
+                  <Text style={{ color: AppTheme.colors.textSecondary, fontSize: 13, textAlign: 'center' }}>
+                    No files found in this vault.
+                  </Text>
+                </View>
+              }
+            />
 
-                  {/* Bottom Action Bar */}
-                  <View style={styles.cardActionsRow}>
-                    <TouchableOpacity
-                      onPress={(e) => {
-                        if (e && e.stopPropagation) e.stopPropagation();
-                        handleSelectPreview(item);
-                        handleViewDoc(item);
-                      }}
-                      style={styles.cardActionItem}
-                    >
-                      <Ionicons name="eye-outline" size={15} color={AppTheme.colors.primary} style={{ marginRight: 4 }} />
-                      <Text style={styles.cardActionText}>View</Text>
-                    </TouchableOpacity>
+            <View style={{ padding: 10, borderTopWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#f8fafc' }}>
+              <Text style={{ fontSize: 11, color: AppTheme.colors.textSecondary, textAlign: 'center' }}>
+                {activeDocuments.length} items · {calculateTotalSizeMB()} MB
+              </Text>
+            </View>
+          </View>
 
-                    <View style={styles.actionDivider} />
-
-                    <TouchableOpacity
-                      onPress={(e) => {
-                        if (e && e.stopPropagation) e.stopPropagation();
-                        handleDownloadFromCard(item);
-                      }}
-                      style={styles.cardActionItem}
-                    >
-                      <Ionicons name="download-outline" size={15} color={AppTheme.colors.primary} style={{ marginRight: 4 }} />
-                      <Text style={styles.cardActionText}>Download</Text>
-                    </TouchableOpacity>
-
-                    <View style={styles.actionDivider} />
-
-                    <TouchableOpacity
-                      onPress={(e) => {
-                        if (e && e.stopPropagation) e.stopPropagation();
-                        handleOpenEditDoc(item);
-                      }}
-                      style={styles.cardActionItem}
-                    >
-                      <Ionicons name="pencil" size={15} color={AppTheme.colors.primary} style={{ marginRight: 4 }} />
-                      <Text style={styles.cardActionText}>Edit</Text>
-                    </TouchableOpacity>
-
-                    <View style={styles.actionDivider} />
-
-                    <TouchableOpacity
-                      onPress={handleDeleteClick}
-                      style={styles.cardActionItem}
-                    >
-                      <Ionicons name="trash-outline" size={15} color={AppTheme.colors.error} />
-                    </TouchableOpacity>
-                  </View>
-                </TouchableOpacity>
-              );
-            }}
-            ListEmptyComponent={
-              <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 120 }}>
-                <Ionicons name="document-text-outline" size={80} color={AppTheme.colors.border} />
-                <Text style={{ color: AppTheme.colors.textSecondary, marginTop: 24, fontSize: 18, fontWeight: '500', textAlign: 'center', paddingHorizontal: 16 }}>Add a document to view</Text>
-              </View>
-            }
-          />
-        </View>
-
-        {/* RIGHT PANE: Large Readable Preview (hidden on mobile) */}
-        {!isMobile && (
-          <View style={{ flex: 1, backgroundColor: AppTheme.colors.surface }}>
+          {/* RIGHT PANE: File Preview & Details */}
+          <View style={{ flex: 1, backgroundColor: '#ffffff', padding: isMobile ? 12 : 20 }}>
             {previewDoc ? (
-              <View style={{ flex: 1, padding: AppTheme.spacing.l }}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                  <Text style={{ fontSize: 24, color: AppTheme.colors.text, fontWeight: 'bold' }}>
+              <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+                {/* PREVIEW TOP BAR */}
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                  <Text style={{ fontSize: isMobile ? 16 : 20, fontWeight: '700', color: AppTheme.colors.text, flex: 1, marginRight: 10 }} numberOfLines={1}>
                     {previewDoc.title}
                   </Text>
-                  <View style={{ flexDirection: 'row' }}>
+
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                     {(previewDoc.type === 'image' || previewDoc.type === 'pdf') && (
-                      <TouchableOpacity
+                      <TouchableOpacity 
                         onPress={handleDownloadSelected}
-                        style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: AppTheme.colors.primary, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8, marginRight: 12 }}
+                        style={{ padding: 6, marginRight: 6 }}
                       >
-                        <Ionicons name="download" size={18} color="#fff" style={{ marginRight: 8 }} />
-                        <Text style={{ color: '#fff', fontWeight: 'bold' }}>Download Selected</Text>
+                        <Ionicons name="download-outline" size={20} color={AppTheme.colors.primary} />
                       </TouchableOpacity>
                     )}
+
+                    <TouchableOpacity 
+                      onPress={() => handleViewDoc(previewDoc)}
+                      style={{ padding: 6, marginRight: 6 }}
+                    >
+                      <Ionicons name="expand-outline" size={20} color={AppTheme.colors.primary} />
+                    </TouchableOpacity>
+
+                    <TouchableOpacity 
+                      onPress={() => handleDeleteClick(previewDoc)}
+                      style={{ padding: 6 }}
+                    >
+                      <Ionicons name="trash-outline" size={20} color={AppTheme.colors.error} />
+                    </TouchableOpacity>
                   </View>
                 </View>
 
-                <View style={{ flex: 1, backgroundColor: AppTheme.colors.background, borderRadius: AppTheme.borderRadius.m, overflow: 'hidden', borderWidth: 1, borderColor: AppTheme.colors.border }}>
+                {/* MAIN PREVIEW CANVAS */}
+                <View style={{
+                  backgroundColor: '#f8fafc',
+                  borderRadius: 16,
+                  borderWidth: 1,
+                  borderColor: '#e2e8f0',
+                  overflow: 'hidden',
+                  minHeight: isMobile ? 220 : 360,
+                  justifyContent: 'center',
+                }}>
                   {previewDoc.type === 'image' && (
-                    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16 }}>
+                    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 12 }}>
                       {previewDataArray.map((uri, idx) => {
                         const safeUri = getSafeImageUri(uri);
                         if (!safeUri) return null;
                         return (
-                          <View key={idx} style={{ marginBottom: 16, position: 'relative' }}>
-                            <Image source={{ uri: safeUri }} style={{ width: '100%', height: 500, borderRadius: 8 }} resizeMode="contain" />
-                            <TouchableOpacity
-                              onPress={() => setSelectedForDownload(prev => ({ ...prev, [idx]: !prev[idx] }))}
-                              style={{ position: 'absolute', top: 10, left: 10, backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center' }}
-                            >
-                              <Ionicons name={selectedForDownload[idx] ? "checkbox" : "square-outline"} size={24} color="#fff" />
-                            </TouchableOpacity>
+                          <View key={idx} style={{ marginBottom: 12, alignItems: 'center' }}>
+                            <Image 
+                              source={{ uri: safeUri }} 
+                              style={{ width: '100%', height: isMobile ? 240 : 380, borderRadius: 12 }} 
+                              resizeMode="contain" 
+                            />
                           </View>
                         );
                       })}
                     </ScrollView>
                   )}
+
                   {previewDoc.type === 'text' && (
-                    <ScrollView style={{ flex: 1, padding: 24 }}>
-                      <Text style={{ color: AppTheme.colors.text, fontSize: 18, lineHeight: 28 }}>
+                    <ScrollView style={{ flex: 1, padding: 16 }}>
+                      <Text style={{ color: AppTheme.colors.text, fontSize: 15, lineHeight: 24 }}>
                         {parseDecryptedPayload(previewData).notes || (previewData.startsWith('[') || previewData.startsWith('{') ? '' : previewData)}
                       </Text>
                     </ScrollView>
                   )}
-                  {previewDoc.type === 'pdf' && Platform.OS === 'web' && (() => {
-                    // Convert base64 data URIs → Blob URLs so browsers can render them in iframes
-                    // (browsers block data: URIs inside iframes for security)
-                    const blobUrls = previewDataArray.map(uri => {
-                      if (!uri) return '';
-                      if (uri.startsWith('blob:')) return uri;
-                      if (uri.startsWith('data:')) {
-                        try {
-                          const [header, base64] = uri.split(',');
-                          const mimeMatch = header.match(/data:([^;]+)/);
-                          const mime = mimeMatch ? mimeMatch[1] : 'application/pdf';
-                          const binary = atob(base64);
-                          const bytes = new Uint8Array(binary.length);
-                          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-                          return URL.createObjectURL(new Blob([bytes], { type: mime }));
-                        } catch {
-                          return uri;
-                        }
-                      }
-                      return uri;
-                    });
-                    return (
-                      <ScrollView style={{ flex: 1 }}>
-                        {blobUrls.map((blobUrl, idx) => (
-                          <View key={idx} style={{ marginBottom: 16 }}>
-                            <View style={{ height: 700 }}>
-                              {React.createElement('iframe', {
-                                src: blobUrl,
-                                style: { width: '100%', height: '100%', border: 'none', borderRadius: 8 },
-                                title: `${previewDoc.title} ${idx + 1}`,
-                              })}
-                            </View>
-                            <TouchableOpacity
-                              onPress={() => window.open(blobUrl, '_blank')}
-                              style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 8, padding: 10, backgroundColor: AppTheme.colors.primary, borderRadius: 8 }}
-                            >
-                              <Ionicons name="open-outline" size={18} color="#fff" style={{ marginRight: 8 }} />
-                              <Text style={{ color: '#fff', fontWeight: '600' }}>Open in New Tab</Text>
-                            </TouchableOpacity>
+
+                  {previewDoc.type === 'pdf' && Platform.OS === 'web' && (
+                    <ScrollView style={{ flex: 1 }}>
+                      {previewDataArray.map((uri, idx) => {
+                        const blobUrl = getPdfBlobUrl(uri);
+                        return (
+                          <View key={idx} style={{ height: isMobile ? 300 : 480, marginBottom: 12, borderRadius: 12, overflow: 'hidden' }}>
+                            {React.createElement('object', {
+                              data: blobUrl,
+                              type: 'application/pdf',
+                              style: { width: '100%', height: '100%', borderRadius: 12, border: 'none' },
+                            }, React.createElement('iframe', {
+                              src: blobUrl,
+                              style: { width: '100%', height: '100%', borderRadius: 12, border: 'none' },
+                              title: `${previewDoc.title}_${idx}`,
+                            }))}
                           </View>
-                        ))}
-                      </ScrollView>
-                    );
-                  })()
-                  }
+                        );
+                      })}
+                    </ScrollView>
+                  )}
+
                   {previewDoc.type === 'pdf' && Platform.OS !== 'web' && (
                     <ScrollView style={{ flex: 1 }}>
                       {previewDataArray.map((uri, idx) => (
-                        <View key={idx} style={{ height: 600, marginBottom: 16 }}>
-                          <WebView originWhitelist={['*']} source={{ uri }} style={{ flex: 1 }} />
+                        <View key={idx} style={{ height: isMobile ? 300 : 480, marginBottom: 12 }}>
+                          <WebView originWhitelist={['*']} source={{ uri }} style={{ flex: 1, borderRadius: 12 }} />
                         </View>
                       ))}
                     </ScrollView>
                   )}
                 </View>
-              </View>
+
+                {/* DETAILS SECTION UNDERNEATH PREVIEW */}
+                <View style={{ marginTop: 20, paddingTop: 16, borderTopWidth: 1, borderColor: '#e2e8f0' }}>
+                  <Text style={{ fontSize: 15, fontWeight: '700', color: AppTheme.colors.text, marginBottom: 12 }}>
+                    Details
+                  </Text>
+
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                    <View style={{ width: '33%', marginBottom: 14 }}>
+                      <Text style={{ fontSize: 11, color: AppTheme.colors.textSecondary }}>Type</Text>
+                      <Text style={{ fontSize: 13, fontWeight: '600', color: AppTheme.colors.text, marginTop: 2 }}>
+                        {previewDoc.type === 'image' ? 'JPEG Image' : previewDoc.type === 'pdf' ? 'PDF Document' : 'Text Document'}
+                      </Text>
+                    </View>
+
+                    <View style={{ width: '33%', marginBottom: 14 }}>
+                      <Text style={{ fontSize: 11, color: AppTheme.colors.textSecondary }}>Size</Text>
+                      <Text style={{ fontSize: 13, fontWeight: '600', color: AppTheme.colors.text, marginTop: 2 }}>
+                        {formatFileSize(previewDoc.encryptedContent)}
+                      </Text>
+                    </View>
+
+                    <View style={{ width: '33%', marginBottom: 14 }}>
+                      <Text style={{ fontSize: 11, color: AppTheme.colors.textSecondary }}>Dimensions</Text>
+                      <Text style={{ fontSize: 13, fontWeight: '600', color: AppTheme.colors.text, marginTop: 2 }}>
+                        {previewDoc.type === 'image' ? 'Image File' : previewDoc.type === 'pdf' ? 'PDF Document' : 'Text File'}
+                      </Text>
+                    </View>
+
+                    <View style={{ width: '50%', marginBottom: 10 }}>
+                      <Text style={{ fontSize: 11, color: AppTheme.colors.textSecondary }}>Date Modified</Text>
+                      <Text style={{ fontSize: 13, fontWeight: '600', color: AppTheme.colors.text, marginTop: 2 }}>
+                        {new Date(previewDoc.createdAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                      </Text>
+                    </View>
+
+                    <View style={{ width: '50%', marginBottom: 10 }}>
+                      <Text style={{ fontSize: 11, color: AppTheme.colors.textSecondary }}>Path</Text>
+                      <Text style={{ fontSize: 13, fontWeight: '600', color: AppTheme.colors.text, marginTop: 2 }} numberOfLines={1}>
+                        /{displayTabName}/{previewDoc.title}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              </ScrollView>
             ) : (
               <View style={styles.center}>
-                <Ionicons name="document-text-outline" size={80} color={AppTheme.colors.border} />
-                <Text style={{ color: AppTheme.colors.textSecondary, marginTop: 24, fontSize: 18, fontWeight: '500', textAlign: 'center', paddingHorizontal: 16 }}>Add a document to view</Text>
+                <Ionicons name="document-text-outline" size={72} color={AppTheme.colors.border} />
+                <Text style={{ color: AppTheme.colors.textSecondary, marginTop: 16, fontSize: 15, fontWeight: '500', textAlign: 'center' }}>
+                  Select a document to preview
+                </Text>
               </View>
             )}
           </View>
-        )}
 
+        </View>
       </View>
 
       <DraggableFAB onPress={() => setModalVisible(true)} />
@@ -1206,15 +1403,22 @@ export default function TabDetailScreen({ route }: any) {
 
                   {displayFiles.length > 0 && isPdf && (
                     Platform.OS === 'web' ? (
-                      displayFiles.map((uri, idx) => (
-                        <View key={idx} style={{ height: 750, marginBottom: 20 }}>
-                          {React.createElement('iframe', {
-                            src: uri,
-                            style: { width: '100%', height: '100%', border: 'none', borderRadius: 12 },
-                            title: `${selectedDoc.title} ${idx + 1}`
-                          })}
-                        </View>
-                      ))
+                      displayFiles.map((uri, idx) => {
+                        const blobUrl = getPdfBlobUrl(uri);
+                        return (
+                          <View key={idx} style={{ height: 750, marginBottom: 20 }}>
+                            {React.createElement('object', {
+                              data: blobUrl,
+                              type: 'application/pdf',
+                              style: { width: '100%', height: '100%', border: 'none', borderRadius: 12 }
+                            }, React.createElement('iframe', {
+                              src: blobUrl,
+                              style: { width: '100%', height: '100%', border: 'none', borderRadius: 12 },
+                              title: `${selectedDoc?.title} ${idx + 1}`
+                            }))}
+                          </View>
+                        );
+                      })
                     ) : (
                       displayFiles.map((uri, idx) => (
                         <View key={idx} style={{ height: 600, marginBottom: 20 }}>
@@ -1256,43 +1460,55 @@ export default function TabDetailScreen({ route }: any) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: AppTheme.colors.background },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: AppTheme.colors.background },
-  docCard: { backgroundColor: AppTheme.colors.surface, padding: AppTheme.spacing.m, borderRadius: AppTheme.borderRadius.m, marginBottom: AppTheme.spacing.m, borderWidth: 1, borderColor: AppTheme.colors.border, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 2 },
-  docTitle: { color: AppTheme.colors.text, fontSize: 16, fontWeight: 'bold' },
-  docDate: { color: AppTheme.colors.textSecondary, fontSize: 12, marginTop: 2 },
-  docThumbBox: { width: 56, height: 56, borderRadius: 10, backgroundColor: 'rgba(6, 182, 212, 0.12)', justifyContent: 'center', alignItems: 'center', marginRight: 12, overflow: 'hidden' },
-  typeBadge: { alignSelf: 'flex-start', backgroundColor: 'rgba(6, 182, 212, 0.12)', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10, marginTop: 4 },
-  typeBadgeText: { color: AppTheme.colors.primary, fontSize: 10, fontWeight: '700' },
-  cardActionsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', paddingTop: 2 },
-  cardActionItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 2, paddingHorizontal: 6 },
-  cardActionBtn: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4, paddingHorizontal: 8, backgroundColor: 'rgba(255,255,255,0.4)', borderRadius: 4 },
-  cardActionText: { color: AppTheme.colors.primary, fontSize: 12, fontWeight: '600' },
-  actionDivider: { width: 1, height: 14, backgroundColor: AppTheme.colors.border },
-  emptyText: { color: AppTheme.colors.textSecondary, textAlign: 'center', marginTop: 40 },
-  fab: { position: 'absolute', bottom: 30, left: 330, width: 60, height: 60, borderRadius: 30, backgroundColor: AppTheme.colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 5, zIndex: 10, shadowColor: AppTheme.colors.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: AppTheme.spacing.l },
-  modalContent: { backgroundColor: 'rgba(255, 255, 255, 0.85)', padding: AppTheme.spacing.l, borderRadius: AppTheme.borderRadius.l, maxWidth: 600, width: '100%', alignSelf: 'center', borderWidth: 1, borderColor: '#fff', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.1, shadowRadius: 20, elevation: 5 },
+  docCard: { 
+    backgroundColor: '#ffffff', 
+    padding: AppTheme.spacing.m, 
+    borderRadius: AppTheme.borderRadius.l, 
+    marginBottom: AppTheme.spacing.m, 
+    borderWidth: 1, 
+    borderColor: '#f1f5f9', 
+    shadowColor: '#000', 
+    shadowOffset: { width: 0, height: 4 }, 
+    shadowOpacity: 0.03, 
+    shadowRadius: 12, 
+    elevation: 2 
+  },
+  docTitle: { color: AppTheme.colors.text, fontSize: 17, fontWeight: '700' },
+  docDate: { color: AppTheme.colors.textSecondary, fontSize: 13, marginTop: 4 },
+  docThumbBox: { width: 56, height: 56, borderRadius: 14, backgroundColor: AppTheme.colors.primaryLight, justifyContent: 'center', alignItems: 'center', marginRight: 14, overflow: 'hidden' },
+  typeBadge: { alignSelf: 'flex-start', backgroundColor: AppTheme.colors.primaryLight, paddingHorizontal: 10, paddingVertical: 3, borderRadius: 12, marginTop: 6 },
+  typeBadgeText: { color: AppTheme.colors.primary, fontSize: 11, fontWeight: '700' },
+  cardActionsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', paddingTop: 8, marginTop: 8, borderTopWidth: 1, borderTopColor: '#f1f5f9' },
+  cardActionItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4, paddingHorizontal: 8 },
+  cardActionBtn: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6, paddingHorizontal: 10, backgroundColor: AppTheme.colors.primaryLight, borderRadius: 8 },
+  cardActionText: { color: AppTheme.colors.primary, fontSize: 13, fontWeight: '600' },
+  actionDivider: { width: 1, height: 16, backgroundColor: '#e2e8f0' },
+  emptyText: { color: AppTheme.colors.textSecondary, textAlign: 'center', marginTop: 40, fontSize: 15 },
+  fab: { position: 'absolute', bottom: 30, right: 30, width: 60, height: 60, borderRadius: 30, backgroundColor: AppTheme.colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 6, zIndex: 10, shadowColor: AppTheme.colors.primary, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.35, shadowRadius: 10 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.4)', justifyContent: 'center', padding: AppTheme.spacing.l },
+  modalContent: { backgroundColor: '#ffffff', padding: AppTheme.spacing.l, borderRadius: AppTheme.borderRadius.xl, maxWidth: 600, width: '100%', alignSelf: 'center', borderWidth: 1, borderColor: '#f1f5f9', shadowColor: '#000', shadowOffset: { width: 0, height: 12 }, shadowOpacity: 0.08, shadowRadius: 24, elevation: 6 },
   modalTitle: { color: AppTheme.colors.text, fontSize: 20, fontWeight: 'bold', marginBottom: AppTheme.spacing.m },
-  input: { backgroundColor: 'rgba(255, 255, 255, 0.6)', borderWidth: 1, borderColor: '#fff', color: AppTheme.colors.text, padding: 12, borderRadius: AppTheme.borderRadius.s, marginBottom: AppTheme.spacing.m, fontSize: 15, letterSpacing: 0 },
+  input: { backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0', color: AppTheme.colors.text, padding: 14, borderRadius: AppTheme.borderRadius.s, marginBottom: AppTheme.spacing.m, fontSize: 15, letterSpacing: 0 },
   mediaActions: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: AppTheme.spacing.m },
-  mediaButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255, 255, 255, 0.5)', borderWidth: 1, borderColor: AppTheme.colors.primary, padding: 10, borderRadius: AppTheme.borderRadius.s, marginHorizontal: 2 },
-  mediaButtonText: { color: AppTheme.colors.primary, marginLeft: 4, fontWeight: '600', fontSize: 12 },
+  mediaButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: AppTheme.colors.primaryLight, borderWidth: 1, borderColor: AppTheme.colors.primaryBorder, padding: 12, borderRadius: AppTheme.borderRadius.s, marginHorizontal: 2 },
+  mediaButtonText: { color: AppTheme.colors.primary, marginLeft: 6, fontWeight: '600', fontSize: 13 },
 
   // Multi-file thumbnails
   filePreviewContainer: { marginBottom: AppTheme.spacing.m },
-  thumbnailWrapper: { position: 'relative', marginRight: 16, width: 120, height: 120, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 8 },
+  thumbnailWrapper: { position: 'relative', marginRight: 16, width: 120, height: 120, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 8 },
   thumbnailImage: { width: 120, height: 120, borderRadius: AppTheme.borderRadius.m },
-  thumbnailPdf: { width: 120, height: 120, backgroundColor: 'rgba(255, 255, 255, 0.6)', borderRadius: AppTheme.borderRadius.m, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#fff' },
-  removeFileBtn: { position: 'absolute', top: -10, right: -10, backgroundColor: '#000', borderRadius: 12 },
-  addMoreTile: { width: 120, height: 120, borderRadius: AppTheme.borderRadius.m, borderWidth: 1, borderColor: AppTheme.colors.primary, borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255, 255, 255, 0.4)' },
+  thumbnailPdf: { width: 120, height: 120, backgroundColor: '#f8fafc', borderRadius: AppTheme.borderRadius.m, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#e2e8f0' },
+  removeFileBtn: { position: 'absolute', top: -10, right: -10, backgroundColor: '#ef4444', borderRadius: 12 },
+  addMoreTile: { width: 120, height: 120, borderRadius: AppTheme.borderRadius.m, borderWidth: 1.5, borderColor: AppTheme.colors.primary, borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center', backgroundColor: AppTheme.colors.primaryLight },
 
   modalActions: { flexDirection: 'row', justifyContent: 'space-between', marginTop: AppTheme.spacing.s },
-  button: { flex: 1, backgroundColor: AppTheme.colors.primary, padding: 12, borderRadius: AppTheme.borderRadius.s, alignItems: 'center', marginHorizontal: 4 },
-  buttonText: { color: '#fff', fontWeight: 'bold' },
-  decryptedBox: { backgroundColor: 'rgba(255, 255, 255, 0.6)', padding: AppTheme.spacing.m, borderRadius: AppTheme.borderRadius.s, marginVertical: AppTheme.spacing.m, minHeight: 100 },
+  button: { flex: 1, backgroundColor: AppTheme.colors.primary, paddingVertical: 14, borderRadius: AppTheme.borderRadius.s, alignItems: 'center', marginHorizontal: 4 },
+  buttonText: { color: '#fff', fontWeight: 'bold', fontSize: 15 },
+  decryptedBox: { backgroundColor: '#f8fafc', padding: AppTheme.spacing.m, borderRadius: AppTheme.borderRadius.s, marginVertical: AppTheme.spacing.m, minHeight: 100, borderWidth: 1, borderColor: '#e2e8f0' },
   decryptedText: { color: AppTheme.colors.text, fontSize: 16, lineHeight: 24 },
 
-  fullScreenModal: { flex: 1, backgroundColor: 'rgba(234, 240, 248, 0.95)' }, // frosted glass overall
-  fullScreenHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, paddingTop: 40, backgroundColor: 'rgba(255, 255, 255, 0.3)' },
+  fullScreenModal: { flex: 1, backgroundColor: AppTheme.colors.background },
+  fullScreenHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, paddingTop: 40, backgroundColor: '#ffffff', borderBottomWidth: 1, borderBottomColor: '#e2e8f0' },
   fullScreenTitle: { color: AppTheme.colors.text, fontSize: 20, fontWeight: 'bold' },
   closeButton: { padding: 6, backgroundColor: '#ef4444', borderRadius: 20, shadowColor: '#ef4444', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 3 },
   fullScreenContent: { flex: 1, padding: 20 },

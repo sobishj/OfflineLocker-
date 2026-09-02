@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, Alert } from 'react-native';
 import { useLockerStore } from '../store/useLockerStore';
+import { AppTheme } from '../theme/AppTheme';
 import { Feather } from '@expo/vector-icons';
 
 export default function AuthScreen() {
@@ -89,7 +90,7 @@ export default function AuthScreen() {
     >
       <View style={styles.content}>
         <View style={styles.iconContainer}>
-          <Feather name={isLockedOut ? "lock" : "lock"} size={24} color={isLockedOut ? "#ef4444" : "#86868b"} />
+          <Feather name={isLockedOut ? "lock" : "lock"} size={26} color={isLockedOut ? "#ef4444" : AppTheme.colors.primary} />
         </View>
         
         <Text style={styles.title}>{isRegisterMode ? 'Create Vault' : 'Unlock Vault'}</Text>
@@ -206,85 +207,83 @@ export default function AuthScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#eaf0f8', // Soft light blue-ish grey background
+    backgroundColor: AppTheme.colors.background,
     justifyContent: 'center',
     padding: 24,
   },
   content: {
-    backgroundColor: 'rgba(255, 255, 255, 0.45)', // Glassmorphism base
-    padding: 32,
+    backgroundColor: '#ffffff',
+    padding: 36,
     borderRadius: 24,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.8)',
+    borderColor: '#f1f5f9',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.05,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.04,
     shadowRadius: 20,
-    elevation: 3,
+    elevation: 4,
   },
   iconContainer: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: 'rgba(255, 255, 255, 0.6)',
+    width: 64,
+    height: 64,
+    borderRadius: 20,
+    backgroundColor: AppTheme.colors.primaryLight,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.9)',
+    marginBottom: 20,
   },
   title: {
-    fontSize: 22,
-    color: '#1d1d1f',
-    fontWeight: '600',
+    fontSize: 24,
+    color: AppTheme.colors.text,
+    fontWeight: '700',
     marginBottom: 8,
   },
   subtitle: {
     fontSize: 14,
-    color: '#86868b',
-    marginBottom: 20,
+    color: AppTheme.colors.textSecondary,
+    marginBottom: 24,
     textAlign: 'center',
   },
   warningBox: {
     backgroundColor: 'rgba(239, 68, 68, 0.1)',
     borderWidth: 1,
     borderColor: 'rgba(239, 68, 68, 0.3)',
-    borderRadius: 10,
-    padding: 10,
+    borderRadius: 12,
+    padding: 12,
     marginBottom: 16,
     width: '100%',
   },
   warningText: {
     color: '#dc2626',
-    fontSize: 12,
+    fontSize: 13,
     textAlign: 'center',
     fontWeight: '500',
   },
   input: {
     width: '100%',
-    height: 50,
-    backgroundColor: 'rgba(255, 255, 255, 0.6)',
+    height: 52,
+    backgroundColor: '#f8fafc',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 1)',
+    borderColor: '#e2e8f0',
     borderRadius: 12,
     paddingHorizontal: 16,
-    color: '#1d1d1f',
+    color: AppTheme.colors.text,
     marginBottom: 16,
     fontSize: 16,
     textAlign: 'left',
     letterSpacing: 0,
   },
   error: {
-    color: '#ff3b30',
+    color: AppTheme.colors.error,
     marginBottom: 16,
     textAlign: 'center',
     fontSize: 14,
   },
   button: {
     width: '100%',
-    height: 50,
-    backgroundColor: '#78a3f0', // Soft blue from the image
+    height: 52,
+    backgroundColor: AppTheme.colors.primary,
     borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
@@ -293,10 +292,10 @@ const styles = StyleSheet.create({
   buttonText: {
     color: '#ffffff',
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   disabledButton: {
-    backgroundColor: '#cbd5e1',
+    backgroundColor: '#e2e8f0',
     shadowOpacity: 0,
     elevation: 0,
   },
@@ -309,12 +308,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   toggleText: {
-    color: '#0284c7',
+    color: AppTheme.colors.primary,
     fontSize: 14,
     fontWeight: '600',
   },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: 24 },
-  modalContent: { backgroundColor: 'rgba(255, 255, 255, 0.95)', padding: 24, borderRadius: 20, borderWidth: 1, borderColor: '#fff', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.1, shadowRadius: 20, elevation: 5 },
-  modalTitle: { color: '#1d1d1f', fontSize: 20, fontWeight: 'bold', marginBottom: 12, textAlign: 'center' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.4)', justifyContent: 'center', padding: 24 },
+  modalContent: { backgroundColor: '#ffffff', padding: 24, borderRadius: 20, borderWidth: 1, borderColor: '#f1f5f9', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.08, shadowRadius: 20, elevation: 5 },
+  modalTitle: { color: AppTheme.colors.text, fontSize: 20, fontWeight: 'bold', marginBottom: 12, textAlign: 'center' },
 });
 
