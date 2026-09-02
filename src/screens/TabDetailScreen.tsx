@@ -657,9 +657,9 @@ export default function TabDetailScreen({ route, navigation }: any) {
     return (totalBytes / (1024 * 1024)).toFixed(1);
   };
 
-  const renderWithTooltip = (element: React.ReactElement, tooltipText: string, display: 'inline-flex' | 'flex' | 'block' = 'inline-flex') => {
+  const renderWithTooltip = (element: React.ReactElement, tooltipText: string) => {
     if (Platform.OS === 'web' && tooltipText) {
-      return React.createElement('div', { title: tooltipText, style: { display, cursor: 'pointer', maxWidth: '100%', alignItems: 'center' } }, element);
+      return React.cloneElement(element, { title: tooltipText } as any);
     }
     return element;
   };
@@ -894,8 +894,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                       }} />
                     )}
                   </TouchableOpacity>,
-                  `${item.title} (${formatFileSize(item.encryptedContent)})`,
-                  'flex'
+                  `${item.title} (${formatFileSize(item.encryptedContent)})`
                 );
               }}
               ListEmptyComponent={
@@ -918,20 +917,23 @@ export default function TabDetailScreen({ route, navigation }: any) {
           <View style={{ flex: 1, backgroundColor: '#ffffff', padding: isMobile ? 12 : 20 }}>
             {previewDoc ? (
               <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-                {/* PREVIEW TOP BAR */}
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                {/* DOCUMENT DETAILS & ACTION BUTTONS UNDER FILE NAME */}
+                <View style={{ marginBottom: 16 }}>
                   {renderWithTooltip(
                     <Text 
-                      style={{ fontSize: isMobile ? 16 : 20, fontWeight: '700', color: AppTheme.colors.text, flex: 1, marginRight: 10 }} 
-                      numberOfLines={1}
+                      style={{ fontSize: isMobile ? 18 : 22, fontWeight: '700', color: AppTheme.colors.text }} 
+                      numberOfLines={2}
                     >
                       {previewDoc.title}
                     </Text>,
-                    previewDoc.title,
-                    'flex'
+                    previewDoc.title
                   )}
+                  <Text style={{ fontSize: 12, color: AppTheme.colors.textSecondary, marginTop: 2, marginBottom: 10 }}>
+                    {previewDoc.type.toUpperCase()} • Added {new Date(previewDoc.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                  </Text>
 
-                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  {/* Action Buttons Row directly under File Name */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
                     {/* Open Button for ALL files */}
                     {renderWithTooltip(
                       <TouchableOpacity 
@@ -945,7 +947,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
                           paddingHorizontal: 12, 
                           paddingVertical: 6, 
                           borderRadius: 8, 
-                          marginRight: 8 
+                          marginRight: 8,
+                          marginBottom: 4
                         }}
                       >
                         <Ionicons name="eye-outline" size={16} color={AppTheme.colors.primary} style={{ marginRight: 4 }} />
@@ -958,9 +961,21 @@ export default function TabDetailScreen({ route, navigation }: any) {
                       renderWithTooltip(
                         <TouchableOpacity 
                           onPress={handleDownloadSelected}
-                          style={{ padding: 6, marginRight: 6 }}
+                          style={{ 
+                            flexDirection: 'row', 
+                            alignItems: 'center', 
+                            backgroundColor: AppTheme.colors.primaryLight, 
+                            borderWidth: 1, 
+                            borderColor: AppTheme.colors.primaryBorder, 
+                            paddingHorizontal: 12, 
+                            paddingVertical: 6, 
+                            borderRadius: 8, 
+                            marginRight: 8,
+                            marginBottom: 4
+                          }}
                         >
-                          <Ionicons name="download-outline" size={20} color={AppTheme.colors.primary} />
+                          <Ionicons name="download-outline" size={16} color={AppTheme.colors.primary} style={{ marginRight: 4 }} />
+                          <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Download</Text>
                         </TouchableOpacity>,
                         'Download File'
                       )
@@ -969,9 +984,21 @@ export default function TabDetailScreen({ route, navigation }: any) {
                     {renderWithTooltip(
                       <TouchableOpacity 
                         onPress={() => handleOpenEditDoc(previewDoc)}
-                        style={{ padding: 6, marginRight: 6 }}
+                        style={{ 
+                          flexDirection: 'row', 
+                          alignItems: 'center', 
+                          backgroundColor: AppTheme.colors.primaryLight, 
+                          borderWidth: 1, 
+                          borderColor: AppTheme.colors.primaryBorder, 
+                          paddingHorizontal: 12, 
+                          paddingVertical: 6, 
+                          borderRadius: 8, 
+                          marginRight: 8,
+                          marginBottom: 4
+                        }}
                       >
-                        <Ionicons name="create-outline" size={20} color={AppTheme.colors.primary} />
+                        <Ionicons name="create-outline" size={16} color={AppTheme.colors.primary} style={{ marginRight: 4 }} />
+                        <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Edit</Text>
                       </TouchableOpacity>,
                       'Edit Document'
                     )}
@@ -979,9 +1006,20 @@ export default function TabDetailScreen({ route, navigation }: any) {
                     {renderWithTooltip(
                       <TouchableOpacity 
                         onPress={() => handleDeleteClick(previewDoc)}
-                        style={{ padding: 6 }}
+                        style={{ 
+                          flexDirection: 'row', 
+                          alignItems: 'center', 
+                          backgroundColor: '#fef2f2', 
+                          borderWidth: 1, 
+                          borderColor: '#fecaca', 
+                          paddingHorizontal: 12, 
+                          paddingVertical: 6, 
+                          borderRadius: 8,
+                          marginBottom: 4
+                        }}
                       >
-                        <Ionicons name="trash-outline" size={20} color={AppTheme.colors.error} />
+                        <Ionicons name="trash-outline" size={16} color={AppTheme.colors.error} style={{ marginRight: 4 }} />
+                        <Text style={{ color: AppTheme.colors.error, fontWeight: '600', fontSize: 13 }}>Delete</Text>
                       </TouchableOpacity>,
                       'Delete Document'
                     )}
