@@ -928,6 +928,25 @@ export default function TabDetailScreen({ route, navigation }: any) {
                   </Text>
 
                   <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    {/* Open Button for ALL files */}
+                    <TouchableOpacity 
+                      onPress={() => handleViewDoc(previewDoc)}
+                      style={{ 
+                        flexDirection: 'row', 
+                        alignItems: 'center', 
+                        backgroundColor: AppTheme.colors.primaryLight, 
+                        borderWidth: 1, 
+                        borderColor: AppTheme.colors.primaryBorder, 
+                        paddingHorizontal: 12, 
+                        paddingVertical: 6, 
+                        borderRadius: 8, 
+                        marginRight: 8 
+                      }}
+                    >
+                      <Ionicons name="eye-outline" size={16} color={AppTheme.colors.primary} style={{ marginRight: 4 }} />
+                      <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Open</Text>
+                    </TouchableOpacity>
+
                     {(previewDoc.type === 'image' || previewDoc.type === 'pdf') && (
                       <TouchableOpacity 
                         onPress={handleDownloadSelected}
@@ -1008,13 +1027,6 @@ export default function TabDetailScreen({ route, navigation }: any) {
                               <Text style={{ fontSize: 13, fontWeight: '600', color: AppTheme.colors.primary }}>
                                 PDF Document ({idx + 1}/{previewDataArray.length})
                               </Text>
-                              <TouchableOpacity
-                                onPress={() => window.open(blobUrl, '_blank')}
-                                style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: AppTheme.colors.primary, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6 }}
-                              >
-                                <Ionicons name="open-outline" size={14} color="#ffffff" style={{ marginRight: 4 }} />
-                                <Text style={{ color: '#ffffff', fontSize: 12, fontWeight: '600' }}>Open in New Tab</Text>
-                              </TouchableOpacity>
                             </View>
 
                             <View style={{ height: isMobile ? 320 : 500, backgroundColor: '#ffffff' }}>
