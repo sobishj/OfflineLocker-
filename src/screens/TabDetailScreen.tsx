@@ -945,6 +945,13 @@ export default function TabDetailScreen({ route, navigation }: any) {
                     )}
 
                     <TouchableOpacity 
+                      onPress={() => handleOpenEditDoc(previewDoc)}
+                      style={{ padding: 6, marginRight: 6 }}
+                    >
+                      <Ionicons name="create-outline" size={20} color={AppTheme.colors.primary} />
+                    </TouchableOpacity>
+
+                    <TouchableOpacity 
                       onPress={() => handleViewDoc(previewDoc)}
                       style={{ padding: 6, marginRight: 6 }}
                     >
@@ -1386,9 +1393,21 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
           <View style={styles.fullScreenHeader}>
             <Text style={styles.fullScreenTitle}>{selectedDoc?.title}</Text>
-            <TouchableOpacity onPress={() => setViewModalVisible(false)} style={styles.closeButton}>
-              <Ionicons name="close" size={26} color="#ffffff" />
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <TouchableOpacity
+                onPress={() => {
+                  setViewModalVisible(false);
+                  handleOpenEditDoc(selectedDoc);
+                }}
+                style={{ flexDirection: 'row', alignItems: 'center', marginRight: 16, backgroundColor: 'rgba(255,255,255,0.2)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 }}
+              >
+                <Ionicons name="create-outline" size={18} color="#ffffff" style={{ marginRight: 4 }} />
+                <Text style={{ color: '#ffffff', fontWeight: '600', fontSize: 13 }}>Edit</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setViewModalVisible(false)} style={styles.closeButton}>
+                <Ionicons name="close" size={26} color="#ffffff" />
+              </TouchableOpacity>
+            </View>
           </View>
 
           <View style={styles.fullScreenContent}>
