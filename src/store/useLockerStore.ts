@@ -237,41 +237,7 @@ export const useLockerStore = create<LockerState>((set, get) => ({
     try {
       let activeDocuments = await DatabaseHelper.getDocumentsByTab(tabId);
       
-      if (activeDocuments.length === 0) {
-        const { currentUser } = get();
-        const pinKey = currentUser?.pinHash || 'default_fallback';
-        
-        const samplePdfBase64 = 'data:application/pdf;base64,JVBERi0xLjQKJSDl4uXmAjoKMSAwIG9iaiA8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4gZW5kb2JqCjIgMCBvYmogPDwgL1R5cGUgL1BhZ2VzIC9Db3VudCAxIC9LaWRzIFsgMyAwIFIgPSA+PiBlbmRvYmoKMyAwIG9iaiA8PCAvVHlwZSAvUGFnZSAvUGFyZW50IDIgMCBSIC9NZWRpYUJveCBbIDAgMCA2MTIgNzkyIFsgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNCAwIFIgPj4gPj4gL0NvbnRlbnRzIDUgMCBSID4+IGVuZG9iago0IDAgb2JqIDw8IC9UeXBlIC9Gb250IC9TdWJ0eXBlIC9UeXBlMSAvQmFzZUZvbnQgL0hlbHZldGljYSA+PiBlbmRvYmoKNSAwIG9iaiA8PCAvTGVuZ3RoIDQ0ID4+IHN0cmVhbQpCVCAvRjEgMjQgVGYgMTAwIDcwMCBUZCAoT2ZmbGluZUxvY2tlciBTYW1wbGUgRG9jdW1lbnQpIFRqIEVDCmVuZHN0cmVhbQplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDE5IDAwMDAwIG4gCjAwMDAwMDAwNjggMDAwMDAgbiAKMDAwMDAwMDEzMyAwMDAwMCBuIAowMDAwMDAwMjgxIDAwMDAwIG4gCjAwMDAwMDAzNTMgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo0NDcKJSVFT0Y=';
-        
-        const sampleImgBase64 = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400"><rect width="600" height="400" fill="%232563eb"/><circle cx="300" cy="200" r="100" fill="%2360a5fa" opacity="0.6"/><text x="300" y="210" font-family="sans-serif" font-size="24" font-weight="bold" fill="white" text-anchor="middle">Sample Vacation Image</text></svg>';
-
-        await DatabaseHelper.createDocument({
-          tabId,
-          title: 'Summer Vacation.jpg',
-          type: 'image',
-          encryptedContent: CryptoService.encryptText(JSON.stringify([sampleImgBase64]), pinKey),
-          createdAt: new Date(Date.now() - 3600000 * 48).toISOString(),
-        });
-
-        await DatabaseHelper.createDocument({
-          tabId,
-          title: 'Passport Scan.pdf',
-          type: 'pdf',
-          encryptedContent: CryptoService.encryptText(JSON.stringify([samplePdfBase64]), pinKey),
-          createdAt: new Date(Date.now() - 3600000 * 24).toISOString(),
-        });
-
-        await DatabaseHelper.createDocument({
-          tabId,
-          title: 'Insurance Document.pdf',
-          type: 'pdf',
-          encryptedContent: CryptoService.encryptText(JSON.stringify([samplePdfBase64]), pinKey),
-          createdAt: new Date().toISOString(),
-        });
-
-        activeDocuments = await DatabaseHelper.getDocumentsByTab(tabId);
-      }
-
+      // Empty block removed to prevent auto-generating mock data when a tab is empty
       const tabDocCounts = await DatabaseHelper.getTabDocumentCounts();
       set({ activeDocuments, tabDocCounts });
     } catch (error) {

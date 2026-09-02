@@ -24,6 +24,9 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   const [isSensitive, setIsSensitive] = useState(false);
   const [tabPin, setTabPin] = useState('');
 
+  // Delete tab confirmation
+  const [deleteConfirmTab, setDeleteConfirmTab] = useState<any>(null);
+
   // Edit tab state
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [editTabId, setEditTabId] = useState('');
@@ -125,21 +128,24 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   };
 
   const handleConfirmDeleteTab = (tab: any) => {
-    const doDelete = () => deleteTab(tab.uuid);
     if (Platform.OS === 'web') {
-      if (window.confirm(`Are you sure you want to delete tab "${tab.name}" and all its documents?`)) {
-        doDelete();
-      }
+      setDeleteConfirmTab(tab);
     } else {
       Alert.alert(
         'Delete Vault Tab',
         `Are you sure you want to delete "${tab.name}" and all documents stored inside it?`,
         [
           { text: 'Cancel', style: 'cancel' },
-          { text: 'Delete', style: 'destructive', onPress: doDelete }
+          { text: 'Delete', style: 'destructive', onPress: () => deleteTab(tab.uuid) }
         ]
       );
     }
+  };
+
+  const confirmDeleteTabAction = () => {
+    if (!deleteConfirmTab) return;
+    deleteTab(deleteConfirmTab.uuid);
+    setDeleteConfirmTab(null);
   };
 
   const handlePerformExport = async () => {
@@ -387,31 +393,27 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
               {/* Action Buttons & Chevron */}
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                {renderWithTooltip(
-                  <TouchableOpacity 
-                    onPress={(e) => {
-                      if (e && e.stopPropagation) e.stopPropagation();
-                      handleOpenEditTab(item);
-                    }} 
-                    style={styles.editBtn}
-                  >
-                    <Ionicons name="create-outline" size={18} color={AppTheme.colors.primary} />
-                  </TouchableOpacity>,
-                  `Edit ${item.name}`
-                )}
+                <TouchableOpacity 
+                  onPress={(e) => {
+                    if (e && e.stopPropagation) e.stopPropagation();
+                    handleOpenEditTab(item);
+                  }} 
+                  style={styles.editBtn}
+                  {...(Platform.OS === 'web' ? { title: `Edit ${item.name}` } : {})}
+                >
+                  <Ionicons name="create-outline" size={18} color={AppTheme.colors.primary} />
+                </TouchableOpacity>
 
-                {renderWithTooltip(
-                  <TouchableOpacity 
-                    onPress={(e) => {
-                      if (e && e.stopPropagation) e.stopPropagation();
-                      handleConfirmDeleteTab(item);
-                    }} 
-                    style={styles.deleteBtn}
-                  >
-                    <Ionicons name="trash-outline" size={18} color={AppTheme.colors.error} />
-                  </TouchableOpacity>,
-                  `Delete ${item.name}`
-                )}
+                <TouchableOpacity 
+                  onPress={(e) => {
+                    if (e && e.stopPropagation) e.stopPropagation();
+                    handleConfirmDeleteTab(item);
+                  }} 
+                  style={styles.deleteBtn}
+                  {...(Platform.OS === 'web' ? { title: `Delete ${item.name}` } : {})}
+                >
+                  <Ionicons name="trash-outline" size={18} color={AppTheme.colors.error} />
+                </TouchableOpacity>
 
                 <Ionicons name="chevron-forward" size={20} color={AppTheme.colors.textMuted} style={{ marginLeft: 10 }} />
               </View>
@@ -739,6 +741,74 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* DELETE TAB CONFIRMATION MODAL */}
+      <Modal visible={!!deleteConfirmTab} animationType="fade" transparent>
+        <View style={{
+          flex: 1,
+          backgroundColor: 'rgba(15, 23, 42, 0.5)',
+          justifyContent: 'center',
+          alignItems: 'center',
+          padding: 20,
+        }}>
+          <View style={{
+            backgroundColor: '#ffffff',
+            borderRadius: 16,
+            padding: 24,
+            maxWidth: 380,
+            width: '100%',
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 12 },
+            shadowOpacity: 0.15,
+            shadowRadius: 24,
+            elevation: 8,
+          }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 16 }}>
+              <View style={{
+                width: 40,
+                height: 40,
+                borderRadius: 20,
+                backgroundColor: '#fee2e2',
+                justifyContent: 'center',
+                alignItems: 'center',
+                marginRight: 12,
+              }}>
+                <Ionicons name="trash-outline" size={20} color="#ef4444" />
+              </View>
+              <Text style={{ fontSize: 18, fontWeight: '700', color: AppTheme.colors.text }}>Delete Vault Tab</Text>
+            </View>
+            <Text style={{ fontSize: 14, color: AppTheme.colors.textSecondary, lineHeight: 20, marginBottom: 20 }}>
+              Are you sure you want to delete "{deleteConfirmTab?.name}" and all documents stored inside it? This action cannot be undone.
+            </Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
+              <TouchableOpacity
+                onPress={() => setDeleteConfirmTab(null)}
+                style={{
+                  paddingVertical: 10,
+                  paddingHorizontal: 20,
+                  borderRadius: 8,
+                  backgroundColor: '#f1f5f9',
+                  marginRight: 10,
+                }}
+              >
+                <Text style={{ color: AppTheme.colors.text, fontWeight: '600', fontSize: 14 }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={confirmDeleteTabAction}
+                style={{
+                  paddingVertical: 10,
+                  paddingHorizontal: 20,
+                  borderRadius: 8,
+                  backgroundColor: '#ef4444',
+                }}
+              >
+                <Text style={{ color: '#ffffff', fontWeight: '600', fontSize: 14 }}>Delete</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
     </View>
   );
 }

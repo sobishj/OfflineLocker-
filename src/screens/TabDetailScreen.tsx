@@ -59,6 +59,9 @@ export default function TabDetailScreen({ route, navigation }: any) {
   const [previewDataArray, setPreviewDataArray] = useState<string[]>([]);
   const [selectedForDownload, setSelectedForDownload] = useState<Record<number, boolean>>({});
 
+  // Delete confirmation
+  const [deleteConfirmDoc, setDeleteConfirmDoc] = useState<any>(null);
+
   // In-memory cache for decrypted document content to prevent duplicate decryptions
   const decryptionCacheRef = useRef<Map<string | number, { plainText: string; array: string[] }>>(new Map());
 
@@ -209,24 +212,15 @@ export default function TabDetailScreen({ route, navigation }: any) {
     isPickerBusyRef.current = true;
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: '*/*',
+        type: 'application/pdf',
         copyToCacheDirectory: true,
         multiple: false,
       });
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const newUris: string[] = [];
-        let determinedType = isEdit ? editFileType : fileType;
 
         for (const asset of result.assets) {
-          const isImage = asset.mimeType?.startsWith('image/') || asset.name.match(/\.(jpg|jpeg|png|gif)$/i);
-          const isPdf = asset.mimeType?.includes('pdf') || asset.name.match(/\.pdf$/i);
-          const isWord = asset.mimeType?.includes('word') || asset.mimeType?.includes('msword') || asset.name.match(/\.(doc|docx)$/i);
-
-          if (!determinedType) {
-            determinedType = (isImage ? 'image' : isPdf ? 'pdf' : isWord ? 'doc' : 'pdf') as any;
-          }
-
           let dataUri = '';
           if (Platform.OS === 'web') {
             const reader = new FileReader();
@@ -237,26 +231,22 @@ export default function TabDetailScreen({ route, navigation }: any) {
             dataUri = await uriPromise;
           } else {
             const base64Data = await FileSystem.readAsStringAsync(asset.uri, { encoding: 'base64' });
-            const mimeType = asset.mimeType || (isImage ? 'image/jpeg' : isPdf ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-            dataUri = `data:${mimeType};base64,${base64Data}`;
+            dataUri = `data:application/pdf;base64,${base64Data}`;
           }
 
-          if (isImage) {
-            dataUri = await optimizeImageUri(dataUri);
-          }
           newUris.push(dataUri);
         }
 
         if (isEdit) {
-          setEditFileType(determinedType as any);
+          setEditFileType('pdf');
           setEditFileUris(prev => [...prev, ...newUris]);
         } else {
-          setFileType(determinedType as any);
+          setFileType('pdf');
           setFileUris(prev => [...prev, ...newUris]);
         }
       }
     } catch (error) {
-      Alert.alert('Error', 'Could not pick document.');
+      Alert.alert('Error', 'Could not pick PDF document.');
     } finally {
       isPickerBusyRef.current = false;
     }
@@ -715,25 +705,33 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
   const handleDeleteClick = (item: any) => {
     if (!item) return;
-    const doDelete = () => {
-      deleteDocument(item.id!, tabId);
-      if (previewDoc?.id === item.id) {
-        setPreviewDoc(null);
-        setPreviewData('');
-        setPreviewDataArray([]);
-      }
-    };
-
     if (Platform.OS === 'web') {
-      if (window.confirm(`Are you sure you want to delete "${item.title}"?`)) {
-        doDelete();
-      }
+      // Use custom in-app modal for web (window.confirm can be blocked)
+      setDeleteConfirmDoc(item);
     } else {
       Alert.alert('Delete Document', `Are you sure you want to delete "${item.title}"?`, [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: doDelete }
+        { text: 'Delete', style: 'destructive', onPress: () => {
+          deleteDocument(item.id!, tabId);
+          if (previewDoc?.id === item.id) {
+            setPreviewDoc(null);
+            setPreviewData('');
+            setPreviewDataArray([]);
+          }
+        }}
       ]);
     }
+  };
+
+  const confirmDelete = () => {
+    if (!deleteConfirmDoc) return;
+    deleteDocument(deleteConfirmDoc.id!, tabId);
+    if (previewDoc?.id === deleteConfirmDoc.id) {
+      setPreviewDoc(null);
+      setPreviewData('');
+      setPreviewDataArray([]);
+    }
+    setDeleteConfirmDoc(null);
   };
 
   const currentTab = (tabs || []).find(t => t.uuid === tabId);
@@ -937,7 +935,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                       )}
                     </TouchableOpacity>
 
-                    {/* Bottom Action Bar (Non-nested TouchableOpacity elements for guaranteed web click handling) */}
+                    {/* Bottom Action Bar */}
                     <View style={{
                       flexDirection: 'row',
                       alignItems: 'center',
@@ -947,48 +945,40 @@ export default function TabDetailScreen({ route, navigation }: any) {
                       borderTopColor: isSelected ? 'rgba(37, 99, 235, 0.15)' : '#f1f5f9',
                     }}>
                       {/* 1. Open Button */}
-                      {renderWithTooltip(
-                        <TouchableOpacity 
-                          onPress={() => handleViewDoc(item)}
-                          style={{ padding: 4, marginRight: 12 }}
-                        >
-                          <Ionicons name="eye-outline" size={18} color={AppTheme.colors.primary} />
-                        </TouchableOpacity>,
-                        `Open ${item.title}`
-                      )}
+                      <TouchableOpacity 
+                        onPress={() => handleViewDoc(item)}
+                        style={{ padding: 6, marginRight: 10 }}
+                        {...(Platform.OS === 'web' ? { title: `Open ${item.title}` } : {})}
+                      >
+                        <Ionicons name="eye-outline" size={18} color={AppTheme.colors.primary} />
+                      </TouchableOpacity>
 
-                      {/* 2. Download Button (Consistent for ALL files) */}
-                      {renderWithTooltip(
-                        <TouchableOpacity 
-                          onPress={() => handleDownloadItem(item)}
-                          style={{ padding: 4, marginRight: 12 }}
-                        >
-                          <Ionicons name="download-outline" size={18} color={AppTheme.colors.primary} />
-                        </TouchableOpacity>,
-                        `Download ${item.title}`
-                      )}
+                      {/* 2. Download Button */}
+                      <TouchableOpacity 
+                        onPress={() => handleDownloadItem(item)}
+                        style={{ padding: 6, marginRight: 10 }}
+                        {...(Platform.OS === 'web' ? { title: `Download ${item.title}` } : {})}
+                      >
+                        <Ionicons name="download-outline" size={18} color={AppTheme.colors.primary} />
+                      </TouchableOpacity>
 
                       {/* 3. Edit Button */}
-                      {renderWithTooltip(
-                        <TouchableOpacity 
-                          onPress={() => handleOpenEditDoc(item)}
-                          style={{ padding: 4, marginRight: 12 }}
-                        >
-                          <Ionicons name="create-outline" size={18} color={AppTheme.colors.primary} />
-                        </TouchableOpacity>,
-                        `Edit ${item.title}`
-                      )}
+                      <TouchableOpacity 
+                        onPress={() => handleOpenEditDoc(item)}
+                        style={{ padding: 6, marginRight: 10 }}
+                        {...(Platform.OS === 'web' ? { title: `Edit ${item.title}` } : {})}
+                      >
+                        <Ionicons name="create-outline" size={18} color={AppTheme.colors.primary} />
+                      </TouchableOpacity>
 
                       {/* 4. Delete Button */}
-                      {renderWithTooltip(
-                        <TouchableOpacity 
-                          onPress={() => handleDeleteClick(item)}
-                          style={{ padding: 4 }}
-                        >
-                          <Ionicons name="trash-outline" size={18} color={AppTheme.colors.error} />
-                        </TouchableOpacity>,
-                        `Delete ${item.title}`
-                      )}
+                      <TouchableOpacity 
+                        onPress={() => handleDeleteClick(item)}
+                        style={{ padding: 6 }}
+                        {...(Platform.OS === 'web' ? { title: `Delete ${item.title}` } : {})}
+                      >
+                        <Ionicons name="trash-outline" size={18} color={AppTheme.colors.error} />
+                      </TouchableOpacity>
                     </View>
                   </View>
                 );
@@ -1344,8 +1334,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
                   <Text style={styles.mediaButtonText}>Gallery</Text>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => handleUploadFile(false)} style={styles.mediaButton}>
-                  <Ionicons name="document-attach" size={20} color={AppTheme.colors.primary} />
-                  <Text style={styles.mediaButtonText}>Files</Text>
+                  <Ionicons name="document-text" size={20} color={AppTheme.colors.primary} />
+                  <Text style={styles.mediaButtonText}>PDF</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -1510,8 +1500,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
                   <Text style={styles.mediaButtonText}>Gallery</Text>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => handleUploadFile(true)} style={styles.mediaButton}>
-                  <Ionicons name="document-attach" size={20} color={AppTheme.colors.primary} />
-                  <Text style={styles.mediaButtonText}>Files</Text>
+                  <Ionicons name="document-text" size={20} color={AppTheme.colors.primary} />
+                  <Text style={styles.mediaButtonText}>PDF</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -1657,6 +1647,73 @@ export default function TabDetailScreen({ route, navigation }: any) {
       {/* WEB CAMERA MODAL */}
       <Modal visible={webCameraVisible} animationType="slide" transparent={false}>
         <WebCamera onCapture={handleWebCameraCapture} onClose={() => setWebCameraVisible(false)} />
+      </Modal>
+
+      {/* DELETE CONFIRMATION MODAL */}
+      <Modal visible={!!deleteConfirmDoc} animationType="fade" transparent>
+        <View style={{
+          flex: 1,
+          backgroundColor: 'rgba(15, 23, 42, 0.5)',
+          justifyContent: 'center',
+          alignItems: 'center',
+          padding: 20,
+        }}>
+          <View style={{
+            backgroundColor: '#ffffff',
+            borderRadius: 16,
+            padding: 24,
+            maxWidth: 380,
+            width: '100%',
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 12 },
+            shadowOpacity: 0.15,
+            shadowRadius: 24,
+            elevation: 8,
+          }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 16 }}>
+              <View style={{
+                width: 40,
+                height: 40,
+                borderRadius: 20,
+                backgroundColor: '#fee2e2',
+                justifyContent: 'center',
+                alignItems: 'center',
+                marginRight: 12,
+              }}>
+                <Ionicons name="trash-outline" size={20} color="#ef4444" />
+              </View>
+              <Text style={{ fontSize: 18, fontWeight: '700', color: AppTheme.colors.text }}>Delete Document</Text>
+            </View>
+            <Text style={{ fontSize: 14, color: AppTheme.colors.textSecondary, lineHeight: 20, marginBottom: 20 }}>
+              Are you sure you want to delete "{deleteConfirmDoc?.title}"? This action cannot be undone.
+            </Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
+              <TouchableOpacity
+                onPress={() => setDeleteConfirmDoc(null)}
+                style={{
+                  paddingVertical: 10,
+                  paddingHorizontal: 20,
+                  borderRadius: 8,
+                  backgroundColor: '#f1f5f9',
+                  marginRight: 10,
+                }}
+              >
+                <Text style={{ color: AppTheme.colors.text, fontWeight: '600', fontSize: 14 }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={confirmDelete}
+                style={{
+                  paddingVertical: 10,
+                  paddingHorizontal: 20,
+                  borderRadius: 8,
+                  backgroundColor: '#ef4444',
+                }}
+              >
+                <Text style={{ color: '#ffffff', fontWeight: '600', fontSize: 14 }}>Delete</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
       </Modal>
 
 
