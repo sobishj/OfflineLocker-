@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, ActivityIndicator, Image, Platform, ScrollView, KeyboardAvoidingView, useWindowDimensions } from 'react-native';
 import { useLockerStore } from '../store/useLockerStore';
 import { AppTheme } from '../theme/AppTheme';
@@ -65,6 +65,44 @@ export default function TabDetailScreen({ route, navigation }: any) {
   // In-memory cache for decrypted document content to prevent duplicate decryptions
   const decryptionCacheRef = useRef<Map<string | number, { plainText: string; array: string[] }>>(new Map());
 
+  // Document Sort state
+  type DocSortOption = 'newest' | 'oldest' | 'name_asc' | 'name_desc';
+  const [sortOption, setSortOption] = useState<DocSortOption>('newest');
+  const [sortModalVisible, setSortModalVisible] = useState(false);
+
+  const DOC_SORT_OPTIONS: { id: DocSortOption; label: string; desc: string; icon: any }[] = [
+    { id: 'newest', label: 'Newest First', desc: 'Recently added files appear first', icon: 'time-outline' },
+    { id: 'oldest', label: 'Oldest First', desc: 'Earliest added files appear first', icon: 'hourglass-outline' },
+    { id: 'name_asc', label: 'File Name (A to Z)', desc: 'Alphabetical file order', icon: 'text-outline' },
+    { id: 'name_desc', label: 'File Name (Z to A)', desc: 'Reverse alphabetical order', icon: 'text-outline' },
+  ];
+
+  const getDocSortLabel = (opt: DocSortOption) => {
+    switch (opt) {
+      case 'newest': return 'Newest First';
+      case 'oldest': return 'Oldest First';
+      case 'name_asc': return 'Name (A–Z)';
+      case 'name_desc': return 'Name (Z–A)';
+      default: return 'Sort';
+    }
+  };
+
+  const sortedDocuments = useMemo(() => {
+    const list = [...activeDocuments];
+    switch (sortOption) {
+      case 'newest':
+        return list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      case 'oldest':
+        return list.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      case 'name_asc':
+        return list.sort((a, b) => (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' }));
+      case 'name_desc':
+        return list.sort((a, b) => (b.title || '').localeCompare(a.title || '', undefined, { sensitivity: 'base' }));
+      default:
+        return list;
+    }
+  }, [activeDocuments, sortOption]);
+
   useEffect(() => {
     // Reset preview state and decryption cache when switching tabs
     setPreviewDoc(null);
@@ -96,7 +134,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
       // Validate that previewDoc belongs to current activeDocuments for this tab
       const isCurrentPreviewValid = previewDoc && activeDocuments.some(d => d.id === previewDoc.id);
       if (!isCurrentPreviewValid) {
-        handleSelectPreview(activeDocuments[0]);
+        handleSelectPreview(sortedDocuments[0] || activeDocuments[0]);
       }
     } else {
       setPreviewDoc(null);
@@ -874,12 +912,40 @@ export default function TabDetailScreen({ route, navigation }: any) {
             backgroundColor: '#ffffff',
             flexDirection: 'column',
           }}>
-            <View style={{ paddingHorizontal: 12, paddingVertical: 12, borderBottomWidth: 1, borderColor: '#e2e8f0' }}>
+            <View style={{ 
+              paddingHorizontal: 12, 
+              paddingVertical: 10, 
+              borderBottomWidth: 1, 
+              borderColor: '#e2e8f0',
+              flexDirection: 'row',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}>
               <Text style={{ fontSize: 14, fontWeight: '700', color: AppTheme.colors.text }}>All Files</Text>
+              <TouchableOpacity
+                onPress={() => setSortModalVisible(true)}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  backgroundColor: AppTheme.colors.primaryLight,
+                  paddingHorizontal: 8,
+                  paddingVertical: 4,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: AppTheme.colors.primaryBorder,
+                }}
+                {...(Platform.OS === 'web' ? { title: 'Sort files' } : {})}
+              >
+                <Ionicons name="swap-vertical" size={13} color={AppTheme.colors.primary} style={{ marginRight: 3 }} />
+                <Text style={{ fontSize: 11, fontWeight: '600', color: AppTheme.colors.primary }} numberOfLines={1}>
+                  {getDocSortLabel(sortOption)}
+                </Text>
+                <Ionicons name="chevron-down" size={11} color={AppTheme.colors.primary} style={{ marginLeft: 2 }} />
+              </TouchableOpacity>
             </View>
 
             <FlatList
-              data={activeDocuments}
+              data={sortedDocuments}
               keyExtractor={item => item.id!.toString()}
               contentContainerStyle={{ padding: 8 }}
               renderItem={({ item }) => {
@@ -1739,6 +1805,94 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
 
 
+      {/* Document Sort / Filter Modal */}
+      <Modal
+        visible={sortModalVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setSortModalVisible(false)}
+      >
+        <TouchableOpacity 
+          style={styles.sortModalOverlay} 
+          activeOpacity={1} 
+          onPress={() => setSortModalVisible(false)}
+        >
+          <View 
+            style={styles.sortModalContent}
+            onStartShouldSetResponder={() => true}
+          >
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <View style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 10,
+                  backgroundColor: AppTheme.colors.primaryLight,
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  marginRight: 10,
+                }}>
+                  <Ionicons name="filter" size={18} color={AppTheme.colors.primary} />
+                </View>
+                <View>
+                  <Text style={{ fontSize: 17, fontWeight: '700', color: AppTheme.colors.text }}>Sort Files</Text>
+                  <Text style={{ fontSize: 12, color: AppTheme.colors.textSecondary }}>Choose display order</Text>
+                </View>
+              </View>
+              <TouchableOpacity 
+                onPress={() => setSortModalVisible(false)}
+                style={{ padding: 6 }}
+                {...(Platform.OS === 'web' ? { title: 'Close' } : {})}
+              >
+                <Ionicons name="close" size={20} color={AppTheme.colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            {DOC_SORT_OPTIONS.map((opt) => {
+              const isSelected = sortOption === opt.id;
+              return (
+                <TouchableOpacity
+                  key={opt.id}
+                  style={[
+                    styles.sortOptionItem,
+                    isSelected && styles.sortOptionItemSelected,
+                  ]}
+                  onPress={() => {
+                    setSortOption(opt.id);
+                    setSortModalVisible(false);
+                  }}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                    <View style={[
+                      styles.sortOptionIconBox,
+                      isSelected && { backgroundColor: AppTheme.colors.primary }
+                    ]}>
+                      <Ionicons 
+                        name={opt.icon} 
+                        size={18} 
+                        color={isSelected ? '#ffffff' : AppTheme.colors.primary} 
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[
+                        styles.sortOptionTitle,
+                        isSelected && { color: AppTheme.colors.primary, fontWeight: '700' }
+                      ]}>
+                        {opt.label}
+                      </Text>
+                      <Text style={styles.sortOptionDesc}>{opt.desc}</Text>
+                    </View>
+                  </View>
+                  {isSelected && (
+                    <Ionicons name="checkmark-circle" size={20} color={AppTheme.colors.primary} style={{ marginLeft: 8 }} />
+                  )}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
     </View>
   );
 }
@@ -1798,5 +1952,61 @@ const styles = StyleSheet.create({
   fullScreenTitle: { color: AppTheme.colors.text, fontSize: 20, fontWeight: 'bold' },
   closeButton: { padding: 6, backgroundColor: '#ef4444', borderRadius: 20, shadowColor: '#ef4444', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 3 },
   fullScreenContent: { flex: 1, padding: 20 },
-  fullScreenText: { color: AppTheme.colors.text, fontSize: 18, lineHeight: 28 }
+  fullScreenText: { color: AppTheme.colors.text, fontSize: 18, lineHeight: 28 },
+
+  // Sort Modal Styles
+  sortModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: AppTheme.spacing.l,
+  },
+  sortModalContent: {
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    padding: 20,
+    maxWidth: 400,
+    width: '100%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.12,
+    shadowRadius: 24,
+    elevation: 8,
+  },
+  sortOptionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#f1f5f9',
+    backgroundColor: '#ffffff',
+  },
+  sortOptionItemSelected: {
+    backgroundColor: AppTheme.colors.primaryLight,
+    borderColor: AppTheme.colors.primaryBorder,
+  },
+  sortOptionIconBox: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: AppTheme.colors.primaryLight,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  sortOptionTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: AppTheme.colors.text,
+  },
+  sortOptionDesc: {
+    fontSize: 12,
+    color: AppTheme.colors.textSecondary,
+    marginTop: 2,
+  }
 });
