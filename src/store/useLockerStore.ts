@@ -109,7 +109,7 @@ export const useLockerStore = create<LockerState>((set, get) => ({
     if (isValid) {
       await LockoutService.resetLockoutState();
       const cleanLockout = await LockoutService.getLockoutState();
-      set({ isAuthenticated: true, lockoutState: cleanLockout, errorMessage: null });
+      set({ isAuthenticated: true, activeDocuments: [], lockoutState: cleanLockout, errorMessage: null });
       await get().loadTabs();
       return true;
     }

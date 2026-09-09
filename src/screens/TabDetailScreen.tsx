@@ -66,22 +66,44 @@ export default function TabDetailScreen({ route, navigation }: any) {
   const decryptionCacheRef = useRef<Map<string | number, { plainText: string; array: string[] }>>(new Map());
 
   useEffect(() => {
+    // Reset preview state and decryption cache when switching tabs
+    setPreviewDoc(null);
+    setPreviewData('');
+    setPreviewDataArray([]);
+    decryptionCacheRef.current.clear();
+    setLoading(true);
+
     const fetchDocs = async () => {
       await loadDocumentsForTab(tabId);
       setLoading(false);
     };
     fetchDocs();
+
+    return () => {
+      // Clear preview and active documents on unmount so they do not bleed into other tabs
+      setPreviewDoc(null);
+      setPreviewData('');
+      setPreviewDataArray([]);
+      decryptionCacheRef.current.clear();
+      useLockerStore.setState({ activeDocuments: [] });
+    };
   }, [tabId]);
 
   useEffect(() => {
-    if (activeDocuments.length > 0 && !previewDoc) {
-      handleSelectPreview(activeDocuments[0]);
-    } else if (activeDocuments.length === 0) {
+    if (loading) return;
+
+    if (activeDocuments.length > 0) {
+      // Validate that previewDoc belongs to current activeDocuments for this tab
+      const isCurrentPreviewValid = previewDoc && activeDocuments.some(d => d.id === previewDoc.id);
+      if (!isCurrentPreviewValid) {
+        handleSelectPreview(activeDocuments[0]);
+      }
+    } else {
       setPreviewDoc(null);
       setPreviewData('');
       setPreviewDataArray([]);
     }
-  }, [activeDocuments, previewDoc]);
+  }, [activeDocuments, previewDoc, loading]);
 
   const isSharingRef = useRef(false);
   const isPickerBusyRef = useRef(false);
@@ -712,6 +734,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
       Alert.alert('Delete Document', `Are you sure you want to delete "${item.title}"?`, [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Delete', style: 'destructive', onPress: () => {
+          if (item.id) decryptionCacheRef.current.delete(item.id);
           deleteDocument(item.id!, tabId);
           if (previewDoc?.id === item.id) {
             setPreviewDoc(null);
@@ -725,6 +748,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
   const confirmDelete = () => {
     if (!deleteConfirmDoc) return;
+    if (deleteConfirmDoc.id) decryptionCacheRef.current.delete(deleteConfirmDoc.id);
     deleteDocument(deleteConfirmDoc.id!, tabId);
     if (previewDoc?.id === deleteConfirmDoc.id) {
       setPreviewDoc(null);
@@ -1102,13 +1126,13 @@ export default function TabDetailScreen({ route, navigation }: any) {
                                     </Text>
                                   </View>
 
-                                  <View style={{ height: isMobile ? 320 : 500, backgroundColor: '#ffffff' }}>
-                                    {React.createElement('embed', {
-                                      src: blobUrl,
-                                      type: 'application/pdf',
-                                      style: { width: '100%', height: '100%', border: 'none' },
-                                    })}
-                                  </View>
+                                  {React.createElement('div', {
+                                    style: { width: '100%', height: isMobile ? 320 : 500, backgroundColor: '#ffffff' },
+                                  }, React.createElement('iframe', {
+                                    src: blobUrl,
+                                    style: { width: '100%', height: '100%', border: 'none' },
+                                    title: `PDF Document ${idx + 1}`,
+                                  }))}
                                 </View>
                               );
                             }
@@ -1604,17 +1628,14 @@ export default function TabDetailScreen({ route, navigation }: any) {
                       displayFiles.map((uri, idx) => {
                         const blobUrl = getPdfBlobUrl(uri);
                         return (
-                          <View key={idx} style={{ height: 750, marginBottom: 20 }}>
-                            {React.createElement('object', {
-                              data: blobUrl,
-                              type: 'application/pdf',
-                              style: { width: '100%', height: '100%', border: 'none', borderRadius: 12 }
-                            }, React.createElement('iframe', {
-                              src: blobUrl,
-                              style: { width: '100%', height: '100%', border: 'none', borderRadius: 12 },
-                              title: `${selectedDoc?.title} ${idx + 1}`
-                            }))}
-                          </View>
+                          React.createElement('div', {
+                            key: idx,
+                            style: { width: '100%', height: 750, marginBottom: 20 },
+                          }, React.createElement('iframe', {
+                            src: blobUrl,
+                            style: { width: '100%', height: '100%', border: 'none', borderRadius: 12 },
+                            title: `${selectedDoc?.title} ${idx + 1}`,
+                          }))
                         );
                       })
                     ) : (
