@@ -23,6 +23,14 @@ export default function TabDetailScreen({ route, navigation }: any) {
   const { width: screenWidth } = useWindowDimensions();
   const isMobile = screenWidth < 768;
 
+  const candidateKeys = useMemo(() => {
+    return [currentUser?.pinHash, unlockPin, 'default_fallback'].filter(Boolean) as string[];
+  }, [currentUser?.pinHash, unlockPin]);
+
+  const decryptDoc = (cipherText: string): string => {
+    return CryptoService.decryptWithKeys(cipherText, candidateKeys);
+  };
+
   const [loading, setLoading] = useState(true);
   const [modalVisible, setModalVisible] = useState(false);
   const [viewModalVisible, setViewModalVisible] = useState(false);
@@ -361,7 +369,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
     setTimeout(async () => {
       try {
-        const encryptionKey = unlockPin || currentUser?.pinHash || 'default_fallback';
+        const encryptionKey = currentUser?.pinHash || 'default_fallback';
         const type = fileType ? fileType : 'text';
 
         let processedUris = fileUris;
@@ -396,8 +404,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
     setEditDocTitle(doc.title);
     setEditFileType(doc.type as any);
 
-    const decryptionKey = unlockPin || currentUser?.pinHash || 'default_fallback';
-    const plainText = CryptoService.decryptText(doc.encryptedContent || '', decryptionKey);
+    const plainText = decryptDoc(doc.encryptedContent || '');
 
     const payload = parseDecryptedPayload(plainText);
     setEditDocContent(payload.notes);
@@ -427,7 +434,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
     setTimeout(async () => {
       try {
-        const encryptionKey = unlockPin || currentUser?.pinHash || 'default_fallback';
+        const encryptionKey = currentUser?.pinHash || 'default_fallback';
         const type = editFileType ? editFileType : 'text';
 
         let processedUris = editFileUris;
@@ -474,7 +481,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
   };
 
   const parseDecryptedPayload = (plainText: string): { notes: string; files: string[] } => {
-    if (!plainText || typeof plainText !== 'string') return { notes: '', files: [] };
+    if (!plainText || typeof plainText !== 'string' || plainText.startsWith('⚠️')) return { notes: '', files: [] };
     const trimmed = plainText.trim();
     if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
       try {
@@ -516,8 +523,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
       return cached.array[0] || null;
     }
     try {
-      const decryptionKey = unlockPin || currentUser?.pinHash || 'default_fallback';
-      const plainText = CryptoService.decryptText(item.encryptedContent || '', decryptionKey);
+      const plainText = decryptDoc(item.encryptedContent || '');
       const files = parseDecryptedContent(plainText);
       return files[0] || null;
     } catch (e) {
@@ -564,8 +570,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
     setTimeout(async () => {
       try {
-        const decryptionKey = unlockPin || currentUser?.pinHash || 'default_fallback';
-        const plainText = CryptoService.decryptText(doc.encryptedContent || '', decryptionKey);
+        const plainText = decryptDoc(doc.encryptedContent || '');
         setDecryptedText(plainText);
         let prepared: string[] = [];
         const rawArr = parseDecryptedContent(plainText);
@@ -574,7 +579,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
           prepared = await prepareLocalFiles(rawArr, doc.title || 'doc', effectiveType);
           setDecryptedArray(prepared);
         }
-        if (doc.id) {
+        if (doc.id && !plainText.startsWith('⚠️')) {
           decryptionCacheRef.current.set(doc.id, { plainText, array: prepared });
         }
       } catch (err) {
@@ -601,8 +606,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
       return;
     }
 
-    const decryptionKey = unlockPin || currentUser?.pinHash || 'default_fallback';
-    const plainText = CryptoService.decryptText(doc.encryptedContent || '', decryptionKey);
+    const plainText = decryptDoc(doc.encryptedContent || '');
     setPreviewData(plainText);
 
     let arr: string[] = [];
@@ -620,7 +624,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
       setSelectedForDownload({});
     }
 
-    if (doc.id) {
+    if (doc.id && !plainText.startsWith('⚠️')) {
       decryptionCacheRef.current.set(doc.id, { plainText, array: arr });
     }
   };
@@ -679,8 +683,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
   };
 
   const handleDownloadFromCard = (doc: any) => {
-    const decryptionKey = unlockPin || currentUser?.pinHash || 'default_fallback';
-    const plainText = CryptoService.decryptText(doc.encryptedContent, decryptionKey);
+    const plainText = decryptDoc(doc.encryptedContent || '');
     const arr = parseDecryptedContent(plainText);
 
     // Add a small delay between downloads on Web to prevent the browser from blocking multiple popups
@@ -710,9 +713,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
   const handleDownloadItem = (item: any) => {
     if (!item) return;
-    const decryptionKey = unlockPin || currentUser?.pinHash || 'default_fallback';
     let cached = decryptionCacheRef.current.get(item.id);
-    let plainText = cached ? cached.plainText : CryptoService.decryptText(item.encryptedContent || '', decryptionKey);
+    let plainText = cached ? cached.plainText : decryptDoc(item.encryptedContent || '');
     const payload = parseDecryptedPayload(plainText);
     if (payload.files && payload.files.length > 0) {
       payload.files.forEach((uri: string, idx: number) => {
@@ -1255,11 +1257,21 @@ export default function TabDetailScreen({ route, navigation }: any) {
                   <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16 }}>
                     {(() => {
                       const payload = parseDecryptedPayload(previewData);
-                      const notesText = payload.notes || (!previewData.startsWith('[') && !previewData.startsWith('{') ? previewData : '');
+                      const notesText = payload.notes || (!previewData.startsWith('[') && !previewData.startsWith('{') && !previewData.startsWith('⚠️') ? previewData : '');
                       
                       return (
                         <>
-                          {previewDataArray.length === 0 && notesText ? (
+                          {previewData.startsWith('⚠️') ? (
+                            <View style={{ backgroundColor: '#fef2f2', padding: 16, borderRadius: 12, borderWidth: 1, borderColor: '#fecaca', alignItems: 'center', marginVertical: 8 }}>
+                              <Ionicons name="lock-closed-outline" size={32} color="#dc2626" style={{ marginBottom: 8 }} />
+                              <Text style={{ color: '#991b1b', fontSize: 14, fontWeight: '600', textAlign: 'center' }}>
+                                Decryption Failed
+                              </Text>
+                              <Text style={{ color: '#b91c1c', fontSize: 12, marginTop: 4, textAlign: 'center' }}>
+                                Unable to decrypt document with the current keys.
+                              </Text>
+                            </View>
+                          ) : previewDataArray.length === 0 && notesText ? (
                             <View style={{ backgroundColor: '#ffffff', padding: 16, borderRadius: 12, borderWidth: 1, borderColor: '#e2e8f0' }}>
                               <Text style={{ color: AppTheme.colors.text, fontSize: 15, lineHeight: 24 }}>
                                 {notesText}
@@ -1439,7 +1451,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
                     {(() => {
                       const payload = parseDecryptedPayload(previewData);
-                      const notesText = payload.notes || (!previewData.startsWith('[') && !previewData.startsWith('{') ? previewData : '');
+                      const notesText = payload.notes || (!previewData.startsWith('[') && !previewData.startsWith('{') && !previewData.startsWith('⚠️') ? previewData : '');
                       if (!notesText) return null;
                       return (
                         <View style={{ width: '100%', marginTop: 8, paddingTop: 12, borderTopWidth: 1, borderColor: '#f1f5f9' }}>

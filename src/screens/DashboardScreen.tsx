@@ -38,6 +38,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   // Unlock tab state
   const [selectedTab, setSelectedTab] = useState<any>(null);
   const [unlockPin, setUnlockPin] = useState('');
+  const [pinActionTarget, setPinActionTarget] = useState<'open' | 'edit' | 'delete'>('open');
 
   // Export / Import state
   const [backupModalVisible, setBackupModalVisible] = useState(false);
@@ -146,13 +147,24 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     };
   }, []);
 
-  const handleOpenEditTab = (tab: any) => {
+  const openEditTabModal = (tab: any) => {
     setEditTabId(tab.uuid);
     setEditTabName(tab.name);
     setEditTabDesc(tab.description || '');
     setEditIsSensitive(tab.isSensitive === 1);
     setEditTabPin('');
     setEditModalVisible(true);
+  };
+
+  const handleOpenEditTab = (tab: any) => {
+    if (tab.isSensitive === 1 && tab.tabPinHash) {
+      setSelectedTab(tab);
+      setPinActionTarget('edit');
+      setUnlockPin('');
+      setPinModalVisible(true);
+      return;
+    }
+    openEditTabModal(tab);
   };
 
   const handleSaveEditTab = async () => {
@@ -181,7 +193,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     }
   };
 
-  const handleConfirmDeleteTab = (tab: any) => {
+  const showDeleteTabPrompt = (tab: any) => {
     if (Platform.OS === 'web') {
       setDeleteConfirmTab(tab);
     } else {
@@ -194,6 +206,17 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         ]
       );
     }
+  };
+
+  const handleConfirmDeleteTab = (tab: any) => {
+    if (tab.isSensitive === 1 && tab.tabPinHash) {
+      setSelectedTab(tab);
+      setPinActionTarget('delete');
+      setUnlockPin('');
+      setPinModalVisible(true);
+      return;
+    }
+    showDeleteTabPrompt(tab);
   };
 
   const confirmDeleteTabAction = () => {
@@ -334,6 +357,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
     if (tab.isSensitive === 1) {
       setSelectedTab(tab);
+      setPinActionTarget('open');
+      setUnlockPin('');
       setPinModalVisible(true);
     } else {
       navigation.navigate('TabDetail', { tabId: tab.uuid, tabName: tab.name });
@@ -342,9 +367,19 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
   const handleUnlockTab = () => {
     if (selectedTab && verifyTabPin(selectedTab, unlockPin)) {
+      const currentSelected = selectedTab;
+      const currentTarget = pinActionTarget;
+      const pin = unlockPin;
       setPinModalVisible(false);
       setUnlockPin('');
-      navigation.navigate('TabDetail', { tabId: selectedTab.uuid, tabName: selectedTab.name, unlockPin });
+
+      if (currentTarget === 'edit') {
+        openEditTabModal(currentSelected);
+      } else if (currentTarget === 'delete') {
+        showDeleteTabPrompt(currentSelected);
+      } else {
+        navigation.navigate('TabDetail', { tabId: currentSelected.uuid, tabName: currentSelected.name, unlockPin: pin });
+      }
     } else {
       Alert.alert('Error', 'Incorrect PIN');
     }
@@ -490,7 +525,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                   style={styles.editBtn}
                   {...(Platform.OS === 'web' ? { title: `Edit ${item.name}` } : {})}
                 >
-                  <Ionicons name="create-outline" size={18} color={AppTheme.colors.primary} />
+                  <Ionicons name="create-outline" size={18} color={AppTheme.colors.text} />
                 </TouchableOpacity>
 
                 <TouchableOpacity 
@@ -631,8 +666,23 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       <Modal visible={pinModalVisible} animationType="fade" transparent>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
           <View style={[styles.modalContent, { maxHeight: '95%' }]}>
-            <Text style={styles.modalTitle}>Unlock {selectedTab?.name}</Text>
-            <TextInput style={[styles.input, { letterSpacing: unlockPin ? 6 : 0 }]} placeholder="4-Digit PIN" placeholderTextColor={AppTheme.colors.textSecondary} value={unlockPin} onChangeText={setUnlockPin} keyboardType="numeric" secureTextEntry maxLength={4} />
+            <Text style={styles.modalTitle}>
+              {pinActionTarget === 'edit' 
+                ? `Verify PIN to Edit ${selectedTab?.name}` 
+                : pinActionTarget === 'delete'
+                ? `Verify PIN to Delete ${selectedTab?.name}`
+                : `Unlock ${selectedTab?.name}`}
+            </Text>
+            <TextInput 
+              style={[styles.input, { letterSpacing: unlockPin ? 6 : 0 }]} 
+              placeholder="4-Digit PIN" 
+              placeholderTextColor={AppTheme.colors.textSecondary} 
+              value={unlockPin} 
+              onChangeText={setUnlockPin} 
+              keyboardType="numeric" 
+              secureTextEntry 
+              maxLength={4} 
+            />
             <View style={styles.modalActions}>
               <TouchableOpacity onPress={() => { setPinModalVisible(false); setUnlockPin(''); }} style={[styles.button, { backgroundColor: AppTheme.colors.border }]}>
                 <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
@@ -645,7 +695,9 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                     disabled={isUnlockDisabled} 
                     style={[styles.button, isUnlockDisabled && { backgroundColor: AppTheme.colors.border, opacity: 0.5 }]}
                   >
-                    <Text style={[styles.buttonText, isUnlockDisabled && { color: AppTheme.colors.textSecondary }]}>Unlock</Text>
+                    <Text style={[styles.buttonText, isUnlockDisabled && { color: AppTheme.colors.textSecondary }]}>
+                      {pinActionTarget === 'open' ? 'Unlock' : 'Verify'}
+                    </Text>
                   </TouchableOpacity>
                 );
               })()}
@@ -1068,8 +1120,8 @@ const styles = StyleSheet.create({
   modalActions: { flexDirection: 'row', justifyContent: 'space-between', marginTop: AppTheme.spacing.s },
   button: { flex: 1, backgroundColor: AppTheme.colors.primary, paddingVertical: 14, borderRadius: AppTheme.borderRadius.s, alignItems: 'center', marginHorizontal: 4 },
   buttonText: { color: '#fff', fontWeight: 'bold', fontSize: 15 },
-  editBtn: { width: 40, height: 40, borderRadius: 12, backgroundColor: AppTheme.colors.primaryLight, justifyContent: 'center', alignItems: 'center' },
-  deleteBtn: { width: 40, height: 40, borderRadius: 12, backgroundColor: AppTheme.colors.errorLight, justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
+  editBtn: { width: 40, height: 40, borderRadius: 10, backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#cbd5e1', justifyContent: 'center', alignItems: 'center' },
+  deleteBtn: { width: 40, height: 40, borderRadius: 10, backgroundColor: '#fef2f2', borderWidth: 1, borderColor: '#fecaca', justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
   sectionHeaderContainer: { marginTop: 8, marginBottom: AppTheme.spacing.l, paddingHorizontal: 4 },
   sectionTitle: { color: AppTheme.colors.text, fontSize: 24, fontWeight: 'bold', letterSpacing: -0.3 },
   sectionSubtitle: { color: AppTheme.colors.textSecondary, fontSize: 15, marginTop: 4 },

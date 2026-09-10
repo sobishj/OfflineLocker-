@@ -89,17 +89,44 @@ export class CryptoService {
         if (utf8Result) return utf8Result;
       } catch (e) {}
 
-      // Fast Latin1 fallback if UTF-8 fails
+      // Fast Latin1 fallback if UTF-8 fails (e.g. for huge base64 strings on Hermes)
+      // Must be guarded against returning arbitrary binary noise from wrong AES keys
       try {
         const latin1Result = decrypted.toString(CryptoJS.enc.Latin1);
-        if (latin1Result) return latin1Result;
+        if (
+          latin1Result &&
+          (latin1Result.startsWith('data:') ||
+           latin1Result.startsWith('[') ||
+           latin1Result.startsWith('{') ||
+           /^[\x20-\x7E\r\n\t]+$/.test(latin1Result.slice(0, 100)))
+        ) {
+          return latin1Result;
+        }
       } catch (e) {}
 
       throw new Error('Decryption resulted in empty string');
     } catch (e) {
-      console.error('Decryption failed', e);
       return '⚠️ Decryption Failed: Invalid Key or Corrupted Data';
     }
+  }
+
+  /**
+   * Decrypt ciphertext attempting multiple candidate keys in order.
+   * Returns the first successfully decrypted valid plaintext.
+   */
+  static decryptWithKeys(cipherText: string, pinKeys: (string | undefined | null)[]): string {
+    if (!cipherText) return '';
+    const keys = Array.from(new Set(pinKeys.filter((k): k is string => Boolean(k && k.trim()))));
+    if (keys.length === 0) return cipherText;
+
+    for (const key of keys) {
+      const result = this.decryptText(cipherText, key);
+      if (result && !result.startsWith('⚠️ Decryption Failed')) {
+        return result;
+      }
+    }
+
+    return '⚠️ Decryption Failed: Invalid Key or Corrupted Data';
   }
 }
 
