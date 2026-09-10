@@ -953,34 +953,35 @@ export default function TabDetailScreen({ route, navigation }: any) {
             flexDirection: 'column',
           }}>
             <View style={{ 
-              paddingHorizontal: 12, 
-              paddingVertical: 10, 
+              paddingHorizontal: 6, 
+              paddingVertical: 6, 
               borderBottomWidth: 1, 
               borderColor: '#e2e8f0',
               flexDirection: 'row',
-              justifyContent: 'space-between',
+              justifyContent: 'center',
               alignItems: 'center',
             }}>
-              <Text style={{ fontSize: 14, fontWeight: '700', color: AppTheme.colors.text }}>All Files</Text>
               <TouchableOpacity
                 onPress={() => setSortModalVisible(true)}
                 style={{
                   flexDirection: 'row',
                   alignItems: 'center',
+                  justifyContent: 'center',
                   backgroundColor: AppTheme.colors.primaryLight,
-                  paddingHorizontal: 8,
-                  paddingVertical: 4,
-                  borderRadius: 12,
+                  paddingHorizontal: 7,
+                  paddingVertical: 3,
+                  borderRadius: 8,
                   borderWidth: 1,
                   borderColor: AppTheme.colors.primaryBorder,
+                  maxWidth: '92%',
                 }}
                 {...(Platform.OS === 'web' ? { title: 'Sort files' } : {})}
               >
-                <Ionicons name="swap-vertical" size={13} color={AppTheme.colors.primary} style={{ marginRight: 3 }} />
-                <Text style={{ fontSize: 11, fontWeight: '600', color: AppTheme.colors.primary }} numberOfLines={1}>
+                <Ionicons name="swap-vertical" size={10} color={AppTheme.colors.primary} style={{ marginRight: 2 }} />
+                <Text style={{ fontSize: 9, fontWeight: '600', color: AppTheme.colors.primary }} numberOfLines={1}>
                   {getDocSortLabel(sortOption)}
                 </Text>
-                <Ionicons name="chevron-down" size={11} color={AppTheme.colors.primary} style={{ marginLeft: 2 }} />
+                <Ionicons name="chevron-down" size={9} color={AppTheme.colors.primary} style={{ marginLeft: 2 }} />
               </TouchableOpacity>
             </View>
 

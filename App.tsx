@@ -30,7 +30,7 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <NavigationContainer>
-        <StatusBar barStyle="light-content" />
+        <StatusBar barStyle="dark-content" backgroundColor={AppTheme.colors.background} />
         <Stack.Navigator screenOptions={{ 
           headerStyle: { backgroundColor: AppTheme.colors.surface },
           headerTintColor: AppTheme.colors.text,
