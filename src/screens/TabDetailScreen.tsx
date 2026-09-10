@@ -1782,31 +1782,9 @@ export default function TabDetailScreen({ route, navigation }: any) {
             <Text style={styles.fullScreenTitle} numberOfLines={1} ellipsizeMode="tail">
               {selectedDoc?.title}
             </Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', flexShrink: 0 }}>
-              <TouchableOpacity
-                onPress={() => {
-                  setViewModalVisible(false);
-                  handleOpenEditDoc(selectedDoc);
-                }}
-                style={{ 
-                  flexDirection: 'row', 
-                  alignItems: 'center', 
-                  marginRight: 12, 
-                  backgroundColor: '#f1f5f9', 
-                  paddingHorizontal: 12, 
-                  paddingVertical: 6, 
-                  borderRadius: 8,
-                  borderWidth: 1,
-                  borderColor: '#e2e8f0'
-                }}
-              >
-                <Ionicons name="create-outline" size={18} color={AppTheme.colors.text} style={{ marginRight: 4 }} />
-                <Text style={{ color: AppTheme.colors.text, fontWeight: '600', fontSize: 13 }}>Edit</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => setViewModalVisible(false)} style={styles.closeButton}>
-                <Ionicons name="close" size={24} color="#ffffff" />
-              </TouchableOpacity>
-            </View>
+            <TouchableOpacity onPress={() => setViewModalVisible(false)} style={styles.closeButton}>
+              <Ionicons name="close" size={24} color="#ffffff" />
+            </TouchableOpacity>
           </View>
 
           <View style={styles.fullScreenContent}>
@@ -1817,9 +1795,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
               return (
                 <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 40 }}>
-                  {!!notes && (
+                  {displayFiles.length === 0 && !!notes && (
                     <View style={{ backgroundColor: 'rgba(255,255,255,0.85)', padding: 18, borderRadius: 12, marginBottom: 20, borderWidth: 1, borderColor: AppTheme.colors.border, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 6, elevation: 2 }}>
-                      <Text style={{ fontSize: 13, color: AppTheme.colors.primary, fontWeight: '700', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Description / Notes</Text>
                       <Text style={{ fontSize: 16, color: AppTheme.colors.text, lineHeight: 24 }}>{notes}</Text>
                     </View>
                   )}
