@@ -1259,8 +1259,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
                       
                       return (
                         <>
-                          {notesText ? (
-                            <View style={{ marginBottom: previewDataArray.length > 0 ? 16 : 0, backgroundColor: '#ffffff', padding: 14, borderRadius: 12, borderWidth: 1, borderColor: '#e2e8f0' }}>
+                          {previewDataArray.length === 0 && notesText ? (
+                            <View style={{ backgroundColor: '#ffffff', padding: 16, borderRadius: 12, borderWidth: 1, borderColor: '#e2e8f0' }}>
                               <Text style={{ color: AppTheme.colors.text, fontSize: 15, lineHeight: 24 }}>
                                 {notesText}
                               </Text>
@@ -1409,24 +1409,17 @@ export default function TabDetailScreen({ route, navigation }: any) {
                         {previewDoc.title}
                       </Text>
                     </TouchableOpacity>
-                    <View style={{ width: '33%', marginBottom: 14 }}>
+                    <View style={{ width: '50%', marginBottom: 14 }}>
                       <Text style={{ fontSize: 11, color: AppTheme.colors.textSecondary }}>Type</Text>
                       <Text style={{ fontSize: 13, fontWeight: '600', color: AppTheme.colors.text, marginTop: 2 }}>
                         {previewDoc.type === 'image' ? 'JPEG Image' : previewDoc.type === 'pdf' ? 'PDF Document' : 'Text Document'}
                       </Text>
                     </View>
 
-                    <View style={{ width: '33%', marginBottom: 14 }}>
+                    <View style={{ width: '50%', marginBottom: 14 }}>
                       <Text style={{ fontSize: 11, color: AppTheme.colors.textSecondary }}>Size</Text>
                       <Text style={{ fontSize: 13, fontWeight: '600', color: AppTheme.colors.text, marginTop: 2 }}>
                         {formatFileSize(previewDoc.encryptedContent)}
-                      </Text>
-                    </View>
-
-                    <View style={{ width: '33%', marginBottom: 14 }}>
-                      <Text style={{ fontSize: 11, color: AppTheme.colors.textSecondary }}>Dimensions</Text>
-                      <Text style={{ fontSize: 13, fontWeight: '600', color: AppTheme.colors.text, marginTop: 2 }}>
-                        {previewDoc.type === 'image' ? 'Image File' : previewDoc.type === 'pdf' ? 'PDF Document' : 'Text File'}
                       </Text>
                     </View>
 
@@ -1443,6 +1436,22 @@ export default function TabDetailScreen({ route, navigation }: any) {
                         /{displayTabName}/{previewDoc.title}
                       </Text>
                     </View>
+
+                    {(() => {
+                      const payload = parseDecryptedPayload(previewData);
+                      const notesText = payload.notes || (!previewData.startsWith('[') && !previewData.startsWith('{') ? previewData : '');
+                      if (!notesText) return null;
+                      return (
+                        <View style={{ width: '100%', marginTop: 8, paddingTop: 12, borderTopWidth: 1, borderColor: '#f1f5f9' }}>
+                          <Text style={{ fontSize: 11, color: AppTheme.colors.textSecondary, marginBottom: 6 }}>Description / Notes</Text>
+                          <View style={{ backgroundColor: '#f8fafc', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: '#e2e8f0' }}>
+                            <Text style={{ fontSize: 13, color: AppTheme.colors.text, lineHeight: 20 }}>
+                              {notesText}
+                            </Text>
+                          </View>
+                        </View>
+                      );
+                    })()}
                   </View>
                 </View>
               </ScrollView>
