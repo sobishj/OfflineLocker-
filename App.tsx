@@ -8,6 +8,8 @@ import TabDetailScreen from './src/screens/TabDetailScreen';
 import { ActivityIndicator, View, StatusBar } from 'react-native';
 import { AppTheme } from './src/theme/AppTheme';
 
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+
 const Stack = createNativeStackNavigator();
 
 export default function App() {
@@ -26,28 +28,30 @@ export default function App() {
   }
 
   return (
-    <NavigationContainer>
-      <StatusBar barStyle="light-content" />
-      <Stack.Navigator screenOptions={{ 
-        headerStyle: { backgroundColor: AppTheme.colors.surface },
-        headerTintColor: AppTheme.colors.text,
-        headerTitleStyle: { fontWeight: '700', fontSize: 18, color: AppTheme.colors.text },
-        headerShadowVisible: false,
-        contentStyle: { backgroundColor: AppTheme.colors.background }
-      }}>
-        {!isAuthenticated ? (
-          <Stack.Screen name="Auth" component={AuthScreen} options={{ headerShown: false }} />
-        ) : (
-          <>
-            <Stack.Screen name="Dashboard" component={DashboardScreen} options={{ title: 'OfflineLocker' }} />
-            <Stack.Screen 
-              name="TabDetail" 
-              component={TabDetailScreen} 
-              options={{ headerShown: false }} 
-            />
-          </>
-        )}
-      </Stack.Navigator>
-    </NavigationContainer>
+    <SafeAreaProvider>
+      <NavigationContainer>
+        <StatusBar barStyle="light-content" />
+        <Stack.Navigator screenOptions={{ 
+          headerStyle: { backgroundColor: AppTheme.colors.surface },
+          headerTintColor: AppTheme.colors.text,
+          headerTitleStyle: { fontWeight: '700', fontSize: 18, color: AppTheme.colors.text },
+          headerShadowVisible: false,
+          contentStyle: { backgroundColor: AppTheme.colors.background }
+        }}>
+          {!isAuthenticated ? (
+            <Stack.Screen name="Auth" component={AuthScreen} options={{ headerShown: false }} />
+          ) : (
+            <>
+              <Stack.Screen name="Dashboard" component={DashboardScreen} options={{ title: 'OfflineLocker' }} />
+              <Stack.Screen 
+                name="TabDetail" 
+                component={TabDetailScreen} 
+                options={{ headerShown: false }} 
+              />
+            </>
+          )}
+        </Stack.Navigator>
+      </NavigationContainer>
+    </SafeAreaProvider>
   );
 }

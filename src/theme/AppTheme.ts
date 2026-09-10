@@ -3,10 +3,10 @@ export const AppTheme = {
     background: '#f4f7fc',
     surface: '#ffffff',
     surfaceSubtle: '#f8fafc',
-    primary: '#2563eb', // Royal blue matching screenshot
-    primaryHover: '#1d4ed8',
-    primaryLight: '#eef2ff', // Light soft blue for edit btn & badge
-    primaryBorder: '#dbeafe',
+    primary: '#0078D4', // Vibrant cloud blue matching OneDrive image
+    primaryHover: '#0067b8',
+    primaryLight: '#eef6fc', // Soft cloud blue tint for badges and buttons
+    primaryBorder: '#cce4f7',
     text: '#0f172a', // Deep slate bold text
     textSecondary: '#64748b', // Muted text
     textMuted: '#94a3b8',
@@ -16,7 +16,7 @@ export const AppTheme = {
     sensitive: '#f59e0b',
     cardBackground: '#ffffff',
     cardBorder: '#f1f5f9',
-    iconFolderBg: '#e0e7ff',
+    iconFolderBg: '#e1effa',
   },
   spacing: {
     xs: 4,
@@ -42,7 +42,7 @@ export const AppTheme = {
       elevation: 2,
     },
     fab: {
-      shadowColor: '#2563eb',
+      shadowColor: '#0078D4',
       shadowOffset: { width: 0, height: 6 },
       shadowOpacity: 0.35,
       shadowRadius: 10,

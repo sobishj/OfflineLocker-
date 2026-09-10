@@ -13,8 +13,10 @@ import WebCamera from '../components/WebCamera';
 import CustomImageCropper from '../components/CustomImageCropper';
 import { WebView } from 'react-native-webview';
 import DraggableFAB from '../components/DraggableFAB';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function TabDetailScreen({ route, navigation }: any) {
+  const insets = useSafeAreaInsets();
   const tabId = route?.params?.tabId;
   const unlockPin = route?.params?.unlockPin;
   const { tabs, activeDocuments, loadDocumentsForTab, addDocument, updateDocument, deleteDocument, logout, currentUser } = useLockerStore();
@@ -786,16 +788,17 @@ export default function TabDetailScreen({ route, navigation }: any) {
     return (totalBytes / (1024 * 1024)).toFixed(1);
   };
 
-  const renderWithTooltip = (element: React.ReactElement, tooltipText: string, display?: string, onDoubleClick?: () => void) => {
+  const renderWithTooltip = (element: React.ReactElement, tooltipText: string, display?: string, onDoubleClick?: () => void, flex?: number) => {
     if (Platform.OS === 'web' && tooltipText) {
       return React.createElement('div', { 
         title: tooltipText, 
         onDoubleClick: onDoubleClick,
         style: { 
-          display: display || 'inline-flex', 
+          display: display === 'flex' ? 'flex' : (display || 'inline-flex'), 
           cursor: 'pointer', 
           maxWidth: '100%', 
           width: display === 'block' ? '100%' : undefined,
+          flex: display === 'flex' ? 1 : (flex !== undefined ? flex : undefined),
           alignItems: display === 'block' ? undefined : 'center'
         } 
       }, element);
@@ -879,57 +882,15 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
   return (
     <View style={styles.container}>
-      {/* TOP HEADER BAR matching main app */}
-      <View style={{
+      {/* VAULT TITLE & COUNTER HEADER */}
+      <View style={{ 
+        paddingHorizontal: isMobile ? 16 : 24, 
+        paddingTop: isMobile ? Math.max(insets.top + 8, 16) : 16, 
+        paddingBottom: 16,
         backgroundColor: '#ffffff',
-        paddingHorizontal: 16,
-        paddingVertical: 10,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
         borderBottomWidth: 1,
         borderBottomColor: '#e2e8f0',
       }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          <View style={{
-            width: 32,
-            height: 32,
-            borderRadius: 10,
-            backgroundColor: AppTheme.colors.primary,
-            justifyContent: 'center',
-            alignItems: 'center',
-            marginRight: 10,
-          }}>
-            <Ionicons name="lock-closed" size={18} color="#ffffff" />
-          </View>
-          <Text style={{ fontSize: 19, fontWeight: '700', color: AppTheme.colors.text }}>OfflineLocker</Text>
-        </View>
-
-        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          <TouchableOpacity 
-            onPress={() => navigation.navigate('Dashboard')} 
-            style={{ 
-              flexDirection: 'row', 
-              alignItems: 'center', 
-              backgroundColor: AppTheme.colors.primaryLight, 
-              paddingHorizontal: 14, 
-              paddingVertical: 6, 
-              borderRadius: 20, 
-              borderWidth: 1, 
-              borderColor: AppTheme.colors.primaryBorder, 
-              marginRight: 12 
-            }}
-          >
-            <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Backup</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => logout()} style={{ padding: 4 }} {...(Platform.OS === 'web' ? { title: 'Sign Out' } : {})}>
-            <Ionicons name="power-outline" size={17} color={AppTheme.colors.primary} />
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {/* VAULT TITLE & COUNTER HEADER (matching attached image) */}
-      <View style={{ paddingHorizontal: isMobile ? 16 : 24, paddingTop: 16, paddingBottom: 16 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           <TouchableOpacity 
             onPress={() => navigation.goBack()} 
@@ -938,7 +899,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
               padding: 6,
             }}
           >
-            <Ionicons name="chevron-back" size={22} color={AppTheme.colors.textSecondary} />
+            <Ionicons name="chevron-back" size={24} color={AppTheme.colors.text} />
           </TouchableOpacity>
 
           <View style={{ flex: 1 }}>
@@ -1047,13 +1008,13 @@ export default function TabDetailScreen({ route, navigation }: any) {
                     onPress={() => handleItemPress(item)}
                     {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(item) } : {})}
                     style={{
-                      backgroundColor: isSelected ? '#edf5ff' : '#ffffff',
+                      backgroundColor: isSelected ? AppTheme.colors.primaryLight : '#ffffff',
                       paddingVertical: 8,
                       paddingHorizontal: 8,
                       borderRadius: 12,
                       marginBottom: 8,
                       borderWidth: 1,
-                      borderColor: isSelected ? '#bfdbfe' : '#e2e8f0',
+                      borderColor: isSelected ? AppTheme.colors.primaryBorder : '#e2e8f0',
                       flexDirection: 'row',
                       alignItems: 'center',
                       width: '100%',
@@ -1091,13 +1052,13 @@ export default function TabDetailScreen({ route, navigation }: any) {
                           width: 30,
                           height: 34,
                           borderRadius: 6,
-                          backgroundColor: '#eff6ff',
+                          backgroundColor: AppTheme.colors.primaryLight,
                           borderWidth: 1,
-                          borderColor: '#dbeafe',
+                          borderColor: AppTheme.colors.primaryBorder,
                           alignItems: 'center',
                           justifyContent: 'center',
                         }}>
-                          <Ionicons name="image" size={17} color="#3b82f6" />
+                          <Ionicons name="image" size={17} color={AppTheme.colors.primary} />
                         </View>
                       ) : (
                         <View style={{
@@ -1178,111 +1139,107 @@ export default function TabDetailScreen({ route, navigation }: any) {
           <View style={{ width: '65%', backgroundColor: '#ffffff', padding: isMobile ? 12 : 20 }}>
             {previewDoc ? (
               <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-                {/* PREVIEW TOP BAR */}
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
+                {/* PREVIEW TOP ACTIONS TOOLBAR (Full Width across Right Pane) */}
+                <View style={{ flexDirection: 'row', width: '100%', alignItems: 'center', gap: isMobile ? 8 : 12, marginBottom: 16 }}>
+                  {/* 1. Open Button */}
                   {renderWithTooltip(
-                    <TouchableOpacity
-                      activeOpacity={0.7}
-                      onPress={() => handleRightPanePress(previewDoc)}
-                      {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(previewDoc) } : {})}
+                    <TouchableOpacity 
+                      onPress={() => handleViewDoc(previewDoc)}
+                      style={{ 
+                        flex: 1,
+                        flexDirection: isMobile ? 'column' : 'row', 
+                        alignItems: 'center', 
+                        justifyContent: 'center',
+                        backgroundColor: AppTheme.colors.primaryLight, 
+                        borderWidth: 1, 
+                        borderColor: AppTheme.colors.primaryBorder, 
+                        paddingHorizontal: isMobile ? 4 : 12, 
+                        paddingVertical: isMobile ? 8 : 10, 
+                        borderRadius: 10,
+                        minHeight: isMobile ? 48 : 42,
+                      }}
                     >
-                      <Text 
-                        style={{ fontSize: isMobile ? 16 : 20, fontWeight: '700', color: AppTheme.colors.text, flexShrink: 1, marginRight: 8 }} 
-                        numberOfLines={1}
-                      >
-                        {previewDoc.title}
-                      </Text>
+                      <Ionicons name="eye-outline" size={isMobile ? 18 : 19} color={AppTheme.colors.primary} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
+                      <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: isMobile ? 11 : 14, textAlign: 'center' }} numberOfLines={1}>Open</Text>
                     </TouchableOpacity>,
-                    `${previewDoc.title} (Double-tap to open)`,
-                    undefined,
-                    () => handleViewDoc(previewDoc)
+                    `Open ${previewDoc.title}`,
+                    'flex'
                   )}
 
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    {/* 1. Open Button */}
-                    {renderWithTooltip(
-                      <TouchableOpacity 
-                        onPress={() => handleViewDoc(previewDoc)}
-                        style={{ 
-                          flexDirection: 'row', 
-                          alignItems: 'center', 
-                          backgroundColor: AppTheme.colors.primaryLight, 
-                          borderWidth: 1, 
-                          borderColor: AppTheme.colors.primaryBorder, 
-                          paddingHorizontal: isMobile ? 8 : 12, 
-                          paddingVertical: 6, 
-                          borderRadius: 8
-                        }}
-                      >
-                        <Ionicons name="eye-outline" size={16} color={AppTheme.colors.primary} style={{ marginRight: isMobile ? 0 : 4 }} />
-                        {!isMobile && <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Open</Text>}
-                      </TouchableOpacity>,
-                      `Open ${previewDoc.title}`
-                    )}
+                  {/* 2. Share Button */}
+                  {renderWithTooltip(
+                    <TouchableOpacity 
+                      onPress={() => handleDownloadItem(previewDoc)}
+                      style={{ 
+                        flex: 1,
+                        flexDirection: isMobile ? 'column' : 'row', 
+                        alignItems: 'center', 
+                        justifyContent: 'center',
+                        backgroundColor: AppTheme.colors.primaryLight, 
+                        borderWidth: 1, 
+                        borderColor: AppTheme.colors.primaryBorder, 
+                        paddingHorizontal: isMobile ? 4 : 12, 
+                        paddingVertical: isMobile ? 8 : 10, 
+                        borderRadius: 10,
+                        minHeight: isMobile ? 48 : 42,
+                      }}
+                    >
+                      <Ionicons name="share-outline" size={isMobile ? 18 : 19} color={AppTheme.colors.primary} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
+                      <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: isMobile ? 11 : 14, textAlign: 'center' }} numberOfLines={1}>Share</Text>
+                    </TouchableOpacity>,
+                    `Share ${previewDoc.title}`,
+                    'flex'
+                  )}
 
-                    {/* 2. Share Button */}
-                    {renderWithTooltip(
-                      <TouchableOpacity 
-                        onPress={() => handleDownloadItem(previewDoc)}
-                        style={{ 
-                          flexDirection: 'row', 
-                          alignItems: 'center', 
-                          backgroundColor: AppTheme.colors.primaryLight, 
-                          borderWidth: 1, 
-                          borderColor: AppTheme.colors.primaryBorder, 
-                          paddingHorizontal: isMobile ? 8 : 12, 
-                          paddingVertical: 6, 
-                          borderRadius: 8
-                        }}
-                      >
-                        <Ionicons name="share-outline" size={16} color={AppTheme.colors.primary} style={{ marginRight: isMobile ? 0 : 4 }} />
-                        {!isMobile && <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Share</Text>}
-                      </TouchableOpacity>,
-                      `Share ${previewDoc.title}`
-                    )}
+                  {/* 3. Edit Button */}
+                  {renderWithTooltip(
+                    <TouchableOpacity 
+                      onPress={() => handleOpenEditDoc(previewDoc)}
+                      style={{ 
+                        flex: 1,
+                        flexDirection: isMobile ? 'column' : 'row', 
+                        alignItems: 'center', 
+                        justifyContent: 'center',
+                        backgroundColor: '#f8fafc', 
+                        borderWidth: 1, 
+                        borderColor: '#cbd5e1', 
+                        paddingHorizontal: isMobile ? 4 : 12, 
+                        paddingVertical: isMobile ? 8 : 10, 
+                        borderRadius: 10,
+                        minHeight: isMobile ? 48 : 42,
+                      }}
+                    >
+                      <Ionicons name="create-outline" size={isMobile ? 18 : 19} color={AppTheme.colors.text} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
+                      <Text style={{ color: AppTheme.colors.text, fontWeight: '600', fontSize: isMobile ? 11 : 14, textAlign: 'center' }} numberOfLines={1}>Edit</Text>
+                    </TouchableOpacity>,
+                    `Edit ${previewDoc.title}`,
+                    'flex'
+                  )}
 
-                    {/* 3. Edit Button */}
-                    {renderWithTooltip(
-                      <TouchableOpacity 
-                        onPress={() => handleOpenEditDoc(previewDoc)}
-                        style={{ 
-                          flexDirection: 'row', 
-                          alignItems: 'center', 
-                          backgroundColor: '#f8fafc', 
-                          borderWidth: 1, 
-                          borderColor: '#cbd5e1', 
-                          paddingHorizontal: isMobile ? 8 : 12, 
-                          paddingVertical: 6, 
-                          borderRadius: 8
-                        }}
-                      >
-                        <Ionicons name="create-outline" size={16} color={AppTheme.colors.text} style={{ marginRight: isMobile ? 0 : 4 }} />
-                        {!isMobile && <Text style={{ color: AppTheme.colors.text, fontWeight: '600', fontSize: 13 }}>Edit</Text>}
-                      </TouchableOpacity>,
-                      `Edit ${previewDoc.title}`
-                    )}
-
-                    {/* 4. Delete Button */}
-                    {renderWithTooltip(
-                      <TouchableOpacity 
-                        onPress={() => handleDeleteClick(previewDoc)}
-                        style={{ 
-                          flexDirection: 'row', 
-                          alignItems: 'center', 
-                          backgroundColor: '#fef2f2', 
-                          borderWidth: 1, 
-                          borderColor: '#fecaca', 
-                          paddingHorizontal: isMobile ? 8 : 12, 
-                          paddingVertical: 6, 
-                          borderRadius: 8
-                        }}
-                      >
-                        <Ionicons name="trash-outline" size={16} color={AppTheme.colors.error} style={{ marginRight: isMobile ? 0 : 4 }} />
-                        {!isMobile && <Text style={{ color: AppTheme.colors.error, fontWeight: '600', fontSize: 13 }}>Delete</Text>}
-                      </TouchableOpacity>,
-                      `Delete ${previewDoc.title}`
-                    )}
-                  </View>
+                  {/* 4. Delete Button */}
+                  {renderWithTooltip(
+                    <TouchableOpacity 
+                      onPress={() => handleDeleteClick(previewDoc)}
+                      style={{ 
+                        flex: 1,
+                        flexDirection: isMobile ? 'column' : 'row', 
+                        alignItems: 'center', 
+                        justifyContent: 'center',
+                        backgroundColor: '#fef2f2', 
+                        borderWidth: 1, 
+                        borderColor: '#fecaca', 
+                        paddingHorizontal: isMobile ? 4 : 12, 
+                        paddingVertical: isMobile ? 8 : 10, 
+                        borderRadius: 10,
+                        minHeight: isMobile ? 48 : 42,
+                      }}
+                    >
+                      <Ionicons name="trash-outline" size={isMobile ? 18 : 19} color={AppTheme.colors.error} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
+                      <Text style={{ color: AppTheme.colors.error, fontWeight: '600', fontSize: isMobile ? 11 : 14, textAlign: 'center' }} numberOfLines={1}>Delete</Text>
+                    </TouchableOpacity>,
+                    `Delete ${previewDoc.title}`,
+                    'flex'
+                  )}
                 </View>
 
                 {/* MAIN PREVIEW CANVAS */}
@@ -1346,27 +1303,6 @@ export default function TabDetailScreen({ route, navigation }: any) {
                                   {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(previewDoc) } : {})}
                                   style={{ marginBottom: 16, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#ffffff' }}
                                 >
-                                  <View style={{
-                                    flexDirection: 'row',
-                                    justifyContent: 'space-between',
-                                    alignItems: 'center',
-                                    backgroundColor: '#eef2ff',
-                                    paddingHorizontal: 12,
-                                    paddingVertical: 10,
-                                    borderBottomWidth: 1,
-                                    borderBottomColor: '#dbeafe'
-                                  }}>
-                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                                      <Ionicons name="document-text" size={16} color={AppTheme.colors.primary} style={{ marginRight: 6 }} />
-                                      <Text style={{ fontSize: 13, fontWeight: '700', color: AppTheme.colors.primary }}>
-                                        PDF Document ({idx + 1}/{previewDataArray.length})
-                                      </Text>
-                                    </View>
-                                    <Text style={{ fontSize: 11, color: '#6366f1', fontWeight: '500' }}>
-                                      Double-click to open
-                                    </Text>
-                                  </View>
-
                                   <View style={{ position: 'relative', width: '100%', height: isMobile ? 320 : 500 }}>
                                     {React.createElement('div', {
                                       style: { width: '100%', height: '100%', backgroundColor: '#ffffff', pointerEvents: 'none' },
@@ -1389,27 +1325,6 @@ export default function TabDetailScreen({ route, navigation }: any) {
                                   onPress={() => handleRightPanePress(previewDoc)}
                                   style={{ marginBottom: 16, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#ffffff' }}
                                 >
-                                  <View style={{
-                                    flexDirection: 'row',
-                                    justifyContent: 'space-between',
-                                    alignItems: 'center',
-                                    backgroundColor: '#eef2ff',
-                                    paddingHorizontal: 12,
-                                    paddingVertical: 10,
-                                    borderBottomWidth: 1,
-                                    borderBottomColor: '#dbeafe'
-                                  }}>
-                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                                      <Ionicons name="document-text" size={16} color={AppTheme.colors.primary} style={{ marginRight: 6 }} />
-                                      <Text style={{ fontSize: 13, fontWeight: '700', color: AppTheme.colors.primary }}>
-                                        PDF Document ({idx + 1}/{previewDataArray.length})
-                                      </Text>
-                                    </View>
-                                    <Text style={{ fontSize: 11, color: '#6366f1', fontWeight: '500' }}>
-                                      Double-tap to open
-                                    </Text>
-                                  </View>
-
                                   <View style={{ height: isMobile ? 300 : 480, position: 'relative' }}>
                                     <WebView originWhitelist={['*']} source={{ uri }} style={{ flex: 1 }} pointerEvents="none" />
                                     <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />
@@ -1436,12 +1351,12 @@ export default function TabDetailScreen({ route, navigation }: any) {
                                     width: 48,
                                     height: 48,
                                     borderRadius: 12,
-                                    backgroundColor: '#eff6ff',
+                                    backgroundColor: AppTheme.colors.primaryLight,
                                     justifyContent: 'center',
                                     alignItems: 'center',
                                     marginRight: 12,
                                   }}>
-                                    <Ionicons name="document-text" size={28} color="#2563eb" />
+                                    <Ionicons name="document-text" size={28} color={AppTheme.colors.primary} />
                                   </View>
                                   <View style={{ flex: 1 }}>
                                     <Text style={{ fontSize: 14, fontWeight: '700', color: AppTheme.colors.text }} numberOfLines={1}>
@@ -1489,7 +1404,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                       {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(previewDoc) } : {})}
                       style={{ width: '100%', marginBottom: 14 }}
                     >
-                      <Text style={{ fontSize: 11, color: AppTheme.colors.textSecondary }}>File Name (Double-tap to open)</Text>
+                      <Text style={{ fontSize: 11, color: AppTheme.colors.textSecondary }}>File Name</Text>
                       <Text style={{ fontSize: 13, fontWeight: '600', color: AppTheme.colors.text, marginTop: 2 }} numberOfLines={2}>
                         {previewDoc.title}
                       </Text>
@@ -1854,21 +1769,33 @@ export default function TabDetailScreen({ route, navigation }: any) {
       <Modal visible={viewModalVisible} animationType="slide" transparent={false}>
         <View style={styles.fullScreenModal}>
 
-          <View style={styles.fullScreenHeader}>
-            <Text style={styles.fullScreenTitle}>{selectedDoc?.title}</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <View style={[styles.fullScreenHeader, { paddingTop: isMobile ? Math.max(insets.top + 8, 16) : 16 }]}>
+            <Text style={styles.fullScreenTitle} numberOfLines={1} ellipsizeMode="tail">
+              {selectedDoc?.title}
+            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', flexShrink: 0 }}>
               <TouchableOpacity
                 onPress={() => {
                   setViewModalVisible(false);
                   handleOpenEditDoc(selectedDoc);
                 }}
-                style={{ flexDirection: 'row', alignItems: 'center', marginRight: 16, backgroundColor: 'rgba(255,255,255,0.2)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 }}
+                style={{ 
+                  flexDirection: 'row', 
+                  alignItems: 'center', 
+                  marginRight: 12, 
+                  backgroundColor: '#f1f5f9', 
+                  paddingHorizontal: 12, 
+                  paddingVertical: 6, 
+                  borderRadius: 8,
+                  borderWidth: 1,
+                  borderColor: '#e2e8f0'
+                }}
               >
-                <Ionicons name="create-outline" size={18} color="#ffffff" style={{ marginRight: 4 }} />
-                <Text style={{ color: '#ffffff', fontWeight: '600', fontSize: 13 }}>Edit</Text>
+                <Ionicons name="create-outline" size={18} color={AppTheme.colors.text} style={{ marginRight: 4 }} />
+                <Text style={{ color: AppTheme.colors.text, fontWeight: '600', fontSize: 13 }}>Edit</Text>
               </TouchableOpacity>
               <TouchableOpacity onPress={() => setViewModalVisible(false)} style={styles.closeButton}>
-                <Ionicons name="close" size={26} color="#ffffff" />
+                <Ionicons name="close" size={24} color="#ffffff" />
               </TouchableOpacity>
             </View>
           </View>
@@ -2166,10 +2093,10 @@ const styles = StyleSheet.create({
   decryptedText: { color: AppTheme.colors.text, fontSize: 16, lineHeight: 24 },
 
   fullScreenModal: { flex: 1, backgroundColor: AppTheme.colors.background },
-  fullScreenHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, paddingTop: 40, backgroundColor: '#ffffff', borderBottomWidth: 1, borderBottomColor: '#e2e8f0' },
-  fullScreenTitle: { color: AppTheme.colors.text, fontSize: 20, fontWeight: 'bold' },
+  fullScreenHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, backgroundColor: '#ffffff', borderBottomWidth: 1, borderBottomColor: '#e2e8f0' },
+  fullScreenTitle: { flex: 1, marginRight: 12, color: AppTheme.colors.text, fontSize: 18, fontWeight: '700' },
   closeButton: { padding: 6, backgroundColor: '#ef4444', borderRadius: 20, shadowColor: '#ef4444', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 3 },
-  fullScreenContent: { flex: 1, padding: 20 },
+  fullScreenContent: { flex: 1, padding: 16 },
   fullScreenText: { color: AppTheme.colors.text, fontSize: 18, lineHeight: 28 },
 
   // Sort Modal Styles
