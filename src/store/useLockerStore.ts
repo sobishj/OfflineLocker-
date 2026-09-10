@@ -163,9 +163,15 @@ export const useLockerStore = create<LockerState>((set, get) => ({
   },
 
   createTab: async (name: string, description: string, isSensitive: boolean, tabPin?: string) => {
-    const { currentUser } = get();
+    const { currentUser, tabs } = get();
     if (!currentUser) return false;
-    if (!name.trim()) return false;
+    const trimmed = name.trim();
+    if (!trimmed) return false;
+
+    if (tabs.some(t => t.name.trim().toLowerCase() === trimmed.toLowerCase())) {
+      set({ errorMessage: `A tab named "${trimmed}" already exists.` });
+      return false;
+    }
 
     if (isSensitive && (!tabPin || tabPin.trim().length !== 4)) {
       set({ errorMessage: 'Sensitive tabs require a mandatory 4-digit PIN.' });
@@ -177,7 +183,7 @@ export const useLockerStore = create<LockerState>((set, get) => ({
       const newTab: Tab = {
         uuid: uuidv4(),
         userId: currentUser.uuid,
-        name: name.trim(),
+        name: trimmed,
         description: description.trim() ? description.trim() : 'Custom Vault Tab',
         isSensitive: isSensitive ? 1 : 0,
         tabPinHash: pinHash,
@@ -199,7 +205,14 @@ export const useLockerStore = create<LockerState>((set, get) => ({
   },
 
   updateTab: async (tabId: string, name: string, description: string, isSensitive: boolean, tabPin?: string) => {
-    if (!name.trim()) return false;
+    const trimmed = name.trim();
+    if (!trimmed) return false;
+
+    if (get().tabs.some(t => t.uuid !== tabId && t.name.trim().toLowerCase() === trimmed.toLowerCase())) {
+      set({ errorMessage: `A tab named "${trimmed}" already exists.` });
+      return false;
+    }
+
     try {
       const currentTab = get().tabs.find(tab => tab.uuid === tabId);
       if (isSensitive && tabPin?.trim() && tabPin.trim().length !== 4) {
@@ -286,7 +299,7 @@ export const useLockerStore = create<LockerState>((set, get) => ({
   importBackup: async (encryptedContent: string, importPin: string) => {
     const result = await BackupService.importBackup(encryptedContent, importPin);
     if (result.success && result.user) {
-      set({ currentUser: result.user, isAuthenticated: true });
+      set({ currentUser: result.user, isAuthenticated: true, activeDocuments: [] });
       await get().loadTabs();
     }
     return { success: result.success, tabsCount: result.tabsCount, docsCount: result.docsCount };

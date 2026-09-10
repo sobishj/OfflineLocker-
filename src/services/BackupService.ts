@@ -96,25 +96,45 @@ export class BackupService {
         throw new Error('Unrecognized backup file format.');
       }
 
+      // Clear existing data before restoring backup to prevent duplicate/multiplied files or tabs
+      await DatabaseHelper.clearAllData();
+
       // 1. Restore User
       await DatabaseHelper.createUser(payload.user);
 
-      // 2. Restore Tabs
+      // 2. Restore Tabs (deduplicating tab names if any exist)
+      const seenTabNames = new Set<string>();
+      const validTabIds = new Set<string>();
       for (const tab of payload.tabs) {
+        const tabKey = (tab.name || '').trim().toLowerCase();
+        if (seenTabNames.has(tabKey)) {
+          continue;
+        }
+        seenTabNames.add(tabKey);
+        validTabIds.add(tab.uuid);
         await DatabaseHelper.createTab(tab);
       }
 
-      // 3. Restore Documents
+      // 3. Restore Documents (deduplicating identical titles within the same tab)
+      let restoredDocsCount = 0;
       if (Array.isArray(payload.documents)) {
+        const seenDocKeys = new Set<string>();
         for (const doc of payload.documents) {
+          if (!validTabIds.has(doc.tabId)) continue;
+          const docKey = `${doc.tabId}:::${(doc.title || '').trim().toLowerCase()}`;
+          if (seenDocKeys.has(docKey)) {
+            continue;
+          }
+          seenDocKeys.add(docKey);
           await DatabaseHelper.createDocument(doc);
+          restoredDocsCount++;
         }
       }
 
       return {
         success: true,
-        tabsCount: payload.tabs.length,
-        docsCount: payload.documents ? payload.documents.length : 0,
+        tabsCount: seenTabNames.size,
+        docsCount: restoredDocsCount,
         user: payload.user,
       };
     } catch (error: any) {

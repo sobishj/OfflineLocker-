@@ -262,7 +262,7 @@ export default function CustomImageCropper({ imageUri, onCropDone, onCancel }: P
           normalizedUri && (
             <Image
               source={{ uri: normalizedUri }}
-              style={StyleSheet.absoluteFillObject}
+              style={StyleSheet.absoluteFill}
               resizeMode="contain"
             />
           )

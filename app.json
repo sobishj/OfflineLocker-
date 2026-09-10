@@ -21,6 +21,12 @@
     },
     "web": {
       "favicon": "./assets/offlinelocker-icon.png"
-    }
+    },
+    "plugins": [
+      "expo-font",
+      "expo-sharing",
+      "expo-sqlite",
+      "expo-status-bar"
+    ]
   }
 }

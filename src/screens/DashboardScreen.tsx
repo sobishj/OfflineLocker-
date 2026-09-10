@@ -50,6 +50,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   const [pickedFileContent, setPickedFileContent] = useState<string | null>(null);
   const [pickedFileName, setPickedFileName] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
+  const [isReadingFile, setIsReadingFile] = useState(false);
+  const isImportingRef = useRef(false);
 
   // Category Sort state
   type SortOption = 'newest' | 'oldest' | 'name_asc' | 'name_desc';
@@ -112,6 +114,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         return;
       }
 
+      setIsReadingFile(true);
       try {
         const text = await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
@@ -130,6 +133,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       } catch (err: any) {
         console.error('Web file read error:', err);
         Alert.alert('File Read Error', 'Could not read the selected file.');
+      } finally {
+        setIsReadingFile(false);
       }
     };
 
@@ -151,7 +156,18 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   };
 
   const handleSaveEditTab = async () => {
-    if (!editTabName.trim()) return;
+    const trimmed = editTabName.trim();
+    if (!trimmed) {
+      Alert.alert('Error', 'Please enter a tab name.');
+      return;
+    }
+    const isDuplicate = tabs.some(
+      t => t.uuid !== editTabId && t.name.trim().toLowerCase() === trimmed.toLowerCase()
+    );
+    if (isDuplicate) {
+      Alert.alert('Duplicate Tab Name', `A tab named "${trimmed}" already exists. Please choose a different name.`);
+      return;
+    }
     const success = await updateTab(editTabId, editTabName, editTabDesc, editIsSensitive, editTabPin);
     if (success) {
       setEditModalVisible(false);
@@ -227,6 +243,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
   // Native: DocumentPicker called directly from within a fully-presented modal (safe)
   const handlePickFileNative = async () => {
+    if (isReadingFile || isImporting) return;
+    setIsReadingFile(true);
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: '*/*',
@@ -256,27 +274,48 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     } catch (err: any) {
       console.error('File pick error:', err);
       Alert.alert('File Picker Error', err?.message || 'Could not open the file picker. Please try again.');
+    } finally {
+      setIsReadingFile(false);
     }
   };
 
   const handlePerformImport = async () => {
+    if (isImportingRef.current || isImporting) return;
     if (!pickedFileContent || importPin.trim().length !== 4) return;
+
+    isImportingRef.current = true;
     setIsImporting(true);
-    try {
-      const res = await importBackup(pickedFileContent, importPin.trim());
-      setImportModalVisible(false);
-      setImportPin('');
-      setPickedFileContent(null);
-      setPickedFileName(null);
-      Alert.alert('Backup Restored', `Successfully restored ${res.tabsCount} tabs and ${res.docsCount} documents!`);
-    } catch (e: any) {
-      Alert.alert('Import Error', e?.message || 'Failed to import backup. Incorrect PIN or invalid file.');
-    } finally {
-      setIsImporting(false);
-    }
+
+    setTimeout(async () => {
+      try {
+        const res = await importBackup(pickedFileContent, importPin.trim());
+        setImportModalVisible(false);
+        setImportPin('');
+        setPickedFileContent(null);
+        setPickedFileName(null);
+        Alert.alert('Backup Restored', `Successfully restored ${res.tabsCount} tabs and ${res.docsCount} documents!`);
+      } catch (e: any) {
+        Alert.alert('Import Error', e?.message || 'Failed to import backup. Incorrect PIN or invalid file.');
+      } finally {
+        isImportingRef.current = false;
+        setIsImporting(false);
+      }
+    }, 100);
   };
 
   const handleCreateTab = async () => {
+    const trimmed = tabName.trim();
+    if (!trimmed) {
+      Alert.alert('Error', 'Please enter a tab name.');
+      return;
+    }
+    const isDuplicate = tabs.some(
+      t => t.name.trim().toLowerCase() === trimmed.toLowerCase()
+    );
+    if (isDuplicate) {
+      Alert.alert('Duplicate Tab Name', `A tab named "${trimmed}" already exists. Please choose a different name.`);
+      return;
+    }
     const success = await createTab(tabName, tabDesc, isSensitive, tabPin);
     if (success) {
       setModalVisible(false);
@@ -370,7 +409,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             style={{ padding: 4, marginRight: 6 }}
             {...(Platform.OS === 'web' ? { title: 'Sign Out' } : {})}
           >
-            <Ionicons name="log-out-outline" size={22} color={AppTheme.colors.primary} />
+            <Ionicons name="power-outline" size={17} color={AppTheme.colors.primary} />
           </TouchableOpacity>
         </View>
       )
@@ -723,7 +762,10 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       {/* IMPORT BACKUP MODAL */}
       <Modal visible={importModalVisible} animationType="slide" transparent>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { maxHeight: '95%' }]}>
+          <View 
+            style={[styles.modalContent, { maxHeight: '95%' }]}
+            pointerEvents={isImporting || isReadingFile ? 'none' : 'auto'}
+          >
             <Text style={styles.modalTitle}>Import Encrypted Backup</Text>
             
             {pickedFileName && (
@@ -743,22 +785,41 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
             <TouchableOpacity 
               onPress={() => {
+                if (isImporting || isReadingFile) return;
                 if (Platform.OS === 'web') {
                   webFileInputRef.current?.click();
                 } else {
                   handlePickFileNative();
                 }
               }}
-              style={[styles.button, { backgroundColor: AppTheme.colors.surface, borderWidth: 1, borderColor: AppTheme.colors.primary, marginBottom: AppTheme.spacing.m, flex: 0, padding: 10 }]}
+              disabled={isImporting || isReadingFile}
+              style={[
+                styles.button, 
+                { backgroundColor: AppTheme.colors.surface, borderWidth: 1, borderColor: AppTheme.colors.primary, marginBottom: AppTheme.spacing.m, flex: 0, padding: 10 },
+                (isImporting || isReadingFile) && { opacity: 0.5, borderColor: AppTheme.colors.border }
+              ]}
             >
-              <Ionicons name="folder-open-outline" size={18} color={AppTheme.colors.primary} style={{ marginRight: 6 }} />
-              <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', textAlign: 'center' }}>
-                {pickedFileName ? 'Change OfflineLocker Backup File (.olocker)' : 'Select OfflineLocker Backup File (.olocker)'}
-              </Text>
+              {isReadingFile ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+                  <ActivityIndicator size="small" color={AppTheme.colors.primary} style={{ marginRight: 8 }} />
+                  <Text style={{ color: AppTheme.colors.primary, fontWeight: '600' }}>Reading File...</Text>
+                </View>
+              ) : (
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+                  <Ionicons name="folder-open-outline" size={18} color={AppTheme.colors.primary} style={{ marginRight: 6 }} />
+                  <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', textAlign: 'center' }}>
+                    {pickedFileName ? 'Change OfflineLocker Backup File (.olocker)' : 'Select OfflineLocker Backup File (.olocker)'}
+                  </Text>
+                </View>
+              )}
             </TouchableOpacity>
 
             <TextInput
-              style={[styles.input, { letterSpacing: importPin ? 8 : 0, textAlign: importPin ? 'center' : 'left', fontSize: importPin ? 18 : 15 }]}
+              style={[
+                styles.input, 
+                { letterSpacing: importPin ? 8 : 0, textAlign: importPin ? 'center' : 'left', fontSize: importPin ? 18 : 15 },
+                (isImporting || isReadingFile) && { backgroundColor: AppTheme.colors.border, opacity: 0.6 }
+              ]}
               placeholder="Enter 4-Digit Export Password"
               placeholderTextColor={AppTheme.colors.textSecondary}
               value={importPin}
@@ -766,13 +827,38 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               keyboardType="numeric"
               secureTextEntry
               maxLength={4}
+              editable={!isImporting && !isReadingFile}
             />
+
+            {isImporting && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginVertical: 8, padding: 8, backgroundColor: 'rgba(6, 182, 212, 0.08)', borderRadius: 8 }}>
+                <ActivityIndicator size="small" color={AppTheme.colors.primary} style={{ marginRight: 8 }} />
+                <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>
+                  Importing & Restoring... Please wait.
+                </Text>
+              </View>
+            )}
+
             <View style={styles.modalActions}>
-              <TouchableOpacity onPress={() => { setImportModalVisible(false); setImportPin(''); setPickedFileContent(null); setPickedFileName(null); }} style={[styles.button, { backgroundColor: AppTheme.colors.border }]}>
-                <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
+              <TouchableOpacity 
+                onPress={() => { 
+                  if (isImporting || isReadingFile) return;
+                  setImportModalVisible(false); 
+                  setImportPin(''); 
+                  setPickedFileContent(null); 
+                  setPickedFileName(null); 
+                }} 
+                disabled={isImporting || isReadingFile}
+                style={[
+                  styles.button, 
+                  { backgroundColor: AppTheme.colors.border },
+                  (isImporting || isReadingFile) && { opacity: 0.5 }
+                ]}
+              >
+                <Text style={[styles.buttonText, { color: (isImporting || isReadingFile) ? AppTheme.colors.textSecondary : AppTheme.colors.primary }]}>Cancel</Text>
               </TouchableOpacity>
               {(() => {
-                const isImportDisabled = !pickedFileContent || importPin.trim().length !== 4 || isImporting;
+                const isImportDisabled = !pickedFileContent || importPin.trim().length !== 4 || isImporting || isReadingFile;
                 return (
                   <TouchableOpacity
                     onPress={handlePerformImport}

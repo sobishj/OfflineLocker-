@@ -147,6 +147,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
   const isPickerBusyRef = useRef(false);
   const isViewingRef = useRef(false);
   const lastTapRef = useRef<{ id: string | number; time: number } | null>(null);
+  const rightPaneTapRef = useRef<{ id: string | number; time: number } | null>(null);
+  const tapTimeoutRef = useRef<any>(null);
 
   const optimizeImageUri = async (uri: string): Promise<string> => {
     if (!uri || !uri.startsWith('data:image')) return uri;
@@ -205,6 +207,9 @@ export default function TabDetailScreen({ route, navigation }: any) {
           setFileType('image');
           setCropTarget('add');
           setCropIndex(newIndex);
+          if (!docTitle.trim()) {
+            setDocTitle('Photo');
+          }
         }
       }
     } catch (e) {
@@ -230,6 +235,9 @@ export default function TabDetailScreen({ route, navigation }: any) {
       setWebCameraVisible(false);
       setCropTarget('add');
       setCropIndex(newIndex);
+      if (!docTitle.trim()) {
+        setDocTitle('Photo');
+      }
     }
   };
 
@@ -258,6 +266,17 @@ export default function TabDetailScreen({ route, navigation }: any) {
           setFileType('image');
           setCropTarget('add');
           setCropIndex(newIndex);
+
+          const firstAsset = result.assets[0];
+          let pickedName = (firstAsset as any).file?.name || firstAsset.fileName || (firstAsset.uri ? firstAsset.uri.split('/').pop() : '') || '';
+          if (pickedName) {
+            try { pickedName = decodeURIComponent(pickedName); } catch (e) {}
+          }
+          if (pickedName && !pickedName.startsWith('data:') && !pickedName.startsWith('blob:')) {
+            setDocTitle(pickedName);
+          } else if (!docTitle.trim()) {
+            setDocTitle('Image');
+          }
         }
       }
     } catch (e) {
@@ -303,6 +322,13 @@ export default function TabDetailScreen({ route, navigation }: any) {
         } else {
           setFileType('pdf');
           setFileUris(prev => [...prev, ...newUris]);
+
+          const firstAsset = result.assets[0];
+          let fileName = firstAsset.name || (firstAsset.file as any)?.name || (firstAsset.uri ? firstAsset.uri.split('/').pop() : '') || 'Document.pdf';
+          if (fileName) {
+            try { fileName = decodeURIComponent(fileName); } catch (e) {}
+          }
+          setDocTitle(fileName);
         }
       }
     } catch (error) {
@@ -313,10 +339,20 @@ export default function TabDetailScreen({ route, navigation }: any) {
   };
 
   const handleAddDocument = async () => {
-    if (!docTitle.trim()) {
+    const trimmedTitle = docTitle.trim();
+    if (!trimmedTitle) {
       Alert.alert('Error', 'Please enter a title for the document.');
       return;
     }
+
+    const isDuplicate = activeDocuments.some(
+      d => (d.title || '').trim().toLowerCase() === trimmedTitle.toLowerCase()
+    );
+    if (isDuplicate) {
+      Alert.alert('Duplicate File Name', `A document named "${trimmedTitle}" already exists in this tab. Please choose a different title.`);
+      return;
+    }
+
     if (isEncrypting) return;
 
     setIsEncrypting(true);
@@ -340,7 +376,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
           contentToEncrypt = docContent;
         }
 
-        await addDocument(tabId, docTitle, type, contentToEncrypt, encryptionKey);
+        await addDocument(tabId, trimmedTitle, type, contentToEncrypt, encryptionKey);
         setModalVisible(false);
         setDocTitle(''); setDocContent(''); setFileUris([]); setFileType(null);
       } catch (e) {
@@ -369,10 +405,20 @@ export default function TabDetailScreen({ route, navigation }: any) {
   };
 
   const handleSaveEditDoc = async () => {
-    if (!editDocTitle.trim() || !editingDoc) {
+    const trimmedTitle = editDocTitle.trim();
+    if (!trimmedTitle || !editingDoc) {
       Alert.alert('Error', 'Please enter a title for the document.');
       return;
     }
+
+    const isDuplicate = activeDocuments.some(
+      d => d.id !== editingDoc.id && (d.title || '').trim().toLowerCase() === trimmedTitle.toLowerCase()
+    );
+    if (isDuplicate) {
+      Alert.alert('Duplicate File Name', `A document named "${trimmedTitle}" already exists in this tab. Please choose a different title.`);
+      return;
+    }
+
     if (isUpdating) return;
 
     setIsUpdating(true);
@@ -501,8 +547,6 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
   const handleViewDoc = (doc: any) => {
     if (!doc) return;
-    if (isViewingRef.current) return;
-    isViewingRef.current = true;
 
     setSelectedDoc(doc);
     setViewModalVisible(true);
@@ -511,7 +555,6 @@ export default function TabDetailScreen({ route, navigation }: any) {
       const cached = decryptionCacheRef.current.get(doc.id)!;
       setDecryptedText(cached.plainText);
       setDecryptedArray(cached.array);
-      isViewingRef.current = false;
       return;
     }
 
@@ -534,8 +577,6 @@ export default function TabDetailScreen({ route, navigation }: any) {
         }
       } catch (err) {
         console.warn('handleViewDoc error:', err);
-      } finally {
-        isViewingRef.current = false;
       }
     }, 10);
   };
@@ -745,21 +786,57 @@ export default function TabDetailScreen({ route, navigation }: any) {
     return (totalBytes / (1024 * 1024)).toFixed(1);
   };
 
-  const renderWithTooltip = (element: React.ReactElement, tooltipText: string) => {
+  const renderWithTooltip = (element: React.ReactElement, tooltipText: string, display?: string, onDoubleClick?: () => void) => {
     if (Platform.OS === 'web' && tooltipText) {
-      return React.cloneElement(element, { title: tooltipText } as any);
+      return React.createElement('div', { 
+        title: tooltipText, 
+        onDoubleClick: onDoubleClick,
+        style: { 
+          display: display || 'inline-flex', 
+          cursor: 'pointer', 
+          maxWidth: '100%', 
+          width: display === 'block' ? '100%' : undefined,
+          alignItems: display === 'block' ? undefined : 'center'
+        } 
+      }, element);
     }
     return element;
   };
 
   const handleItemPress = (item: any) => {
     const now = Date.now();
-    if (lastTapRef.current && lastTapRef.current.id === item.id && (now - lastTapRef.current.time) < 350) {
+    const isDoubleTap = lastTapRef.current && lastTapRef.current.id === item.id && (now - lastTapRef.current.time) < 450;
+
+    if (isDoubleTap) {
+      if (tapTimeoutRef.current) {
+        clearTimeout(tapTimeoutRef.current);
+        tapTimeoutRef.current = null;
+      }
       lastTapRef.current = null;
       handleViewDoc(item);
     } else {
       lastTapRef.current = { id: item.id, time: now };
-      handleSelectPreview(item);
+      if (tapTimeoutRef.current) {
+        clearTimeout(tapTimeoutRef.current);
+      }
+      if (previewDoc?.id === item.id) {
+        return;
+      }
+      tapTimeoutRef.current = setTimeout(() => {
+        handleSelectPreview(item);
+        tapTimeoutRef.current = null;
+      }, 250);
+    }
+  };
+
+  const handleRightPanePress = (doc: any) => {
+    if (!doc) return;
+    const now = Date.now();
+    if (rightPaneTapRef.current && rightPaneTapRef.current.id === doc.id && (now - rightPaneTapRef.current.time) < 500) {
+      rightPaneTapRef.current = null;
+      handleViewDoc(doc);
+    } else {
+      rightPaneTapRef.current = { id: doc.id, time: now };
     }
   };
 
@@ -845,8 +922,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
           >
             <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Backup</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => logout()} style={{ padding: 4 }}>
-            <Ionicons name="log-out-outline" size={22} color={AppTheme.colors.primary} />
+          <TouchableOpacity onPress={() => logout()} style={{ padding: 4 }} {...(Platform.OS === 'web' ? { title: 'Sign Out' } : {})}>
+            <Ionicons name="power-outline" size={17} color={AppTheme.colors.primary} />
           </TouchableOpacity>
         </View>
       </View>
@@ -906,7 +983,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
           {/* LEFT PANE: List of Documents ("All Files") */}
           <View style={{
-            width: isMobile ? '45%' : '40%',
+            width: '35%',
             borderRightWidth: 1,
             borderColor: '#e2e8f0',
             backgroundColor: '#ffffff',
@@ -950,126 +1027,135 @@ export default function TabDetailScreen({ route, navigation }: any) {
               contentContainerStyle={{ padding: 8 }}
               renderItem={({ item }) => {
                 const isSelected = previewDoc?.id === item.id;
-                const thumbUri = getThumbnailForItem(item);
                 const formattedDate = new Date(item.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+                
+                const isPdf = item.type === 'pdf' || (item.title && item.title.toLowerCase().endsWith('.pdf'));
+                const isImage = item.type === 'image' || (item.title && /\.(jpg|jpeg|png|webp|gif)$/i.test(item.title));
+                
+                let typeLabel = 'FILE';
+                if (isPdf) typeLabel = 'PDF';
+                else if (isImage) {
+                  const ext = item.title?.split('.').pop()?.toUpperCase();
+                  typeLabel = ext && ['JPG', 'JPEG', 'PNG', 'WEBP'].includes(ext) ? (ext === 'JPEG' ? 'JPG' : ext) : 'JPG';
+                } else if (item.type === 'doc' || item.type === 'docx') {
+                  typeLabel = 'DOC';
+                }
 
-                return (
-                  <View
+                const cardContent = (
+                  <TouchableOpacity
                     key={item.id}
+                    onPress={() => handleItemPress(item)}
+                    {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(item) } : {})}
                     style={{
-                      backgroundColor: isSelected ? AppTheme.colors.primaryLight : '#ffffff',
-                      padding: isMobile ? 8 : 10,
+                      backgroundColor: isSelected ? '#edf5ff' : '#ffffff',
+                      paddingVertical: 8,
+                      paddingHorizontal: 8,
                       borderRadius: 12,
                       marginBottom: 8,
                       borderWidth: 1,
-                      borderColor: isSelected ? AppTheme.colors.primaryBorder : '#e2e8f0',
-                    }}
-                  >
-                    {/* Top Clickable Header (Selects Document / Shows Preview) */}
-                    <TouchableOpacity
-                      style={{ flexDirection: 'row', alignItems: 'center' }}
-                      onPress={() => handleItemPress(item)}
-                      {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(item) } : {})}
-                      {...(Platform.OS === 'web' ? { title: `${item.title} (${formatFileSize(item.encryptedContent)})` } : {})}
-                    >
-                      {/* Icon / Thumbnail Box */}
-                      <View style={{
-                        width: isMobile ? 32 : 40,
-                        height: isMobile ? 32 : 40,
-                        borderRadius: 10,
-                        backgroundColor: item.type === 'pdf' ? '#fee2e2' : item.type === 'image' ? '#e0e7ff' : '#f1f5f9',
-                        justifyContent: 'center',
-                        alignItems: 'center',
-                        marginRight: isMobile ? 6 : 10,
-                        overflow: 'hidden',
-                      }}>
-                        {thumbUri ? (
-                          <Image source={{ uri: thumbUri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
-                        ) : item.type === 'pdf' ? (
-                          <Ionicons name="document-text" size={isMobile ? 16 : 20} color="#ef4444" />
-                        ) : item.type === 'image' ? (
-                          <Ionicons name="image" size={isMobile ? 16 : 20} color="#2563eb" />
-                        ) : (
-                          <Ionicons name="document-text" size={isMobile ? 16 : 20} color="#2563eb" />
-                        )}
-                      </View>
-
-                      {/* Meta */}
-                      <View style={{ flex: 1, marginRight: 4 }}>
-                        <Text style={{ 
-                          fontSize: isMobile ? 12 : 13, 
-                          fontWeight: '700', 
-                          color: AppTheme.colors.text 
-                        }} numberOfLines={1}>
-                          {item.title}
-                        </Text>
-                        <Text style={{ 
-                          fontSize: isMobile ? 10 : 11, 
-                          color: AppTheme.colors.textSecondary, 
-                          marginTop: 2 
-                        }} numberOfLines={1}>
-                          {formatFileSize(item.encryptedContent)} • {formattedDate}
-                        </Text>
-                      </View>
-
-                      {/* Blue Selection Dot */}
-                      {isSelected && (
-                        <View style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: 4,
-                          backgroundColor: AppTheme.colors.primary,
-                          marginLeft: 4,
-                        }} />
-                      )}
-                    </TouchableOpacity>
-
-                    {/* Bottom Action Bar */}
-                    <View style={{
+                      borderColor: isSelected ? '#bfdbfe' : '#e2e8f0',
                       flexDirection: 'row',
                       alignItems: 'center',
-                      marginTop: 8,
-                      paddingTop: 6,
-                      borderTopWidth: 1,
-                      borderTopColor: isSelected ? 'rgba(37, 99, 235, 0.15)' : '#f1f5f9',
-                    }}>
-                      {/* 1. Open Button */}
-                      <TouchableOpacity 
-                        onPress={() => handleViewDoc(item)}
-                        style={{ padding: 6, marginRight: 10 }}
-                        {...(Platform.OS === 'web' ? { title: `Open ${item.title}` } : {})}
-                      >
-                        <Ionicons name="eye-outline" size={18} color={AppTheme.colors.primary} />
-                      </TouchableOpacity>
-
-                      {/* 2. Download Button */}
-                      <TouchableOpacity 
-                        onPress={() => handleDownloadItem(item)}
-                        style={{ padding: 6, marginRight: 10 }}
-                        {...(Platform.OS === 'web' ? { title: `Download ${item.title}` } : {})}
-                      >
-                        <Ionicons name="download-outline" size={18} color={AppTheme.colors.primary} />
-                      </TouchableOpacity>
-
-                      {/* 3. Edit Button */}
-                      <TouchableOpacity 
-                        onPress={() => handleOpenEditDoc(item)}
-                        style={{ padding: 6, marginRight: 10 }}
-                        {...(Platform.OS === 'web' ? { title: `Edit ${item.title}` } : {})}
-                      >
-                        <Ionicons name="create-outline" size={18} color={AppTheme.colors.primary} />
-                      </TouchableOpacity>
-
-                      {/* 4. Delete Button */}
-                      <TouchableOpacity 
-                        onPress={() => handleDeleteClick(item)}
-                        style={{ padding: 6 }}
-                        {...(Platform.OS === 'web' ? { title: `Delete ${item.title}` } : {})}
-                      >
-                        <Ionicons name="trash-outline" size={18} color={AppTheme.colors.error} />
-                      </TouchableOpacity>
+                      width: '100%',
+                    }}
+                  >
+                    {/* Left File Type Icon Box (Compact) */}
+                    <View style={{ marginRight: 8 }}>
+                      {isPdf ? (
+                        <View style={{
+                          width: 30,
+                          height: 34,
+                          borderRadius: 6,
+                          backgroundColor: '#ffffff',
+                          borderWidth: 1,
+                          borderColor: '#e2e8f0',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          shadowColor: '#000',
+                          shadowOffset: { width: 0, height: 1 },
+                          shadowOpacity: 0.06,
+                          shadowRadius: 2,
+                          elevation: 1,
+                        }}>
+                          <View style={{
+                            backgroundColor: '#ef4444',
+                            paddingHorizontal: 3,
+                            paddingVertical: 1,
+                            borderRadius: 2.5,
+                          }}>
+                            <Text style={{ color: '#ffffff', fontSize: 7.5, fontWeight: '800', letterSpacing: 0.5 }}>PDF</Text>
+                          </View>
+                        </View>
+                      ) : isImage ? (
+                        <View style={{
+                          width: 30,
+                          height: 34,
+                          borderRadius: 6,
+                          backgroundColor: '#eff6ff',
+                          borderWidth: 1,
+                          borderColor: '#dbeafe',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}>
+                          <Ionicons name="image" size={17} color="#3b82f6" />
+                        </View>
+                      ) : (
+                        <View style={{
+                          width: 30,
+                          height: 34,
+                          borderRadius: 6,
+                          backgroundColor: '#f1f5f9',
+                          borderWidth: 1,
+                          borderColor: '#e2e8f0',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}>
+                          <Ionicons name="document-text" size={17} color="#64748b" />
+                        </View>
+                      )}
                     </View>
-                  </View>
+
+                    {/* Middle: Title & Metadata subtitle */}
+                    <View style={{ flex: 1, marginRight: 4 }}>
+                      <Text 
+                        style={{ 
+                          fontSize: isMobile ? 11.5 : 12.5, 
+                          fontWeight: '700', 
+                          color: '#0f172a',
+                          lineHeight: isMobile ? 15 : 17,
+                        }} 
+                        numberOfLines={2}
+                      >
+                        {item.title}
+                      </Text>
+                      <Text 
+                        style={{ 
+                          fontSize: 9.5, 
+                          color: '#64748b',
+                          marginTop: 2,
+                          fontWeight: '500',
+                        }} 
+                        numberOfLines={1}
+                      >
+                        {typeLabel} • {formatFileSize(item.encryptedContent)} • {formattedDate}
+                      </Text>
+                    </View>
+
+                    {/* Right: Three Dots Action Menu Trigger */}
+                    <TouchableOpacity 
+                      onPress={() => handleOpenEditDoc(item)}
+                      style={{ padding: 2 }}
+                    >
+                      <Ionicons name="ellipsis-vertical" size={15} color="#94a3b8" />
+                    </TouchableOpacity>
+                  </TouchableOpacity>
+                );
+
+                return renderWithTooltip(
+                  cardContent,
+                  `${item.title} (${formatFileSize(item.encryptedContent)} • ${formattedDate})`,
+                  'block',
+                  () => handleViewDoc(item)
                 );
               }}
               ListEmptyComponent={
@@ -1089,23 +1175,31 @@ export default function TabDetailScreen({ route, navigation }: any) {
           </View>
 
           {/* RIGHT PANE: File Preview & Details */}
-          <View style={{ flex: 1, backgroundColor: '#ffffff', padding: isMobile ? 12 : 20 }}>
+          <View style={{ width: '65%', backgroundColor: '#ffffff', padding: isMobile ? 12 : 20 }}>
             {previewDoc ? (
               <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
                 {/* PREVIEW TOP BAR */}
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
                   {renderWithTooltip(
-                    <Text 
-                      style={{ fontSize: isMobile ? 16 : 20, fontWeight: '700', color: AppTheme.colors.text, flex: 1, marginRight: 10 }} 
-                      numberOfLines={1}
+                    <TouchableOpacity
+                      activeOpacity={0.7}
+                      onPress={() => handleRightPanePress(previewDoc)}
+                      {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(previewDoc) } : {})}
                     >
-                      {previewDoc.title}
-                    </Text>,
-                    previewDoc.title
+                      <Text 
+                        style={{ fontSize: isMobile ? 16 : 20, fontWeight: '700', color: AppTheme.colors.text, flexShrink: 1, marginRight: 8 }} 
+                        numberOfLines={1}
+                      >
+                        {previewDoc.title}
+                      </Text>
+                    </TouchableOpacity>,
+                    `${previewDoc.title} (Double-tap to open)`,
+                    undefined,
+                    () => handleViewDoc(previewDoc)
                   )}
 
-                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    {/* Open Button */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    {/* 1. Open Button */}
                     {renderWithTooltip(
                       <TouchableOpacity 
                         onPress={() => handleViewDoc(previewDoc)}
@@ -1115,15 +1209,78 @@ export default function TabDetailScreen({ route, navigation }: any) {
                           backgroundColor: AppTheme.colors.primaryLight, 
                           borderWidth: 1, 
                           borderColor: AppTheme.colors.primaryBorder, 
-                          paddingHorizontal: 12, 
+                          paddingHorizontal: isMobile ? 8 : 12, 
                           paddingVertical: 6, 
                           borderRadius: 8
                         }}
                       >
-                        <Ionicons name="eye-outline" size={16} color={AppTheme.colors.primary} style={{ marginRight: 4 }} />
-                        <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Open</Text>
+                        <Ionicons name="eye-outline" size={16} color={AppTheme.colors.primary} style={{ marginRight: isMobile ? 0 : 4 }} />
+                        {!isMobile && <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Open</Text>}
                       </TouchableOpacity>,
-                      `Open ${previewDoc.title} in Fullscreen Viewer`
+                      `Open ${previewDoc.title}`
+                    )}
+
+                    {/* 2. Share Button */}
+                    {renderWithTooltip(
+                      <TouchableOpacity 
+                        onPress={() => handleDownloadItem(previewDoc)}
+                        style={{ 
+                          flexDirection: 'row', 
+                          alignItems: 'center', 
+                          backgroundColor: AppTheme.colors.primaryLight, 
+                          borderWidth: 1, 
+                          borderColor: AppTheme.colors.primaryBorder, 
+                          paddingHorizontal: isMobile ? 8 : 12, 
+                          paddingVertical: 6, 
+                          borderRadius: 8
+                        }}
+                      >
+                        <Ionicons name="share-outline" size={16} color={AppTheme.colors.primary} style={{ marginRight: isMobile ? 0 : 4 }} />
+                        {!isMobile && <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Share</Text>}
+                      </TouchableOpacity>,
+                      `Share ${previewDoc.title}`
+                    )}
+
+                    {/* 3. Edit Button */}
+                    {renderWithTooltip(
+                      <TouchableOpacity 
+                        onPress={() => handleOpenEditDoc(previewDoc)}
+                        style={{ 
+                          flexDirection: 'row', 
+                          alignItems: 'center', 
+                          backgroundColor: '#f8fafc', 
+                          borderWidth: 1, 
+                          borderColor: '#cbd5e1', 
+                          paddingHorizontal: isMobile ? 8 : 12, 
+                          paddingVertical: 6, 
+                          borderRadius: 8
+                        }}
+                      >
+                        <Ionicons name="create-outline" size={16} color={AppTheme.colors.text} style={{ marginRight: isMobile ? 0 : 4 }} />
+                        {!isMobile && <Text style={{ color: AppTheme.colors.text, fontWeight: '600', fontSize: 13 }}>Edit</Text>}
+                      </TouchableOpacity>,
+                      `Edit ${previewDoc.title}`
+                    )}
+
+                    {/* 4. Delete Button */}
+                    {renderWithTooltip(
+                      <TouchableOpacity 
+                        onPress={() => handleDeleteClick(previewDoc)}
+                        style={{ 
+                          flexDirection: 'row', 
+                          alignItems: 'center', 
+                          backgroundColor: '#fef2f2', 
+                          borderWidth: 1, 
+                          borderColor: '#fecaca', 
+                          paddingHorizontal: isMobile ? 8 : 12, 
+                          paddingVertical: 6, 
+                          borderRadius: 8
+                        }}
+                      >
+                        <Ionicons name="trash-outline" size={16} color={AppTheme.colors.error} style={{ marginRight: isMobile ? 0 : 4 }} />
+                        {!isMobile && <Text style={{ color: AppTheme.colors.error, fontWeight: '600', fontSize: 13 }}>Delete</Text>}
+                      </TouchableOpacity>,
+                      `Delete ${previewDoc.title}`
                     )}
                   </View>
                 </View>
@@ -1163,51 +1320,101 @@ export default function TabDetailScreen({ route, navigation }: any) {
                               const safeUri = getSafeImageUri(uri);
                               if (!safeUri) return null;
                               return (
-                                <View key={idx} style={{ marginBottom: 12, alignItems: 'center' }}>
+                                <TouchableOpacity
+                                  key={idx}
+                                  activeOpacity={0.9}
+                                  onPress={() => handleRightPanePress(previewDoc)}
+                                  {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(previewDoc) } : {})}
+                                  style={{ marginBottom: 12, alignItems: 'center' }}
+                                >
                                   <Image 
                                     source={{ uri: safeUri }} 
                                     style={{ width: '100%', height: isMobile ? 240 : 380, borderRadius: 12 }} 
                                     resizeMode="contain" 
                                   />
-                                </View>
+                                </TouchableOpacity>
                               );
                             }
 
                             if (isPdfFile && Platform.OS === 'web') {
                               const blobUrl = getPdfBlobUrl(uri);
                               return (
-                                <View key={idx} style={{ marginBottom: 16, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#e2e8f0' }}>
+                                <TouchableOpacity
+                                  key={idx}
+                                  activeOpacity={0.95}
+                                  onPress={() => handleRightPanePress(previewDoc)}
+                                  {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(previewDoc) } : {})}
+                                  style={{ marginBottom: 16, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#ffffff' }}
+                                >
                                   <View style={{
                                     flexDirection: 'row',
                                     justifyContent: 'space-between',
                                     alignItems: 'center',
                                     backgroundColor: '#eef2ff',
                                     paddingHorizontal: 12,
-                                    paddingVertical: 8,
+                                    paddingVertical: 10,
                                     borderBottomWidth: 1,
                                     borderBottomColor: '#dbeafe'
                                   }}>
-                                    <Text style={{ fontSize: 13, fontWeight: '600', color: AppTheme.colors.primary }}>
-                                      PDF Document ({idx + 1}/{previewDataArray.length})
+                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                      <Ionicons name="document-text" size={16} color={AppTheme.colors.primary} style={{ marginRight: 6 }} />
+                                      <Text style={{ fontSize: 13, fontWeight: '700', color: AppTheme.colors.primary }}>
+                                        PDF Document ({idx + 1}/{previewDataArray.length})
+                                      </Text>
+                                    </View>
+                                    <Text style={{ fontSize: 11, color: '#6366f1', fontWeight: '500' }}>
+                                      Double-click to open
                                     </Text>
                                   </View>
 
-                                  {React.createElement('div', {
-                                    style: { width: '100%', height: isMobile ? 320 : 500, backgroundColor: '#ffffff' },
-                                  }, React.createElement('iframe', {
-                                    src: blobUrl,
-                                    style: { width: '100%', height: '100%', border: 'none' },
-                                    title: `PDF Document ${idx + 1}`,
-                                  }))}
-                                </View>
+                                  <View style={{ position: 'relative', width: '100%', height: isMobile ? 320 : 500 }}>
+                                    {React.createElement('div', {
+                                      style: { width: '100%', height: '100%', backgroundColor: '#ffffff', pointerEvents: 'none' },
+                                    }, React.createElement('iframe', {
+                                      src: blobUrl,
+                                      style: { width: '100%', height: '100%', border: 'none', pointerEvents: 'none' },
+                                      title: `PDF Document ${idx + 1}`,
+                                    }))}
+                                    <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />
+                                  </View>
+                                </TouchableOpacity>
                               );
                             }
 
                             if (isPdfFile && Platform.OS !== 'web') {
                               return (
-                                <View key={idx} style={{ height: isMobile ? 300 : 480, marginBottom: 12 }}>
-                                  <WebView originWhitelist={['*']} source={{ uri }} style={{ flex: 1, borderRadius: 12 }} />
-                                </View>
+                                <TouchableOpacity
+                                  key={idx}
+                                  activeOpacity={0.95}
+                                  onPress={() => handleRightPanePress(previewDoc)}
+                                  style={{ marginBottom: 16, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#ffffff' }}
+                                >
+                                  <View style={{
+                                    flexDirection: 'row',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                    backgroundColor: '#eef2ff',
+                                    paddingHorizontal: 12,
+                                    paddingVertical: 10,
+                                    borderBottomWidth: 1,
+                                    borderBottomColor: '#dbeafe'
+                                  }}>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                      <Ionicons name="document-text" size={16} color={AppTheme.colors.primary} style={{ marginRight: 6 }} />
+                                      <Text style={{ fontSize: 13, fontWeight: '700', color: AppTheme.colors.primary }}>
+                                        PDF Document ({idx + 1}/{previewDataArray.length})
+                                      </Text>
+                                    </View>
+                                    <Text style={{ fontSize: 11, color: '#6366f1', fontWeight: '500' }}>
+                                      Double-tap to open
+                                    </Text>
+                                  </View>
+
+                                  <View style={{ height: isMobile ? 300 : 480, position: 'relative' }}>
+                                    <WebView originWhitelist={['*']} source={{ uri }} style={{ flex: 1 }} pointerEvents="none" />
+                                    <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />
+                                  </View>
+                                </TouchableOpacity>
                               );
                             }
 
@@ -1257,8 +1464,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
                                     borderRadius: 8,
                                   }}
                                 >
-                                  <Ionicons name="download-outline" size={16} color="#ffffff" style={{ marginRight: 6 }} />
-                                  <Text style={{ color: '#ffffff', fontWeight: '600', fontSize: 13 }}>Download</Text>
+                                  <Ionicons name="share-outline" size={16} color="#ffffff" style={{ marginRight: 6 }} />
+                                  <Text style={{ color: '#ffffff', fontWeight: '600', fontSize: 13 }}>Share</Text>
                                 </TouchableOpacity>
                               </View>
                             );
@@ -1276,6 +1483,17 @@ export default function TabDetailScreen({ route, navigation }: any) {
                   </Text>
 
                   <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                    <TouchableOpacity 
+                      activeOpacity={0.7}
+                      onPress={() => handleRightPanePress(previewDoc)}
+                      {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(previewDoc) } : {})}
+                      style={{ width: '100%', marginBottom: 14 }}
+                    >
+                      <Text style={{ fontSize: 11, color: AppTheme.colors.textSecondary }}>File Name (Double-tap to open)</Text>
+                      <Text style={{ fontSize: 13, fontWeight: '600', color: AppTheme.colors.text, marginTop: 2 }} numberOfLines={2}>
+                        {previewDoc.title}
+                      </Text>
+                    </TouchableOpacity>
                     <View style={{ width: '33%', marginBottom: 14 }}>
                       <Text style={{ fontSize: 11, color: AppTheme.colors.textSecondary }}>Type</Text>
                       <Text style={{ fontSize: 13, fontWeight: '600', color: AppTheme.colors.text, marginTop: 2 }}>
@@ -1681,8 +1899,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
                             onPress={() => handleDownloadFile(uri, selectedDoc.title, 'image', idx)}
                             style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center' }}
                           >
-                            <Ionicons name="download" size={20} color="#fff" />
-                            <Text style={{ color: '#fff', marginLeft: 6, fontWeight: 'bold' }}>Download Image</Text>
+                            <Ionicons name="share-outline" size={20} color="#fff" />
+                            <Text style={{ color: '#fff', marginLeft: 6, fontWeight: 'bold' }}>Share Image</Text>
                           </TouchableOpacity>
                         </View>
                       );
@@ -1712,7 +1930,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                             onPress={() => handleDownloadFile(uri, selectedDoc.title, 'pdf', idx)}
                             style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center' }}
                           >
-                            <Ionicons name="download" size={20} color="#fff" />
+                            <Ionicons name="share-outline" size={20} color="#fff" />
                             <Text style={{ color: '#fff', marginLeft: 6, fontWeight: 'bold' }}>Open / Share PDF</Text>
                           </TouchableOpacity>
                         </View>
