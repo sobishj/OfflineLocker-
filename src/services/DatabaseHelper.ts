@@ -62,6 +62,14 @@ export class DatabaseHelper {
     return await db.getAllAsync<User>('SELECT * FROM users ORDER BY createdAt DESC');
   }
 
+  static async updateUser(uuid: string, username: string, pinHash: string): Promise<void> {
+    const db = await this.getDatabase();
+    await db.runAsync(
+      'UPDATE users SET username = ?, pinHash = ? WHERE uuid = ?',
+      [username, pinHash, uuid]
+    );
+  }
+
   // --- TAB OPERATIONS ---
   static async createTab(tab: Tab): Promise<void> {
     const db = await this.getDatabase();
@@ -102,6 +110,11 @@ export class DatabaseHelper {
   static async getDocumentsByTab(tabId: string): Promise<Document[]> {
     const db = await this.getDatabase();
     return await db.getAllAsync<Document>('SELECT * FROM documents WHERE tabId = ? ORDER BY createdAt DESC', [tabId]);
+  }
+
+  static async getAllDocuments(): Promise<Document[]> {
+    const db = await this.getDatabase();
+    return await db.getAllAsync<Document>('SELECT * FROM documents ORDER BY createdAt DESC');
   }
 
   static async deleteDocument(id: number): Promise<void> {

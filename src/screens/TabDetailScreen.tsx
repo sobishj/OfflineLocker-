@@ -12,8 +12,11 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import WebCamera from '../components/WebCamera';
 import CustomImageCropper from '../components/CustomImageCropper';
 import { WebView } from 'react-native-webview';
+import PdfViewer from '../components/PdfViewer';
+import ZoomableImage from '../components/ZoomableImage';
 import DraggableFAB from '../components/DraggableFAB';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { StorageService } from '../utils/storage';
 
 export default function TabDetailScreen({ route, navigation }: any) {
   const insets = useSafeAreaInsets();
@@ -67,7 +70,9 @@ export default function TabDetailScreen({ route, navigation }: any) {
   const [previewDoc, setPreviewDoc] = useState<any>(null);
   const [previewData, setPreviewData] = useState<string>('');
   const [previewDataArray, setPreviewDataArray] = useState<string[]>([]);
+  const [previewLoading, setPreviewLoading] = useState<boolean>(false);
   const [selectedForDownload, setSelectedForDownload] = useState<Record<number, boolean>>({});
+  const previewRequestIdRef = useRef<number>(0);
 
   // Delete confirmation
   const [deleteConfirmDoc, setDeleteConfirmDoc] = useState<any>(null);
@@ -79,6 +84,16 @@ export default function TabDetailScreen({ route, navigation }: any) {
   type DocSortOption = 'newest' | 'oldest' | 'name_asc' | 'name_desc';
   const [sortOption, setSortOption] = useState<DocSortOption>('newest');
   const [sortModalVisible, setSortModalVisible] = useState(false);
+
+  useEffect(() => {
+    const loadDocSortPref = async () => {
+      const saved = await StorageService.getItem('@offline_locker_doc_sort_option');
+      if (saved && ['newest', 'oldest', 'name_asc', 'name_desc'].includes(saved)) {
+        setSortOption(saved as DocSortOption);
+      }
+    };
+    loadDocSortPref();
+  }, []);
 
   const DOC_SORT_OPTIONS: { id: DocSortOption; label: string; desc: string; icon: any }[] = [
     { id: 'newest', label: 'Newest First', desc: 'Recently added files appear first', icon: 'time-outline' },
@@ -115,9 +130,11 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
   useEffect(() => {
     // Reset preview state and decryption cache when switching tabs
+    previewRequestIdRef.current++;
     setPreviewDoc(null);
     setPreviewData('');
     setPreviewDataArray([]);
+    setPreviewLoading(false);
     decryptionCacheRef.current.clear();
     setLoading(true);
 
@@ -129,9 +146,11 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
     return () => {
       // Clear preview and active documents on unmount so they do not bleed into other tabs
+      previewRequestIdRef.current++;
       setPreviewDoc(null);
       setPreviewData('');
       setPreviewDataArray([]);
+      setPreviewLoading(false);
       decryptionCacheRef.current.clear();
       useLockerStore.setState({ activeDocuments: [] });
     };
@@ -531,17 +550,26 @@ export default function TabDetailScreen({ route, navigation }: any) {
     }
   };
 
-  const prepareLocalFiles = async (dataUris: string[], docTitle: string, type: string): Promise<string[]> => {
-    if (Platform.OS === 'web' || type === 'image') return dataUris;
+  const prepareLocalFiles = async (dataUris: string[], docTitle: string, type: string, docId?: any): Promise<string[]> => {
+    if (Platform.OS === 'web' || type === 'image' || type === 'pdf') return dataUris;
 
     const safeTitle = (docTitle || 'doc').replace(/[^a-z0-9]/gi, '_');
+    const prefix = docId ? `doc_${docId}` : safeTitle;
+
     return Promise.all(
       dataUris.map(async (uri, i) => {
         if (uri.startsWith('data:')) {
           try {
-            const base64Data = uri.includes(',') ? uri.split(',')[1] : uri;
             const ext = type === 'pdf' ? 'pdf' : 'jpg';
-            const tempUri = `${FileSystem.cacheDirectory}${safeTitle}_preview_${i}.${ext}`;
+            const tempUri = `${FileSystem.cacheDirectory}${prefix}_p_${i}.${ext}`;
+            
+            // Check if file already exists on disk to avoid redundant writes and file locks
+            const fileInfo = await FileSystem.getInfoAsync(tempUri);
+            if (fileInfo.exists && fileInfo.size && fileInfo.size > 0) {
+              return tempUri;
+            }
+
+            const base64Data = uri.includes(',') ? uri.split(',')[1] : uri;
             await FileSystem.writeAsStringAsync(tempUri, base64Data, { encoding: 'base64' });
             return tempUri;
           } catch (e) {
@@ -576,7 +604,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
         const rawArr = parseDecryptedContent(plainText);
         if (rawArr.length > 0) {
           const effectiveType = doc.type === 'pdf' || (rawArr[0] && rawArr[0].includes('application/pdf')) ? 'pdf' : 'image';
-          prepared = await prepareLocalFiles(rawArr, doc.title || 'doc', effectiveType);
+          prepared = await prepareLocalFiles(rawArr, doc.title || 'doc', effectiveType, doc.id);
           setDecryptedArray(prepared);
         }
         if (doc.id && !plainText.startsWith('⚠️')) {
@@ -590,12 +618,14 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
   const handleSelectPreview = async (doc: any) => {
     if (!doc) return;
+    const currentRequestId = ++previewRequestIdRef.current;
     setPreviewDoc(doc);
 
     if (doc.id && decryptionCacheRef.current.has(doc.id)) {
       const cached = decryptionCacheRef.current.get(doc.id)!;
       setPreviewData(cached.plainText);
       setPreviewDataArray(cached.array);
+      setPreviewLoading(false);
       if (cached.array.length > 0) {
         const initialSelection: Record<number, boolean> = {};
         cached.array.forEach((_, idx) => { initialSelection[idx] = true; });
@@ -606,26 +636,47 @@ export default function TabDetailScreen({ route, navigation }: any) {
       return;
     }
 
-    const plainText = decryptDoc(doc.encryptedContent || '');
-    setPreviewData(plainText);
+    // Immediately clear previous preview array and set loading to prevent cross-type rendering crash
+    setPreviewLoading(true);
+    setPreviewData('');
+    setPreviewDataArray([]);
+    setSelectedForDownload({});
 
-    let arr: string[] = [];
-    const rawArr = parseDecryptedContent(plainText);
-    if (rawArr.length > 0) {
-      const effectiveType = doc.type === 'pdf' || (rawArr[0] && rawArr[0].includes('application/pdf')) ? 'pdf' : 'image';
-      arr = await prepareLocalFiles(rawArr, doc.title || 'doc', effectiveType);
+    try {
+      const plainText = decryptDoc(doc.encryptedContent || '');
+
+      // Check if user already switched to another document
+      if (previewRequestIdRef.current !== currentRequestId) return;
+
+      setPreviewData(plainText);
+
+      let arr: string[] = [];
+      const rawArr = parseDecryptedContent(plainText);
+      if (rawArr.length > 0) {
+        const effectiveType = doc.type === 'pdf' || (rawArr[0] && rawArr[0].includes('application/pdf')) ? 'pdf' : 'image';
+        arr = await prepareLocalFiles(rawArr, doc.title || 'doc', effectiveType, doc.id);
+      }
+
+      // Check if user already switched to another document
+      if (previewRequestIdRef.current !== currentRequestId) return;
+
       setPreviewDataArray(arr);
 
-      const initialSelection: Record<number, boolean> = {};
-      arr.forEach((_, idx) => { initialSelection[idx] = true; });
-      setSelectedForDownload(initialSelection);
-    } else {
-      setPreviewDataArray([]);
-      setSelectedForDownload({});
-    }
+      if (arr.length > 0) {
+        const initialSelection: Record<number, boolean> = {};
+        arr.forEach((_, idx) => { initialSelection[idx] = true; });
+        setSelectedForDownload(initialSelection);
+      }
 
-    if (doc.id && !plainText.startsWith('⚠️')) {
-      decryptionCacheRef.current.set(doc.id, { plainText, array: arr });
+      if (doc.id && !plainText.startsWith('⚠️')) {
+        decryptionCacheRef.current.set(doc.id, { plainText, array: arr });
+      }
+    } catch (err) {
+      console.warn('handleSelectPreview error:', err);
+    } finally {
+      if (previewRequestIdRef.current === currentRequestId) {
+        setPreviewLoading(false);
+      }
     }
   };
 
@@ -830,7 +881,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
       tapTimeoutRef.current = setTimeout(() => {
         handleSelectPreview(item);
         tapTimeoutRef.current = null;
-      }, 250);
+      }, 50);
     }
   };
 
@@ -1203,17 +1254,17 @@ export default function TabDetailScreen({ route, navigation }: any) {
                         flexDirection: isMobile ? 'column' : 'row', 
                         alignItems: 'center', 
                         justifyContent: 'center',
-                        backgroundColor: '#f8fafc', 
+                        backgroundColor: AppTheme.colors.primaryLight, 
                         borderWidth: 1, 
-                        borderColor: '#cbd5e1', 
+                        borderColor: AppTheme.colors.primaryBorder, 
                         paddingHorizontal: isMobile ? 4 : 12, 
                         paddingVertical: isMobile ? 8 : 10, 
                         borderRadius: 10,
                         minHeight: isMobile ? 48 : 42,
                       }}
                     >
-                      <Ionicons name="create-outline" size={isMobile ? 18 : 19} color={AppTheme.colors.text} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
-                      <Text style={{ color: AppTheme.colors.text, fontWeight: '600', fontSize: isMobile ? 11 : 14, textAlign: 'center' }} numberOfLines={1}>Edit</Text>
+                      <Ionicons name="create-outline" size={isMobile ? 18 : 19} color={AppTheme.colors.primary} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
+                      <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: isMobile ? 11 : 14, textAlign: 'center' }} numberOfLines={1}>Edit</Text>
                     </TouchableOpacity>,
                     `Edit ${previewDoc.title}`,
                     'flex'
@@ -1255,98 +1306,113 @@ export default function TabDetailScreen({ route, navigation }: any) {
                   minHeight: isMobile ? 220 : 360,
                   justifyContent: 'center',
                 }}>
-                  <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16 }}>
-                    {(() => {
-                      const payload = parseDecryptedPayload(previewData);
-                      const notesText = payload.notes || (!previewData.startsWith('[') && !previewData.startsWith('{') && !previewData.startsWith('⚠️') ? previewData : '');
-                      
-                      return (
-                        <>
-                          {previewData.startsWith('⚠️') ? (
-                            <View style={{ backgroundColor: '#fef2f2', padding: 16, borderRadius: 12, borderWidth: 1, borderColor: '#fecaca', alignItems: 'center', marginVertical: 8 }}>
-                              <Ionicons name="lock-closed-outline" size={32} color="#dc2626" style={{ marginBottom: 8 }} />
-                              <Text style={{ color: '#991b1b', fontSize: 14, fontWeight: '600', textAlign: 'center' }}>
-                                Decryption Failed
-                              </Text>
-                              <Text style={{ color: '#b91c1c', fontSize: 12, marginTop: 4, textAlign: 'center' }}>
-                                Unable to decrypt document with the current keys.
-                              </Text>
-                            </View>
-                          ) : previewDataArray.length === 0 && notesText ? (
-                            <View style={{ backgroundColor: '#ffffff', padding: 16, borderRadius: 12, borderWidth: 1, borderColor: '#e2e8f0' }}>
-                              <Text style={{ color: AppTheme.colors.text, fontSize: 15, lineHeight: 24 }}>
-                                {notesText}
-                              </Text>
-                            </View>
-                          ) : null}
+                  {previewLoading ? (
+                    <View style={{ padding: 40, alignItems: 'center', justifyContent: 'center', minHeight: isMobile ? 220 : 360 }}>
+                      <ActivityIndicator size="large" color={AppTheme.colors.primary} />
+                      <Text style={{ marginTop: 12, fontSize: 13, color: AppTheme.colors.textSecondary, fontWeight: '500' }}>
+                        Loading preview...
+                      </Text>
+                    </View>
+                  ) : (
+                    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16 }}>
+                      {(() => {
+                        const payload = parseDecryptedPayload(previewData);
+                        const notesText = payload.notes || (!previewData.startsWith('[') && !previewData.startsWith('{') && !previewData.startsWith('⚠️') ? previewData : '');
+                        
+                        return (
+                          <>
+                            {previewData.startsWith('⚠️') ? (
+                              <View style={{ backgroundColor: '#fef2f2', padding: 16, borderRadius: 12, borderWidth: 1, borderColor: '#fecaca', alignItems: 'center', marginVertical: 8 }}>
+                                <Ionicons name="lock-closed-outline" size={32} color="#dc2626" style={{ marginBottom: 8 }} />
+                                <Text style={{ color: '#991b1b', fontSize: 14, fontWeight: '600', textAlign: 'center' }}>
+                                  Decryption Failed
+                                </Text>
+                                <Text style={{ color: '#b91c1c', fontSize: 12, marginTop: 4, textAlign: 'center' }}>
+                                  Unable to decrypt document with the current keys.
+                                </Text>
+                              </View>
+                            ) : previewDataArray.length === 0 && notesText ? (
+                              <View style={{ backgroundColor: '#ffffff', padding: 16, borderRadius: 12, borderWidth: 1, borderColor: '#e2e8f0' }}>
+                                <Text style={{ color: AppTheme.colors.text, fontSize: 15, lineHeight: 24 }}>
+                                  {notesText}
+                                </Text>
+                              </View>
+                            ) : null}
 
-                          {/* Render File Attachments (Images, PDFs, Word Docs, etc.) */}
-                          {previewDataArray.map((uri, idx) => {
-                            const isImg = uri.startsWith('data:image/') || previewDoc.type === 'image';
-                            const isPdfFile = uri.includes('application/pdf') || previewDoc.type === 'pdf';
-                            const isWordFile = uri.includes('wordprocessingml') || uri.includes('msword') || previewDoc.type === 'doc' || previewDoc.type === 'docx';
+                            {/* Render File Attachments (Images, PDFs, Word Docs, etc.) */}
+                            {previewDataArray.map((uri, idx) => {
+                              const isPdfUri = uri.includes('application/pdf') || uri.toLowerCase().endsWith('.pdf');
+                              const isImgUri = uri.startsWith('data:image/') || /\.(jpg|jpeg|png|webp|gif)$/i.test(uri);
+                              const isImg = isImgUri || (!isPdfUri && previewDoc.type === 'image');
+                              const isPdfFile = isPdfUri || (!isImgUri && previewDoc.type === 'pdf');
+                              const isWordFile = uri.includes('wordprocessingml') || uri.includes('msword') || previewDoc.type === 'doc' || previewDoc.type === 'docx';
 
-                            if (isImg) {
-                              const safeUri = getSafeImageUri(uri);
-                              if (!safeUri) return null;
-                              return (
-                                <TouchableOpacity
-                                  key={idx}
-                                  activeOpacity={0.9}
-                                  onPress={() => handleRightPanePress(previewDoc)}
-                                  {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(previewDoc) } : {})}
-                                  style={{ marginBottom: 12, alignItems: 'center' }}
-                                >
-                                  <Image 
-                                    source={{ uri: safeUri }} 
-                                    style={{ width: '100%', height: isMobile ? 240 : 380, borderRadius: 12 }} 
-                                    resizeMode="contain" 
-                                  />
-                                </TouchableOpacity>
-                              );
-                            }
+                              if (isImg) {
+                                const safeUri = getSafeImageUri(uri);
+                                if (!safeUri) return null;
+                                return (
+                                  <TouchableOpacity
+                                    key={idx}
+                                    activeOpacity={0.9}
+                                    onPress={() => handleRightPanePress(previewDoc)}
+                                    {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(previewDoc) } : {})}
+                                    style={{ marginBottom: 12, alignItems: 'center' }}
+                                  >
+                                    <Image 
+                                      source={{ uri: safeUri }} 
+                                      style={{ width: '100%', height: isMobile ? 240 : 380, borderRadius: 12 }} 
+                                      resizeMode="contain" 
+                                    />
+                                  </TouchableOpacity>
+                                );
+                              }
 
-                            if (isPdfFile && Platform.OS === 'web') {
-                              const blobUrl = getPdfBlobUrl(uri);
-                              return (
-                                <TouchableOpacity
-                                  key={idx}
-                                  activeOpacity={0.95}
-                                  onPress={() => handleRightPanePress(previewDoc)}
-                                  {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(previewDoc) } : {})}
-                                  style={{ marginBottom: 16, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#ffffff' }}
-                                >
-                                  <View style={{ position: 'relative', width: '100%', height: isMobile ? 320 : 500 }}>
-                                    {React.createElement('div', {
-                                      style: { width: '100%', height: '100%', backgroundColor: '#ffffff', pointerEvents: 'none' },
-                                    }, React.createElement('iframe', {
-                                      src: blobUrl,
-                                      style: { width: '100%', height: '100%', border: 'none', pointerEvents: 'none' },
-                                      title: `PDF Document ${idx + 1}`,
-                                    }))}
-                                    <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />
-                                  </View>
-                                </TouchableOpacity>
-                              );
-                            }
+                              if (isPdfFile && Platform.OS === 'web') {
+                                const blobUrl = getPdfBlobUrl(uri);
+                                return (
+                                  <TouchableOpacity
+                                    key={idx}
+                                    activeOpacity={0.95}
+                                    onPress={() => handleRightPanePress(previewDoc)}
+                                    {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(previewDoc) } : {})}
+                                    style={{ marginBottom: 16, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#ffffff' }}
+                                  >
+                                    <View style={{ position: 'relative', width: '100%', height: isMobile ? 320 : 500 }}>
+                                      {React.createElement('div', {
+                                        style: { width: '100%', height: '100%', backgroundColor: '#ffffff', pointerEvents: 'none' },
+                                      }, React.createElement('iframe', {
+                                        src: blobUrl,
+                                        style: { width: '100%', height: '100%', border: 'none', pointerEvents: 'none' },
+                                        title: `PDF Document ${idx + 1}`,
+                                      }))}
+                                      <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />
+                                    </View>
+                                  </TouchableOpacity>
+                                );
+                              }
 
-                            if (isPdfFile && Platform.OS !== 'web') {
-                              return (
-                                <TouchableOpacity
-                                  key={idx}
-                                  activeOpacity={0.95}
-                                  onPress={() => handleRightPanePress(previewDoc)}
-                                  style={{ marginBottom: 16, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#ffffff' }}
-                                >
-                                  <View style={{ height: isMobile ? 300 : 480, position: 'relative' }}>
-                                    <WebView originWhitelist={['*']} source={{ uri }} style={{ flex: 1 }} pointerEvents="none" />
-                                    <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />
-                                  </View>
-                                </TouchableOpacity>
-                              );
-                            }
+                              if (isPdfFile && Platform.OS !== 'web') {
+                                return (
+                                  <TouchableOpacity
+                                    key={idx}
+                                    activeOpacity={0.95}
+                                    onPress={() => handleRightPanePress(previewDoc)}
+                                    style={{ marginBottom: 16, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#ffffff' }}
+                                  >
+                                    <View style={{ height: isMobile ? 300 : 480, position: 'relative' }}>
+                                      <PdfViewer 
+                                        uri={uri} 
+                                        style={{ flex: 1 }} 
+                                        pointerEvents="none" 
+                                        singlePageOnly={true}
+                                      />
+                                      <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />
+                                    </View>
+                                  </TouchableOpacity>
+                                );
+                              }
 
-                            // Word Document / Generic File Attachment Card Banner
+                              // Word Document / Generic File Attachment Card Banner
                             return (
                               <View key={idx} style={{
                                 marginBottom: 14,
@@ -1401,7 +1467,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
                         </>
                       );
                     })()}
-                  </ScrollView>
+                    </ScrollView>
+                  )}
                 </View>
 
                 {/* DETAILS SECTION UNDERNEATH PREVIEW */}
@@ -1608,30 +1675,6 @@ export default function TabDetailScreen({ route, navigation }: any) {
             })()}
           </View>
 
-          {cropIndex !== null && cropIndex >= 0 && (
-            <View style={[StyleSheet.absoluteFill, { zIndex: 999999, elevation: 999999, backgroundColor: '#000' }]}>
-              <CustomImageCropper
-                imageUri={cropTarget === 'edit' ? editFileUris[cropIndex] : fileUris[cropIndex]}
-                onCropDone={(croppedBase64Uri) => {
-                  if (cropTarget === 'edit') {
-                    const updated = [...editFileUris];
-                    updated[cropIndex] = croppedBase64Uri;
-                    setEditFileUris(updated);
-                  } else {
-                    const updated = [...fileUris];
-                    updated[cropIndex] = croppedBase64Uri;
-                    setFileUris(updated);
-                  }
-                  setCropIndex(null);
-                  setCropTarget(null);
-                }}
-                onCancel={() => {
-                  setCropIndex(null);
-                  setCropTarget(null);
-                }}
-              />
-            </View>
-          )}
         </KeyboardAvoidingView>
       </Modal>
 
@@ -1693,30 +1736,6 @@ export default function TabDetailScreen({ route, navigation }: any) {
                         >
                           <Ionicons name="close" size={16} color={AppTheme.colors.error} />
                         </TouchableOpacity>
-                        {editFileType === 'image' && safeUri && (
-                          <TouchableOpacity
-                            style={{
-                              position: 'absolute',
-                              bottom: -6,
-                              left: -6,
-                              backgroundColor: AppTheme.colors.primary,
-                              borderRadius: 12,
-                              padding: 4,
-                              elevation: 3,
-                              shadowColor: '#000',
-                              shadowOffset: { width: 0, height: 2 },
-                              shadowOpacity: 0.2,
-                              shadowRadius: 3,
-                            }}
-                            onPress={() => {
-                              setCropTarget('edit');
-                              setCropIndex(idx);
-                            }}
-                            {...(Platform.OS === 'web' ? { title: 'Crop / Adjust Borders' } : {})}
-                          >
-                            <Ionicons name="crop" size={16} color="#fff" />
-                          </TouchableOpacity>
-                        )}
                       </View>
                     );
                   })}
@@ -1788,7 +1807,12 @@ export default function TabDetailScreen({ route, navigation }: any) {
       </Modal>
 
       {/* VIEW DOCUMENT MODAL (Popup) */}
-      <Modal visible={viewModalVisible} animationType="slide" transparent={false}>
+      <Modal 
+        visible={viewModalVisible} 
+        animationType="slide" 
+        transparent={false}
+        onRequestClose={() => setViewModalVisible(false)}
+      >
         <View style={styles.fullScreenModal}>
 
           <View style={[styles.fullScreenHeader, { paddingTop: isMobile ? Math.max(insets.top + 8, 16) : 16 }]}>
@@ -1806,6 +1830,37 @@ export default function TabDetailScreen({ route, navigation }: any) {
               const displayFiles = decryptedArray.length > 0 ? decryptedArray : files;
               const isPdf = selectedDoc?.type === 'pdf' || (displayFiles[0] && (displayFiles[0].includes('application/pdf') || displayFiles[0].endsWith('.pdf')));
 
+              // Dedicated full-screen PDF view when single PDF and no notes for direct gesture handling
+              if (displayFiles.length === 1 && isPdf && !notes) {
+                const uri = displayFiles[0];
+                return (
+                  <View style={{ flex: 1, position: 'relative' }}>
+                    {Platform.OS === 'web' ? (
+                      React.createElement('div', {
+                        style: { width: '100%', height: '100%' },
+                      }, React.createElement('iframe', {
+                        src: getPdfBlobUrl(uri),
+                        style: { width: '100%', height: '100%', border: 'none', borderRadius: 12 },
+                        title: selectedDoc?.title,
+                      }))
+                    ) : (
+                      <PdfViewer 
+                        uri={uri} 
+                        style={{ flex: 1, borderRadius: 12 }} 
+                        singlePageOnly={false}
+                      />
+                    )}
+                    <TouchableOpacity
+                      onPress={() => handleDownloadFile(uri, selectedDoc.title, 'pdf', 0)}
+                      style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center', zIndex: 10 }}
+                    >
+                      <Ionicons name="share-outline" size={20} color="#fff" />
+                      <Text style={{ color: '#fff', marginLeft: 6, fontWeight: 'bold' }}>Open / Share PDF</Text>
+                    </TouchableOpacity>
+                  </View>
+                );
+              }
+
               return (
                 <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 40 }}>
                   {displayFiles.length === 0 && !!notes && (
@@ -1820,10 +1875,10 @@ export default function TabDetailScreen({ route, navigation }: any) {
                       if (!safeUri) return null;
                       return (
                         <View key={idx} style={{ marginBottom: 20, position: 'relative' }}>
-                          <Image source={{ uri: safeUri }} style={{ width: '100%', height: 500, borderRadius: 12 }} resizeMode="contain" />
+                          <ZoomableImage uri={safeUri} height={isMobile ? 480 : 600} />
                           <TouchableOpacity
                             onPress={() => handleDownloadFile(uri, selectedDoc.title, 'image', idx)}
-                            style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center' }}
+                            style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center', zIndex: 10 }}
                           >
                             <Ionicons name="share-outline" size={20} color="#fff" />
                             <Text style={{ color: '#fff', marginLeft: 6, fontWeight: 'bold' }}>Share Image</Text>
@@ -1850,11 +1905,15 @@ export default function TabDetailScreen({ route, navigation }: any) {
                       })
                     ) : (
                       displayFiles.map((uri, idx) => (
-                        <View key={idx} style={{ height: 600, marginBottom: 20 }}>
-                          <WebView originWhitelist={['*']} source={{ uri }} style={{ flex: 1, borderRadius: 12 }} nestedScrollEnabled />
+                        <View key={idx} style={{ height: 650, marginBottom: 20 }}>
+                          <PdfViewer 
+                            uri={uri} 
+                            style={{ flex: 1, borderRadius: 12 }} 
+                            singlePageOnly={false}
+                          />
                           <TouchableOpacity
                             onPress={() => handleDownloadFile(uri, selectedDoc.title, 'pdf', idx)}
-                            style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center' }}
+                            style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center', zIndex: 10 }}
                           >
                             <Ionicons name="share-outline" size={20} color="#fff" />
                             <Text style={{ color: '#fff', marginLeft: 6, fontWeight: 'bold' }}>Open / Share PDF</Text>
@@ -1877,6 +1936,42 @@ export default function TabDetailScreen({ route, navigation }: any) {
       {/* WEB CAMERA MODAL */}
       <Modal visible={webCameraVisible} animationType="slide" transparent={false}>
         <WebCamera onCapture={handleWebCameraCapture} onClose={() => setWebCameraVisible(false)} />
+      </Modal>
+
+      {/* CROPPER FULLSCREEN MODAL */}
+      <Modal
+        visible={cropIndex !== null && cropIndex >= 0}
+        animationType="fade"
+        transparent={false}
+        onRequestClose={() => {
+          setCropIndex(null);
+          setCropTarget(null);
+        }}
+      >
+        <View style={{ flex: 1, backgroundColor: '#000' }}>
+          {cropIndex !== null && cropIndex >= 0 && (
+            <CustomImageCropper
+              imageUri={cropTarget === 'edit' ? editFileUris[cropIndex] : fileUris[cropIndex]}
+              onCropDone={(croppedBase64Uri) => {
+                if (cropTarget === 'edit') {
+                  const updated = [...editFileUris];
+                  updated[cropIndex] = croppedBase64Uri;
+                  setEditFileUris(updated);
+                } else {
+                  const updated = [...fileUris];
+                  updated[cropIndex] = croppedBase64Uri;
+                  setFileUris(updated);
+                }
+                setCropIndex(null);
+                setCropTarget(null);
+              }}
+              onCancel={() => {
+                setCropIndex(null);
+                setCropTarget(null);
+              }}
+            />
+          )}
+        </View>
       </Modal>
 
       {/* DELETE CONFIRMATION MODAL */}
@@ -2004,6 +2099,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                   onPress={() => {
                     setSortOption(opt.id);
                     setSortModalVisible(false);
+                    StorageService.setItem('@offline_locker_doc_sort_option', opt.id);
                   }}
                 >
                   <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>

@@ -33,6 +33,7 @@ interface LockerState {
   deleteDocument: (id: number, tabId: string) => Promise<void>;
   exportBackup: (exportPin: string) => Promise<boolean>;
   importBackup: (encryptedContent: string, importPin: string) => Promise<{ success: boolean; tabsCount: number; docsCount: number }>;
+  updateUserProfile: (currentPin: string, newUsername?: string, newPin?: string) => Promise<{ success: boolean; message: string }>;
   refreshLockoutState: () => Promise<LockoutState>;
   clearError: () => void;
 }
@@ -303,6 +304,69 @@ export const useLockerStore = create<LockerState>((set, get) => ({
       await get().loadTabs();
     }
     return { success: result.success, tabsCount: result.tabsCount, docsCount: result.docsCount };
+  },
+
+  updateUserProfile: async (currentPin: string, newUsername?: string, newPin?: string) => {
+    const { currentUser } = get();
+    if (!currentUser) {
+      return { success: false, message: 'No active user found.' };
+    }
+
+    if (!currentPin || !CryptoService.verifyPin(currentPin.trim(), currentUser.pinHash)) {
+      return { success: false, message: 'Current PIN is incorrect.' };
+    }
+
+    const trimmedUsername = newUsername ? newUsername.trim() : currentUser.username;
+    if (!trimmedUsername) {
+      return { success: false, message: 'Username cannot be empty.' };
+    }
+
+    const trimmedNewPin = newPin ? newPin.trim() : '';
+    const isChangingPin = Boolean(trimmedNewPin);
+
+    if (isChangingPin) {
+      if (trimmedNewPin.length !== 4 || !/^\d{4}$/.test(trimmedNewPin)) {
+        return { success: false, message: 'New PIN must be exactly 4 digits.' };
+      }
+    }
+
+    try {
+      const oldPinHash = currentUser.pinHash;
+      let newPinHash = oldPinHash;
+
+      if (isChangingPin) {
+        newPinHash = CryptoService.hashPin(trimmedNewPin);
+
+        // Re-encrypt all existing documents that were encrypted with oldPinHash
+        const allDocs = await DatabaseHelper.getAllDocuments();
+        for (const doc of allDocs) {
+          if (doc.encryptedContent && doc.id) {
+            const decrypted = CryptoService.decryptText(doc.encryptedContent, oldPinHash);
+            if (decrypted && !decrypted.startsWith('⚠️ Decryption Failed')) {
+              const reEncrypted = CryptoService.encryptText(decrypted, newPinHash);
+              await DatabaseHelper.updateDocument(doc.id, doc.title, reEncrypted);
+            }
+          }
+        }
+      }
+
+      await DatabaseHelper.updateUser(currentUser.uuid, trimmedUsername, newPinHash);
+
+      const updatedUser: User = {
+        ...currentUser,
+        username: trimmedUsername,
+        pinHash: newPinHash,
+      };
+
+      set({ currentUser: updatedUser });
+      return { 
+        success: true, 
+        message: isChangingPin ? 'Username & PIN updated successfully.' : 'Username updated successfully.' 
+      };
+    } catch (e: any) {
+      console.error('updateUserProfile error:', e);
+      return { success: false, message: e?.message || 'Failed to update user profile.' };
+    }
   },
 
   clearError: () => {

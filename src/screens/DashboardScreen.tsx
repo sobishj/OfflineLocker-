@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, KeyboardAvoidingView, Platform, ActivityIndicator, ScrollView } from 'react-native';
 import { useLockerStore } from '../store/useLockerStore';
 import { AppTheme } from '../theme/AppTheme';
 import { Ionicons } from '@expo/vector-icons';
@@ -8,13 +8,15 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 
 import DraggableFAB from '../components/DraggableFAB';
+import { StorageService } from '../utils/storage';
+import { CryptoService } from '../services/CryptoService';
 
 type DashboardProps = {
   navigation: NativeStackNavigationProp<any>;
 };
 
 export default function DashboardScreen({ navigation }: DashboardProps) {
-  const { tabs, tabDocCounts, logout, createTab, updateTab, deleteTab, verifyTabPin, exportBackup, importBackup } = useLockerStore();
+  const { tabs, tabDocCounts, logout, createTab, updateTab, deleteTab, verifyTabPin, exportBackup, importBackup, currentUser, updateUserProfile } = useLockerStore();
   const [modalVisible, setModalVisible] = useState(false);
   const [pinModalVisible, setPinModalVisible] = useState(false);
   
@@ -54,10 +56,35 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   const [isReadingFile, setIsReadingFile] = useState(false);
   const isImportingRef = useRef(false);
 
+  // Account / Profile state
+  const [accountModalVisible, setAccountModalVisible] = useState(false);
+  const [accountUsername, setAccountUsername] = useState('');
+  const [accountCurrentPin, setAccountCurrentPin] = useState('');
+  const [accountNewPin, setAccountNewPin] = useState('');
+  const [accountConfirmNewPin, setAccountConfirmNewPin] = useState('');
+  const [showCurrentPin, setShowCurrentPin] = useState(false);
+  const [showNewPin, setShowNewPin] = useState(false);
+  const [isUpdatingAccount, setIsUpdatingAccount] = useState(false);
+  const [isEditingUsername, setIsEditingUsername] = useState(false);
+  const [isEditingNewPin, setIsEditingNewPin] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
+  const usernameInputRef = useRef<TextInput | null>(null);
+  const newPinInputRef = useRef<TextInput | null>(null);
+
   // Category Sort state
   type SortOption = 'newest' | 'oldest' | 'name_asc' | 'name_desc';
   const [sortOption, setSortOption] = useState<SortOption>('newest');
   const [sortModalVisible, setSortModalVisible] = useState(false);
+
+  useEffect(() => {
+    const loadTabSortPref = async () => {
+      const saved = await StorageService.getItem('@offline_locker_tab_sort_option');
+      if (saved && ['newest', 'oldest', 'name_asc', 'name_desc'].includes(saved)) {
+        setSortOption(saved as SortOption);
+      }
+    };
+    loadTabSortPref();
+  }, []);
 
   const TAB_SORT_OPTIONS: { id: SortOption; label: string; desc: string; icon: any }[] = [
     { id: 'newest', label: 'Newest First', desc: 'Recently created categories appear first', icon: 'time-outline' },
@@ -326,6 +353,104 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     }, 100);
   };
 
+  const handleOpenAccountModal = () => {
+    setAccountUsername(currentUser?.username || '');
+    setAccountCurrentPin('');
+    setAccountNewPin('');
+    setAccountConfirmNewPin('');
+    setShowCurrentPin(false);
+    setShowNewPin(false);
+    setIsEditingUsername(false);
+    setIsEditingNewPin(false);
+    setAccountError(null);
+    setAccountModalVisible(true);
+  };
+
+  const showAccountFeedback = (title: string, msg: string) => {
+    setAccountError(msg);
+    if (Platform.OS === 'web') {
+      window.alert(`${title}: ${msg}`);
+    } else {
+      Alert.alert(title, msg);
+    }
+  };
+
+  const handleUpdateAccount = async () => {
+    setAccountError(null);
+
+    // 1. Check if user clicked save without entering old pin
+    if (!accountCurrentPin.trim()) {
+      showAccountFeedback('Current PIN Required', 'Please enter your current PIN to save changes.');
+      return;
+    }
+
+    if (accountCurrentPin.trim().length !== 4) {
+      showAccountFeedback('Invalid Current PIN', 'Current PIN must be exactly 4 digits.');
+      return;
+    }
+
+    // 2. Check if entered old PIN is incorrect
+    if (currentUser && !CryptoService.verifyPin(accountCurrentPin.trim(), currentUser.pinHash)) {
+      showAccountFeedback('Incorrect PIN', 'Incorrect current PIN. Please enter your correct 4-digit PIN.');
+      return;
+    }
+
+    const isUsernameChanged = isEditingUsername && accountUsername.trim() !== (currentUser?.username || '');
+    const isPinChanged = isEditingNewPin && accountNewPin.trim().length > 0;
+
+    // 3. Check if any fields were actually changed
+    if (!isUsernameChanged && !isPinChanged) {
+      showAccountFeedback('No Changes', 'Please click Change on Username or New PIN to make changes.');
+      return;
+    }
+
+    if (isEditingUsername && !accountUsername.trim()) {
+      showAccountFeedback('Invalid Username', 'Username cannot be empty.');
+      return;
+    }
+
+    if (isPinChanged) {
+      if (accountNewPin.trim().length !== 4 || !/^\d{4}$/.test(accountNewPin.trim())) {
+        showAccountFeedback('Invalid New PIN', 'New PIN must be exactly 4 digits.');
+        return;
+      }
+      if (accountNewPin.trim() !== accountConfirmNewPin.trim()) {
+        showAccountFeedback('PIN Mismatch', 'New PIN and Confirm New PIN do not match.');
+        return;
+      }
+    }
+
+    setIsUpdatingAccount(true);
+    try {
+      const res = await updateUserProfile(
+        accountCurrentPin.trim(),
+        isUsernameChanged ? accountUsername.trim() : undefined,
+        isPinChanged ? accountNewPin.trim() : undefined
+      );
+
+      if (res.success) {
+        if (Platform.OS === 'web') {
+          window.alert(`Success: ${res.message}`);
+        } else {
+          Alert.alert('Success', res.message);
+        }
+        setAccountModalVisible(false);
+        setAccountCurrentPin('');
+        setAccountNewPin('');
+        setAccountConfirmNewPin('');
+        setIsEditingUsername(false);
+        setIsEditingNewPin(false);
+        setAccountError(null);
+      } else {
+        showAccountFeedback('Error', res.message);
+      }
+    } catch (e: any) {
+      showAccountFeedback('Error', e?.message || 'Failed to update profile.');
+    } finally {
+      setIsUpdatingAccount(false);
+    }
+  };
+
   const handleCreateTab = async () => {
     const trimmed = tabName.trim();
     if (!trimmed) {
@@ -423,21 +548,38 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       headerRight: () => (
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           <TouchableOpacity 
+            onPress={handleOpenAccountModal}
+            style={{ 
+              alignItems: 'center', 
+              justifyContent: 'center',
+              backgroundColor: AppTheme.colors.cardBackground, 
+              width: 36,
+              height: 36,
+              borderRadius: 18, 
+              borderWidth: 1, 
+              borderColor: AppTheme.colors.border, 
+              marginRight: 8 
+            }}
+            {...(Platform.OS === 'web' ? { title: 'Account Settings' } : {})}
+          >
+            <Ionicons name="person-circle-outline" size={22} color={AppTheme.colors.primary} />
+          </TouchableOpacity>
+          <TouchableOpacity 
             onPress={() => setBackupModalVisible(true)} 
             style={{ 
-              flexDirection: 'row', 
               alignItems: 'center', 
+              justifyContent: 'center',
               backgroundColor: AppTheme.colors.primaryLight, 
               paddingHorizontal: 14, 
               paddingVertical: 7, 
               borderRadius: 20, 
               borderWidth: 1, 
               borderColor: AppTheme.colors.primaryBorder, 
-              marginRight: 12 
+              marginRight: 10 
             }}
             {...(Platform.OS === 'web' ? { title: 'Backup & Restore Vault Data' } : {})}
           >
-            <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 14 }}>Backup</Text>
+            <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Backup</Text>
           </TouchableOpacity>
           <TouchableOpacity 
             onPress={handleSignOut} 
@@ -449,7 +591,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         </View>
       )
     });
-  }, [navigation]);
+  }, [navigation, currentUser]);
 
   const renderWithTooltip = (element: React.ReactElement, tooltipText: string, display: 'inline-flex' | 'flex' | 'block' = 'inline-flex') => {
     if (Platform.OS === 'web' && tooltipText) {
@@ -761,9 +903,229 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               <Ionicons name="chevron-forward" size={20} color={AppTheme.colors.textSecondary} />
             </TouchableOpacity>
 
+
             <TouchableOpacity onPress={() => setBackupModalVisible(false)} style={[styles.button, { backgroundColor: AppTheme.colors.border, marginTop: 8 }]}>
               <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Close</Text>
             </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* ACCOUNT SETTINGS MODAL (CHANGE USERNAME & PIN) */}
+      <Modal visible={accountModalVisible} animationType="slide" transparent>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '92%' }]}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: AppTheme.spacing.m }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: AppTheme.colors.primaryLight, justifyContent: 'center', alignItems: 'center', marginRight: 10 }}>
+                  <Ionicons name="person" size={20} color={AppTheme.colors.primary} />
+                </View>
+                <Text style={styles.modalTitle}>Account Settings</Text>
+              </View>
+              <TouchableOpacity onPress={() => setAccountModalVisible(false)}>
+                <Ionicons name="close-circle-outline" size={24} color={AppTheme.colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 10 }}>
+              {accountError && (
+                <View style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  backgroundColor: '#fef2f2',
+                  borderColor: '#fecaca',
+                  borderWidth: 1,
+                  borderRadius: 8,
+                  paddingVertical: 9,
+                  paddingHorizontal: 12,
+                  marginBottom: 14,
+                }}>
+                  <Ionicons name="alert-circle" size={18} color={AppTheme.colors.error} style={{ marginRight: 8 }} />
+                  <Text style={{ color: AppTheme.colors.error, fontSize: 13, flex: 1, fontWeight: '500' }}>
+                    {accountError}
+                  </Text>
+                </View>
+              )}
+
+              {/* Username field */}
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <Text style={styles.label}>Username</Text>
+              </View>
+              <View style={[styles.inputWithAction, !isEditingUsername && styles.inputDisabled]}>
+                <TextInput
+                  ref={usernameInputRef}
+                  editable={isEditingUsername}
+                  style={[
+                    styles.innerInput,
+                    !isEditingUsername && { color: AppTheme.colors.textSecondary }
+                  ]}
+                  value={accountUsername}
+                  onChangeText={(t) => {
+                    setAccountError(null);
+                    setAccountUsername(t);
+                  }}
+                  placeholder="Enter username"
+                  placeholderTextColor={AppTheme.colors.textSecondary}
+                  autoCapitalize="words"
+                />
+                <TouchableOpacity
+                  onPress={() => {
+                    setIsEditingUsername(prev => {
+                      const next = !prev;
+                      if (next) {
+                        setTimeout(() => usernameInputRef.current?.focus(), 100);
+                      }
+                      return next;
+                    });
+                  }}
+                  style={[styles.fieldEditBtn, isEditingUsername && styles.fieldEditBtnActive]}
+                >
+                  <Ionicons 
+                    name={isEditingUsername ? "checkmark" : "create-outline"} 
+                    size={14} 
+                    color={isEditingUsername ? AppTheme.colors.primary : AppTheme.colors.textSecondary} 
+                    style={{ marginRight: 3 }} 
+                  />
+                  <Text style={{ 
+                    fontSize: 12, 
+                    fontWeight: '600', 
+                    color: isEditingUsername ? AppTheme.colors.primary : AppTheme.colors.textSecondary 
+                  }}>
+                    {isEditingUsername ? 'Done' : 'Edit'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* New PIN field */}
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, marginBottom: 6 }}>
+                <Text style={styles.label}>New PIN</Text>
+                <TouchableOpacity onPress={() => setShowNewPin(!showNewPin)}>
+                  <Text style={{ fontSize: 12, color: AppTheme.colors.primary, fontWeight: '600' }}>
+                    {showNewPin ? 'Hide' : 'Show'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <View style={[styles.inputWithAction, !isEditingNewPin && styles.inputDisabled]}>
+                <TextInput
+                  ref={newPinInputRef}
+                  editable={isEditingNewPin}
+                  style={[
+                    styles.innerInput,
+                    { letterSpacing: accountNewPin ? 6 : 0, fontSize: accountNewPin ? 17 : 14 },
+                    !isEditingNewPin && { color: AppTheme.colors.textSecondary }
+                  ]}
+                  value={accountNewPin}
+                  onChangeText={(t) => {
+                    setAccountError(null);
+                    setAccountNewPin(t.replace(/[^0-9]/g, '').slice(0, 4));
+                  }}
+                  placeholder="Enter new 4-digit PIN"
+                  placeholderTextColor={AppTheme.colors.textSecondary}
+                  keyboardType="number-pad"
+                  secureTextEntry={!showNewPin}
+                  maxLength={4}
+                />
+                <TouchableOpacity
+                  onPress={() => {
+                    setIsEditingNewPin(prev => {
+                      const next = !prev;
+                      if (next) {
+                        setTimeout(() => newPinInputRef.current?.focus(), 100);
+                      } else {
+                        setAccountNewPin('');
+                        setAccountConfirmNewPin('');
+                      }
+                      return next;
+                    });
+                  }}
+                  style={[styles.fieldEditBtn, isEditingNewPin && styles.fieldEditBtnActive]}
+                >
+                  <Ionicons 
+                    name={isEditingNewPin ? "close" : "create-outline"} 
+                    size={14} 
+                    color={isEditingNewPin ? AppTheme.colors.primary : AppTheme.colors.textSecondary} 
+                    style={{ marginRight: 3 }} 
+                  />
+                  <Text style={{ 
+                    fontSize: 12, 
+                    fontWeight: '600', 
+                    color: isEditingNewPin ? AppTheme.colors.primary : AppTheme.colors.textSecondary 
+                  }}>
+                    {isEditingNewPin ? 'Cancel' : 'Edit'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {isEditingNewPin && accountNewPin.length > 0 && (
+                <>
+                  <Text style={[styles.label, { marginTop: 6 }]}>Confirm New PIN</Text>
+                  <TextInput
+                    style={[styles.input, { letterSpacing: accountConfirmNewPin ? 6 : 0, fontSize: accountConfirmNewPin ? 17 : 14 }]}
+                    value={accountConfirmNewPin}
+                    onChangeText={(t) => {
+                      setAccountError(null);
+                      setAccountConfirmNewPin(t.replace(/[^0-9]/g, '').slice(0, 4));
+                    }}
+                    placeholder="Re-enter new 4-digit PIN"
+                    placeholderTextColor={AppTheme.colors.textSecondary}
+                    keyboardType="number-pad"
+                    secureTextEntry={!showNewPin}
+                    maxLength={4}
+                  />
+                </>
+              )}
+
+              {/* Divider */}
+              <View style={{ height: 1, backgroundColor: AppTheme.colors.border, marginVertical: 14 }} />
+
+              {/* Current PIN field */}
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <Text style={styles.label}>Current PIN <Text style={{ color: AppTheme.colors.error }}>*</Text></Text>
+                <TouchableOpacity onPress={() => setShowCurrentPin(!showCurrentPin)}>
+                  <Text style={{ fontSize: 12, color: AppTheme.colors.primary, fontWeight: '600' }}>
+                    {showCurrentPin ? 'Hide' : 'Show'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <TextInput
+                style={[
+                  styles.input, 
+                  { letterSpacing: accountCurrentPin ? 6 : 0, fontSize: accountCurrentPin ? 17 : 14 },
+                  accountError && (!accountCurrentPin.trim() || accountError.toLowerCase().includes('pin')) && { borderColor: AppTheme.colors.error, borderWidth: 1.5 }
+                ]}
+                value={accountCurrentPin}
+                onChangeText={(t) => {
+                  setAccountError(null);
+                  setAccountCurrentPin(t.replace(/[^0-9]/g, '').slice(0, 4));
+                }}
+                placeholder="Enter current 4-digit PIN"
+                placeholderTextColor={AppTheme.colors.textSecondary}
+                keyboardType="number-pad"
+                secureTextEntry={!showCurrentPin}
+                maxLength={4}
+              />
+
+              {/* Action buttons */}
+              <TouchableOpacity 
+                onPress={handleUpdateAccount} 
+                disabled={isUpdatingAccount}
+                style={[styles.button, { marginTop: 22, backgroundColor: isUpdatingAccount ? AppTheme.colors.textSecondary : AppTheme.colors.primary }]}
+              >
+                {isUpdatingAccount ? (
+                  <ActivityIndicator color="#ffffff" />
+                ) : (
+                  <Text style={styles.buttonText}>Save Changes</Text>
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                onPress={() => setAccountModalVisible(false)} 
+                disabled={isUpdatingAccount}
+                style={[styles.button, { backgroundColor: AppTheme.colors.border, marginTop: 10 }]}
+              >
+                <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
+              </TouchableOpacity>
+            </ScrollView>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -1052,6 +1414,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                   onPress={() => {
                     setSortOption(opt.id);
                     setSortModalVisible(false);
+                    StorageService.setItem('@offline_locker_tab_sort_option', opt.id);
                   }}
                 >
                   <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
@@ -1202,5 +1565,47 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: AppTheme.colors.textSecondary,
     marginTop: 2,
+  },
+  label: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: AppTheme.colors.text,
+    marginBottom: 6,
+  },
+  inputWithAction: {
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: AppTheme.borderRadius.s,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    marginBottom: AppTheme.spacing.m,
+    minHeight: 50,
+  },
+  inputDisabled: {
+    backgroundColor: '#f1f5f9',
+    borderColor: '#e2e8f0',
+  },
+  innerInput: {
+    flex: 1,
+    color: AppTheme.colors.text,
+    fontSize: 15,
+    paddingVertical: Platform.OS === 'ios' ? 12 : 8,
+    paddingHorizontal: 0,
+  },
+  fieldEditBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: '#e2e8f0',
+    marginLeft: 8,
+  },
+  fieldEditBtnActive: {
+    backgroundColor: AppTheme.colors.primaryLight,
+    borderWidth: 1,
+    borderColor: AppTheme.colors.primaryBorder,
   }
 });
