@@ -8,6 +8,7 @@ export default function AuthScreen() {
   const { currentUser, registerUser, loginUser, errorMessage, clearError, lockoutState, refreshLockoutState } = useLockerStore();
   const [username, setUsername] = useState('');
   const [pin, setPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
   const [isRegisterMode, setIsRegisterMode] = useState(!currentUser);
   const [remainingSec, setRemainingSec] = useState(0);
 
@@ -36,9 +37,11 @@ export default function AuthScreen() {
   const isLockedOut = !isRegisterMode && remainingSec > 0;
 
   const executeRegistration = async () => {
+    if (pin.trim() !== confirmPin.trim()) return;
     const success = await registerUser(username, pin);
     if (success) {
       setPin('');
+      setConfirmPin('');
       setUsername('');
     }
   };
@@ -47,6 +50,7 @@ export default function AuthScreen() {
     if (isLockedOut) return;
     clearError();
     if (isRegisterMode) {
+      if (pin.trim() !== confirmPin.trim()) return;
       if (currentUser) {
         const confirmMsg = `Creating a new user will permanently delete the previous account (${currentUser.username}) and all saved vault documents. Continue?`;
         if (Platform.OS === 'web') {
@@ -96,7 +100,7 @@ export default function AuthScreen() {
         <Text style={styles.title}>{isRegisterMode ? 'Create Vault' : 'Unlock Vault'}</Text>
         <Text style={styles.subtitle}>
           {isRegisterMode 
-            ? 'Enter a username and 4-digit PIN for the new account' 
+            ? 'Enter a username and set a 4-digit PIN for the new vault' 
             : `Welcome back, ${currentUser?.username || 'User'}! Enter your 4-digit PIN`}
         </Text>
         
@@ -147,7 +151,10 @@ export default function AuthScreen() {
             placeholder="Username"
             placeholderTextColor="#8e8e93"
             value={username}
-            onChangeText={setUsername}
+            onChangeText={(t) => {
+              clearError();
+              setUsername(t);
+            }}
             autoCapitalize="none"
           />
         )}
@@ -158,20 +165,53 @@ export default function AuthScreen() {
             { letterSpacing: pin ? 8 : 0, textAlign: pin ? 'center' : 'left', fontSize: pin ? 20 : 16 },
             isLockedOut && { opacity: 0.5, backgroundColor: 'rgba(0,0,0,0.05)' }
           ]}
-          placeholder={isLockedOut ? `Locked (${formatTime(remainingSec)})` : "Enter 4-Digit PIN"}
+          placeholder={isLockedOut ? `Locked (${formatTime(remainingSec)})` : (isRegisterMode ? "Create 4-Digit PIN" : "Enter 4-Digit PIN")}
           placeholderTextColor="#8e8e93"
           value={pin}
-          onChangeText={setPin}
+          onChangeText={(t) => {
+            clearError();
+            setPin(t.replace(/[^0-9]/g, '').slice(0, 4));
+          }}
           keyboardType="numeric"
           secureTextEntry
           maxLength={4}
           editable={!isLockedOut}
         />
 
+        {isRegisterMode && (
+          <TextInput
+            style={[
+              styles.input, 
+              { letterSpacing: confirmPin ? 8 : 0, textAlign: confirmPin ? 'center' : 'left', fontSize: confirmPin ? 20 : 16 },
+              confirmPin.length === 4 && pin.length === 4 && confirmPin !== pin && { borderColor: AppTheme.colors.error, borderWidth: 1.5 }
+            ]}
+            placeholder="Confirm 4-Digit PIN"
+            placeholderTextColor="#8e8e93"
+            value={confirmPin}
+            onChangeText={(t) => {
+              clearError();
+              setConfirmPin(t.replace(/[^0-9]/g, '').slice(0, 4));
+            }}
+            keyboardType="numeric"
+            secureTextEntry
+            maxLength={4}
+          />
+        )}
+
+        {isRegisterMode && pin.length === 4 && confirmPin.length === 4 && pin !== confirmPin && (
+          <Text style={[styles.error, { marginTop: -8, marginBottom: 12 }]}>
+            PINs do not match. Please re-enter.
+          </Text>
+        )}
+
         {errorMessage ? <Text style={styles.error}>{errorMessage}</Text> : null}
 
         {(() => {
-          const isValid = !isLockedOut && (isRegisterMode ? (username.trim().length > 0 && pin.trim().length === 4) : (pin.trim().length === 4));
+          const isValid = !isLockedOut && (
+            isRegisterMode 
+              ? (username.trim().length > 0 && pin.trim().length === 4 && confirmPin.trim().length === 4 && pin.trim() === confirmPin.trim()) 
+              : (pin.trim().length === 4)
+          );
           return (
             <TouchableOpacity 
               style={[styles.button, !isValid && styles.disabledButton]} 
@@ -191,6 +231,7 @@ export default function AuthScreen() {
             onPress={() => {
               clearError();
               setPin('');
+              setConfirmPin('');
               setIsRegisterMode(!isRegisterMode);
             }}
           >

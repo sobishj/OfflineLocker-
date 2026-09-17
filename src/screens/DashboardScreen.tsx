@@ -25,6 +25,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   const [tabDesc, setTabDesc] = useState('');
   const [isSensitive, setIsSensitive] = useState(false);
   const [tabPin, setTabPin] = useState('');
+  const [confirmTabPin, setConfirmTabPin] = useState('');
 
   // Delete tab confirmation
   const [deleteConfirmTab, setDeleteConfirmTab] = useState<any>(null);
@@ -36,6 +37,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   const [editTabDesc, setEditTabDesc] = useState('');
   const [editIsSensitive, setEditIsSensitive] = useState(false);
   const [editTabPin, setEditTabPin] = useState('');
+  const [editConfirmTabPin, setEditConfirmTabPin] = useState('');
 
   // Unlock tab state
   const [selectedTab, setSelectedTab] = useState<any>(null);
@@ -180,6 +182,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     setEditTabDesc(tab.description || '');
     setEditIsSensitive(tab.isSensitive === 1);
     setEditTabPin('');
+    setEditConfirmTabPin('');
     setEditModalVisible(true);
   };
 
@@ -207,6 +210,22 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       Alert.alert('Duplicate Tab Name', `A tab named "${trimmed}" already exists. Please choose a different name.`);
       return;
     }
+
+    if (editIsSensitive && editTabPin.trim()) {
+      if (editTabPin.trim().length !== 4 || !/^\d{4}$/.test(editTabPin.trim())) {
+        Alert.alert('Invalid PIN', 'Tab PIN must be exactly 4 digits.');
+        return;
+      }
+      if (!editConfirmTabPin.trim()) {
+        Alert.alert('Confirm Tab PIN', 'Please re-enter and confirm the new 4-digit Tab PIN.');
+        return;
+      }
+      if (editTabPin.trim() !== editConfirmTabPin.trim()) {
+        Alert.alert('PIN Mismatch', 'New Tab PIN and Confirm Tab PIN do not match.');
+        return;
+      }
+    }
+
     const success = await updateTab(editTabId, editTabName, editTabDesc, editIsSensitive, editTabPin);
     if (success) {
       setEditModalVisible(false);
@@ -215,6 +234,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       setEditTabDesc('');
       setEditIsSensitive(false);
       setEditTabPin('');
+      setEditConfirmTabPin('');
     } else {
       Alert.alert('Error', 'Failed to update tab details.');
     }
@@ -396,7 +416,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     }
 
     const isUsernameChanged = isEditingUsername && accountUsername.trim() !== (currentUser?.username || '');
-    const isPinChanged = isEditingNewPin && accountNewPin.trim().length > 0;
+    const isPinChanged = isEditingNewPin;
 
     // 3. Check if any fields were actually changed
     if (!isUsernameChanged && !isPinChanged) {
@@ -410,8 +430,16 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     }
 
     if (isPinChanged) {
+      if (!accountNewPin.trim()) {
+        showAccountFeedback('Enter New PIN', 'Please enter a 4-digit new PIN.');
+        return;
+      }
       if (accountNewPin.trim().length !== 4 || !/^\d{4}$/.test(accountNewPin.trim())) {
         showAccountFeedback('Invalid New PIN', 'New PIN must be exactly 4 digits.');
+        return;
+      }
+      if (!accountConfirmNewPin.trim()) {
+        showAccountFeedback('Confirm New PIN', 'Please re-enter and confirm your new 4-digit PIN.');
         return;
       }
       if (accountNewPin.trim() !== accountConfirmNewPin.trim()) {
@@ -464,10 +492,26 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       Alert.alert('Duplicate Tab Name', `A tab named "${trimmed}" already exists. Please choose a different name.`);
       return;
     }
+
+    if (isSensitive) {
+      if (tabPin.trim().length !== 4 || !/^\d{4}$/.test(tabPin.trim())) {
+        Alert.alert('Invalid PIN', 'Sensitive tabs require a 4-digit PIN.');
+        return;
+      }
+      if (!confirmTabPin.trim()) {
+        Alert.alert('Confirm Tab PIN', 'Please confirm your 4-digit Tab PIN.');
+        return;
+      }
+      if (tabPin.trim() !== confirmTabPin.trim()) {
+        Alert.alert('PIN Mismatch', 'Tab PIN and Confirm Tab PIN do not match.');
+        return;
+      }
+    }
+
     const success = await createTab(tabName, tabDesc, isSensitive, tabPin);
     if (success) {
       setModalVisible(false);
-      setTabName(''); setTabDesc(''); setIsSensitive(false); setTabPin('');
+      setTabName(''); setTabDesc(''); setIsSensitive(false); setTabPin(''); setConfirmTabPin('');
     } else {
       Alert.alert('Error', 'Failed to create tab. Ensure sensitive tabs have a 4-digit PIN.');
     }
@@ -707,7 +751,37 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             </TouchableOpacity>
 
             {isSensitive && (
-              <TextInput style={[styles.input, { letterSpacing: tabPin ? 6 : 0 }]} placeholder="4-Digit Tab PIN" placeholderTextColor={AppTheme.colors.textSecondary} value={tabPin} onChangeText={setTabPin} keyboardType="numeric" secureTextEntry maxLength={4} />
+              <>
+                <TextInput 
+                  style={[styles.input, { letterSpacing: tabPin ? 6 : 0 }]} 
+                  placeholder="4-Digit Tab PIN" 
+                  placeholderTextColor={AppTheme.colors.textSecondary} 
+                  value={tabPin} 
+                  onChangeText={(t) => setTabPin(t.replace(/[^0-9]/g, '').slice(0, 4))} 
+                  keyboardType="numeric" 
+                  secureTextEntry 
+                  maxLength={4} 
+                />
+                <TextInput 
+                  style={[
+                    styles.input, 
+                    { letterSpacing: confirmTabPin ? 6 : 0 },
+                    tabPin.length === 4 && confirmTabPin.length === 4 && tabPin !== confirmTabPin && { borderColor: AppTheme.colors.error, borderWidth: 1.5 }
+                  ]} 
+                  placeholder="Confirm 4-Digit Tab PIN" 
+                  placeholderTextColor={AppTheme.colors.textSecondary} 
+                  value={confirmTabPin} 
+                  onChangeText={(t) => setConfirmTabPin(t.replace(/[^0-9]/g, '').slice(0, 4))} 
+                  keyboardType="numeric" 
+                  secureTextEntry 
+                  maxLength={4} 
+                />
+                {tabPin.length === 4 && confirmTabPin.length === 4 && tabPin !== confirmTabPin && (
+                  <Text style={{ color: AppTheme.colors.error, fontSize: 12, marginTop: -8, marginBottom: 8, fontWeight: '600' }}>
+                    Tab PIN and Confirm Tab PIN do not match.
+                  </Text>
+                )}
+              </>
             )}
 
             <View style={styles.modalActions}>
@@ -718,13 +792,14 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                   setTabDesc('');
                   setIsSensitive(false);
                   setTabPin('');
+                  setConfirmTabPin('');
                 }} 
                 style={[styles.button, { backgroundColor: AppTheme.colors.border }]}
               >
                 <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
               </TouchableOpacity>
               {(() => {
-                const isCreateDisabled = !tabName.trim() || (isSensitive && tabPin.trim().length !== 4);
+                const isCreateDisabled = !tabName.trim() || (isSensitive && (tabPin.trim().length !== 4 || confirmTabPin.trim().length !== 4 || tabPin.trim() !== confirmTabPin.trim()));
                 return (
                   <TouchableOpacity 
                     onPress={handleCreateTab} 
@@ -766,16 +841,41 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             </TouchableOpacity>
 
             {editIsSensitive && (
-              <TextInput
-                style={[styles.input, { letterSpacing: editTabPin ? 6 : 0 }]}
-                placeholder="New 4-Digit Tab PIN (optional to keep current)"
-                placeholderTextColor={AppTheme.colors.textSecondary}
-                value={editTabPin}
-                onChangeText={setEditTabPin}
-                keyboardType="numeric"
-                secureTextEntry
-                maxLength={4}
-              />
+              <>
+                <TextInput
+                  style={[styles.input, { letterSpacing: editTabPin ? 6 : 0 }]}
+                  placeholder="New 4-Digit Tab PIN (optional to keep current)"
+                  placeholderTextColor={AppTheme.colors.textSecondary}
+                  value={editTabPin}
+                  onChangeText={(t) => setEditTabPin(t.replace(/[^0-9]/g, '').slice(0, 4))}
+                  keyboardType="numeric"
+                  secureTextEntry
+                  maxLength={4}
+                />
+                {editTabPin.length > 0 && (
+                  <>
+                    <TextInput
+                      style={[
+                        styles.input, 
+                        { letterSpacing: editConfirmTabPin ? 6 : 0 },
+                        editTabPin.length === 4 && editConfirmTabPin.length === 4 && editTabPin !== editConfirmTabPin && { borderColor: AppTheme.colors.error, borderWidth: 1.5 }
+                      ]}
+                      placeholder="Confirm New 4-Digit Tab PIN"
+                      placeholderTextColor={AppTheme.colors.textSecondary}
+                      value={editConfirmTabPin}
+                      onChangeText={(t) => setEditConfirmTabPin(t.replace(/[^0-9]/g, '').slice(0, 4))}
+                      keyboardType="numeric"
+                      secureTextEntry
+                      maxLength={4}
+                    />
+                    {editTabPin.length === 4 && editConfirmTabPin.length === 4 && editTabPin !== editConfirmTabPin && (
+                      <Text style={{ color: AppTheme.colors.error, fontSize: 12, marginTop: -8, marginBottom: 8, fontWeight: '600' }}>
+                        New Tab PIN and Confirm Tab PIN do not match.
+                      </Text>
+                    )}
+                  </>
+                )}
+              </>
             )}
 
             <View style={styles.modalActions}>
@@ -787,6 +887,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                   setEditTabDesc('');
                   setEditIsSensitive(false);
                   setEditTabPin('');
+                  setEditConfirmTabPin('');
                 }} 
                 style={[styles.button, { backgroundColor: AppTheme.colors.border }]}
               >
@@ -1056,11 +1157,15 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 </TouchableOpacity>
               </View>
 
-              {isEditingNewPin && accountNewPin.length > 0 && (
+              {isEditingNewPin && (
                 <>
                   <Text style={[styles.label, { marginTop: 6 }]}>Confirm New PIN</Text>
                   <TextInput
-                    style={[styles.input, { letterSpacing: accountConfirmNewPin ? 6 : 0, fontSize: accountConfirmNewPin ? 17 : 14 }]}
+                    style={[
+                      styles.input, 
+                      { letterSpacing: accountConfirmNewPin ? 6 : 0, fontSize: accountConfirmNewPin ? 17 : 14 },
+                      accountNewPin.length === 4 && accountConfirmNewPin.length === 4 && accountNewPin !== accountConfirmNewPin && { borderColor: AppTheme.colors.error, borderWidth: 1.5 }
+                    ]}
                     value={accountConfirmNewPin}
                     onChangeText={(t) => {
                       setAccountError(null);
@@ -1072,6 +1177,11 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                     secureTextEntry={!showNewPin}
                     maxLength={4}
                   />
+                  {accountNewPin.length === 4 && accountConfirmNewPin.length === 4 && accountNewPin !== accountConfirmNewPin && (
+                    <Text style={{ color: AppTheme.colors.error, fontSize: 12, marginTop: -6, marginBottom: 8, fontWeight: '600' }}>
+                      New PIN and Confirm New PIN do not match.
+                    </Text>
+                  )}
                 </>
               )}
 
@@ -1163,7 +1273,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                     {isExporting ? (
                       <ActivityIndicator size="small" color="#ffffff" />
                     ) : (
-                      <Text style={[styles.buttonText, isExportDisabled && { color: AppTheme.colors.textSecondary }]}>Export & Share</Text>
+                      <Text style={[styles.buttonText, isExportDisabled && { color: AppTheme.colors.textSecondary }]}>Export & Save</Text>
                     )}
                   </TouchableOpacity>
                 );

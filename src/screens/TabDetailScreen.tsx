@@ -1220,7 +1220,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                     'flex'
                   )}
 
-                  {/* 2. Share Button */}
+                  {/* 2. Save Button */}
                   {renderWithTooltip(
                     <TouchableOpacity 
                       onPress={() => handleDownloadItem(previewDoc)}
@@ -1238,10 +1238,10 @@ export default function TabDetailScreen({ route, navigation }: any) {
                         minHeight: isMobile ? 48 : 42,
                       }}
                     >
-                      <Ionicons name="share-outline" size={isMobile ? 18 : 19} color={AppTheme.colors.primary} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
-                      <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: isMobile ? 11 : 14, textAlign: 'center' }} numberOfLines={1}>Share</Text>
+                      <Ionicons name="download-outline" size={isMobile ? 18 : 19} color={AppTheme.colors.primary} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
+                      <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: isMobile ? 11 : 14, textAlign: 'center' }} numberOfLines={1}>Save</Text>
                     </TouchableOpacity>,
-                    `Share ${previewDoc.title}`,
+                    `Save ${previewDoc.title}`,
                     'flex'
                   )}
 
@@ -1458,8 +1458,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
                                     borderRadius: 8,
                                   }}
                                 >
-                                  <Ionicons name="share-outline" size={16} color="#ffffff" style={{ marginRight: 6 }} />
-                                  <Text style={{ color: '#ffffff', fontWeight: '600', fontSize: 13 }}>Share</Text>
+                                  <Ionicons name="download-outline" size={16} color="#ffffff" style={{ marginRight: 6 }} />
+                                  <Text style={{ color: '#ffffff', fontWeight: '600', fontSize: 13 }}>Save</Text>
                                 </TouchableOpacity>
                               </View>
                             );
@@ -1676,6 +1676,25 @@ export default function TabDetailScreen({ route, navigation }: any) {
           </View>
 
         </KeyboardAvoidingView>
+
+        {Platform.OS === 'ios' && cropTarget === 'add' && cropIndex !== null && cropIndex >= 0 && !!fileUris[cropIndex] && (
+          <View style={[StyleSheet.absoluteFill, { width: '100%', height: '100%', zIndex: 999999, elevation: 999999, backgroundColor: '#000' }]}>
+            <CustomImageCropper
+              imageUri={fileUris[cropIndex]}
+              onCropDone={(croppedBase64Uri) => {
+                const updated = [...fileUris];
+                updated[cropIndex] = croppedBase64Uri;
+                setFileUris(updated);
+                setCropIndex(null);
+                setCropTarget(null);
+              }}
+              onCancel={() => {
+                setCropIndex(null);
+                setCropTarget(null);
+              }}
+            />
+          </View>
+        )}
       </Modal>
 
       {/* EDIT DOCUMENT MODAL */}
@@ -1723,6 +1742,30 @@ export default function TabDetailScreen({ route, navigation }: any) {
                             <Ionicons name="document" size={48} color={AppTheme.colors.primary} />
                             <Text style={{ color: AppTheme.colors.text, marginTop: 8, fontSize: 10 }}>PDF {idx + 1}</Text>
                           </View>
+                        )}
+                        {editFileType === 'image' && (
+                          <TouchableOpacity
+                            style={{
+                              position: 'absolute',
+                              bottom: -6,
+                              left: -6,
+                              backgroundColor: AppTheme.colors.primary,
+                              borderRadius: 12,
+                              padding: 4,
+                              elevation: 3,
+                              shadowColor: '#000',
+                              shadowOffset: { width: 0, height: 2 },
+                              shadowOpacity: 0.2,
+                              shadowRadius: 3,
+                            }}
+                            onPress={() => {
+                              setCropTarget('edit');
+                              setCropIndex(idx);
+                            }}
+                            {...(Platform.OS === 'web' ? { title: 'Crop / Adjust Borders' } : {})}
+                          >
+                            <Ionicons name="crop" size={16} color="#fff" />
+                          </TouchableOpacity>
                         )}
                         <TouchableOpacity
                           style={styles.removeFileBtn}
@@ -1804,6 +1847,25 @@ export default function TabDetailScreen({ route, navigation }: any) {
             })()}
           </View>
         </KeyboardAvoidingView>
+
+        {Platform.OS === 'ios' && cropTarget === 'edit' && cropIndex !== null && cropIndex >= 0 && !!editFileUris[cropIndex] && (
+          <View style={[StyleSheet.absoluteFill, { width: '100%', height: '100%', zIndex: 999999, elevation: 999999, backgroundColor: '#000' }]}>
+            <CustomImageCropper
+              imageUri={editFileUris[cropIndex]}
+              onCropDone={(croppedBase64Uri) => {
+                const updated = [...editFileUris];
+                updated[cropIndex] = croppedBase64Uri;
+                setEditFileUris(updated);
+                setCropIndex(null);
+                setCropTarget(null);
+              }}
+              onCancel={() => {
+                setCropIndex(null);
+                setCropTarget(null);
+              }}
+            />
+          </View>
+        )}
       </Modal>
 
       {/* VIEW DOCUMENT MODAL (Popup) */}
@@ -1854,8 +1916,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
                       onPress={() => handleDownloadFile(uri, selectedDoc.title, 'pdf', 0)}
                       style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center', zIndex: 10 }}
                     >
-                      <Ionicons name="share-outline" size={20} color="#fff" />
-                      <Text style={{ color: '#fff', marginLeft: 6, fontWeight: 'bold' }}>Open / Share PDF</Text>
+                      <Ionicons name="download-outline" size={20} color="#fff" />
+                      <Text style={{ color: '#fff', marginLeft: 6, fontWeight: 'bold' }}>Save / Open PDF</Text>
                     </TouchableOpacity>
                   </View>
                 );
@@ -1880,8 +1942,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
                             onPress={() => handleDownloadFile(uri, selectedDoc.title, 'image', idx)}
                             style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center', zIndex: 10 }}
                           >
-                            <Ionicons name="share-outline" size={20} color="#fff" />
-                            <Text style={{ color: '#fff', marginLeft: 6, fontWeight: 'bold' }}>Share Image</Text>
+                            <Ionicons name="download-outline" size={20} color="#fff" />
+                            <Text style={{ color: '#fff', marginLeft: 6, fontWeight: 'bold' }}>Save Image</Text>
                           </TouchableOpacity>
                         </View>
                       );
@@ -1915,8 +1977,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
                             onPress={() => handleDownloadFile(uri, selectedDoc.title, 'pdf', idx)}
                             style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center', zIndex: 10 }}
                           >
-                            <Ionicons name="share-outline" size={20} color="#fff" />
-                            <Text style={{ color: '#fff', marginLeft: 6, fontWeight: 'bold' }}>Open / Share PDF</Text>
+                            <Ionicons name="download-outline" size={20} color="#fff" />
+                            <Text style={{ color: '#fff', marginLeft: 6, fontWeight: 'bold' }}>Save / Open PDF</Text>
                           </TouchableOpacity>
                         </View>
                       ))
@@ -1938,41 +2000,43 @@ export default function TabDetailScreen({ route, navigation }: any) {
         <WebCamera onCapture={handleWebCameraCapture} onClose={() => setWebCameraVisible(false)} />
       </Modal>
 
-      {/* CROPPER FULLSCREEN MODAL */}
-      <Modal
-        visible={cropIndex !== null && cropIndex >= 0}
-        animationType="fade"
-        transparent={false}
-        onRequestClose={() => {
-          setCropIndex(null);
-          setCropTarget(null);
-        }}
-      >
-        <View style={{ flex: 1, backgroundColor: '#000' }}>
-          {cropIndex !== null && cropIndex >= 0 && (
-            <CustomImageCropper
-              imageUri={cropTarget === 'edit' ? editFileUris[cropIndex] : fileUris[cropIndex]}
-              onCropDone={(croppedBase64Uri) => {
-                if (cropTarget === 'edit') {
-                  const updated = [...editFileUris];
-                  updated[cropIndex] = croppedBase64Uri;
-                  setEditFileUris(updated);
-                } else {
-                  const updated = [...fileUris];
-                  updated[cropIndex] = croppedBase64Uri;
-                  setFileUris(updated);
-                }
-                setCropIndex(null);
-                setCropTarget(null);
-              }}
-              onCancel={() => {
-                setCropIndex(null);
-                setCropTarget(null);
-              }}
-            />
-          )}
-        </View>
-      </Modal>
+      {/* CROPPER FULLSCREEN MODAL (Non-iOS / Fallback) */}
+      {Platform.OS !== 'ios' && (
+        <Modal
+          visible={cropIndex !== null && cropIndex >= 0}
+          animationType="fade"
+          transparent={false}
+          onRequestClose={() => {
+            setCropIndex(null);
+            setCropTarget(null);
+          }}
+        >
+          <View style={{ flex: 1, backgroundColor: '#000' }}>
+            {cropIndex !== null && cropIndex >= 0 && (
+              <CustomImageCropper
+                imageUri={cropTarget === 'edit' ? editFileUris[cropIndex] : fileUris[cropIndex]}
+                onCropDone={(croppedBase64Uri) => {
+                  if (cropTarget === 'edit') {
+                    const updated = [...editFileUris];
+                    updated[cropIndex] = croppedBase64Uri;
+                    setEditFileUris(updated);
+                  } else {
+                    const updated = [...fileUris];
+                    updated[cropIndex] = croppedBase64Uri;
+                    setFileUris(updated);
+                  }
+                  setCropIndex(null);
+                  setCropTarget(null);
+                }}
+                onCancel={() => {
+                  setCropIndex(null);
+                  setCropTarget(null);
+                }}
+              />
+            )}
+          </View>
+        </Modal>
+      )}
 
       {/* DELETE CONFIRMATION MODAL */}
       <Modal visible={!!deleteConfirmDoc} animationType="fade" transparent>

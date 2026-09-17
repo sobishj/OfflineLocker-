@@ -59,7 +59,7 @@ export class BackupService {
         await FileSystem.writeAsStringAsync(fileUri, encryptedData, { encoding: 'utf8' });
         await Sharing.shareAsync(fileUri, {
           mimeType: 'application/octet-stream',
-          dialogTitle: 'Export OfflineLocker Encrypted Backup',
+          dialogTitle: 'Save OfflineLocker Encrypted Backup',
           UTI: 'public.data',
         });
         return true;

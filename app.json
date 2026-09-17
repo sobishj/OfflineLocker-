@@ -7,7 +7,12 @@
     "icon": "./assets/offlinelocker-icon.png",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.offlinelocker.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "OfflineLocker requires camera access to capture and store photos securely.",
+        "NSPhotoLibraryUsageDescription": "OfflineLocker requires photo library access to select and store photos securely."
+      }
     },
     "android": {
       "versionCode": 7,
@@ -26,7 +31,14 @@
       "expo-font",
       "expo-sharing",
       "expo-sqlite",
-      "expo-status-bar"
+      "expo-status-bar",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "OfflineLocker requires photo library access to select and store photos securely.",
+          "cameraPermission": "OfflineLocker requires camera access to capture and store photos securely."
+        }
+      ]
     ],
     "extra": {
       "eas": {
