@@ -17,6 +17,284 @@ import ZoomableImage from '../components/ZoomableImage';
 import DraggableFAB from '../components/DraggableFAB';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StorageService } from '../utils/storage';
+import DatePickerModal, { parseDateString } from '../components/DatePickerModal';
+import { inflate as inflateStream } from 'pako';
+import { recognizeTextFromImage, extractDatesFromMrz } from '../services/OcrService';
+import PdfRasterizer from '../components/PdfRasterizer';
+
+const MONTHS = 'jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec';
+const DATE_PATTERN = new RegExp(
+  `\\d{1,2}[\\/\\-.]\\d{1,2}[\\/\\-.]\\d{2,4}` +
+  `|\\d{4}[\\/\\-.]\\d{1,2}[\\/\\-.]\\d{1,2}` +
+  `|\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${MONTHS})[a-z]*\\.?,?\\s+\\d{2,4}` +
+  `|(?:${MONTHS})[a-z]*\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{2,4}`,
+  'i'
+);
+
+// Explicit labels are checked before looser synonyms so a document that states
+// "Start Date" wins over an incidental "from" earlier in the text.
+const START_LABELS = [
+  'start date', 'startdate', 'date of issue', 'issued date', 'issue date', 'issuing date', 'issued on', 'date of commencement', 'commencement date',
+  'valid from', 'validfrom', 'effective from', 'effective date', 'w.e.f', 'wef', 'doi', 'from date', 'start', 'issued', 'from',
+];
+const END_LABELS = [
+  'end date', 'enddate', 'date of expiry', 'expiry date', 'expiration date', 'expires on', 'expires by', 'exp date', 'exp',
+  'valid until', 'valid till', 'valid thru', 'valid through', 'valid upto', 'valid up to', 'valid to', 'good through',
+  'renewal date', 'renew by', 'due date', 'doe', 'to date', 'expiry', 'expires', 'expiration', 'end', 'until', 'till', 'upto', 'to',
+];
+// A date of birth is never part of a validity period. It is located first and
+// then kept out of every later pass, so an ID card that prints the holder's
+// birth date above the issue date cannot have it picked up as the start date.
+const BIRTH_LABELS = [
+  'date of birth', 'dateofbirth', 'birth date', 'birthdate', 'born on', 'born', 'dob', 'd.o.b',
+];
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Guards against binary noise (e.g. inside PDF bytes) matching the date shape
+const isPlausibleDate = (value: string): boolean => {
+  const numeric = value.match(/^(\d{1,4})[\/\-.](\d{1,2})[\/\-.](\d{1,4})$/);
+  if (numeric) {
+    const parts = [Number(numeric[1]), Number(numeric[2]), Number(numeric[3])];
+    const year = parts[0] > 31 ? parts[0] : parts[2];
+    const day = parts[0] > 31 ? parts[2] : parts[0];
+    const month = parts[1];
+    if (month < 1 || month > 12) return false;
+    if (day < 1 || day > 31) return false;
+    const fullYear = year < 100 ? 2000 + year : year;
+    return fullYear >= 1900 && fullYear <= 2100;
+  }
+  const year = value.match(/(\d{4})\s*$/);
+  if (year) {
+    const y = Number(year[1]);
+    return y >= 1900 && y <= 2100;
+  }
+  return true;
+};
+
+/** Every date that follows any of `labels`, in the order the labels are given. */
+const findDatesAfterLabels = (text: string, labels: string[]): string[] => {
+  const found: string[] = [];
+  for (const label of labels) {
+    // Word boundaries stop "end" matching inside "extended", "to" inside "total", etc.
+    const labelRegex = new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(label)}(?![a-z0-9])`, 'gi');
+    let hit: RegExpExecArray | null;
+    while ((hit = labelRegex.exec(text)) !== null) {
+      const after = hit.index + hit[0].length;
+      const window = text.slice(after, after + 40);
+      const match = window.match(DATE_PATTERN);
+      if (match && isPlausibleDate(match[0].trim())) found.push(match[0].trim());
+      if (labelRegex.lastIndex <= hit.index) labelRegex.lastIndex = hit.index + 1;
+    }
+  }
+  return found;
+};
+
+/** The first date following the highest-priority label that carries one. */
+const findDateAfterLabel = (text: string, labels: string[]): string => {
+  for (const label of labels) {
+    const [first] = findDatesAfterLabels(text, [label]);
+    if (first) return first;
+  }
+  return '';
+};
+
+/**
+ * Birth dates found either by their printed label or in a passport's machine
+ * readable zone. The MRZ matters most: on a scan the printed label is what OCR
+ * mangles, while the MRZ digits survive.
+ */
+const findBirthDates = (text: string): string[] => {
+  const { birthDate } = extractDatesFromMrz(text);
+  const labelled = findDatesAfterLabels(text, BIRTH_LABELS);
+  return birthDate ? [birthDate, ...labelled] : labelled;
+};
+
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+/** Hermes does not always provide atob, so fall back to a manual decode. */
+const decodeBase64 = (input: string): string => {
+  const clean = input.replace(/[^A-Za-z0-9+/=]/g, '');
+  if (typeof atob === 'function') {
+    try { return atob(clean); } catch (e) { /* fall through */ }
+  }
+  let output = '';
+  for (let i = 0; i < clean.length; i += 4) {
+    const c1 = B64_CHARS.indexOf(clean[i]);
+    const c2 = B64_CHARS.indexOf(clean[i + 1]);
+    const c3 = B64_CHARS.indexOf(clean[i + 2]);
+    const c4 = B64_CHARS.indexOf(clean[i + 3]);
+    output += String.fromCharCode((c1 << 2) | (c2 >> 4));
+    if (c3 >= 0) output += String.fromCharCode(((c2 & 15) << 4) | (c3 >> 2));
+    if (c4 >= 0) output += String.fromCharCode(((c3 & 3) << 6) | c4);
+  }
+  return output;
+};
+
+/**
+ * Image bytes inside a PDF happen to contain plenty of "(...)" sequences, so
+ * anything that is not clean printable text is discarded — otherwise JPEG
+ * noise can masquerade as a date and suppress the OCR fallback.
+ */
+const readTextOperators = (content: string): string =>
+  (content.match(/\(((?:[^()\\]|\\.)*)\)/g) || [])
+    .map(c => c.slice(1, -1).replace(/\\([()\\])/g, '$1'))
+    .filter(c => /[A-Za-z0-9]/.test(c) && /^[\x20-\x7E\r\n\t]+$/.test(c))
+    .join(' ');
+
+/**
+ * Pulls readable text out of a PDF, inflating FlateDecode streams so that
+ * ordinary (compressed) PDFs are covered too. Scanned PDFs hold no text at
+ * all — those go through OCR instead.
+ */
+export const extractTextFromPdfDataUri = (dataUri: string): string => {
+  if (!dataUri || !dataUri.includes('application/pdf')) return '';
+  try {
+    const base64 = dataUri.includes(',') ? dataUri.split(',')[1] : dataUri;
+    const binary = decodeBase64(base64);
+
+    let collected = readTextOperators(binary);
+
+    // Inflate each stream and read the text operators inside it
+    const streamRegex = /stream\r?\n?/g;
+    let hit: RegExpExecArray | null;
+    while ((hit = streamRegex.exec(binary)) !== null) {
+      const start = hit.index + hit[0].length;
+      const end = binary.indexOf('endstream', start);
+      if (end === -1) continue;
+
+      const slice = binary.slice(start, end);
+      const bytes = new Uint8Array(slice.length);
+      for (let i = 0; i < slice.length; i++) bytes[i] = slice.charCodeAt(i) & 0xff;
+
+      try {
+        const inflated = inflateStream(bytes);
+        let text = '';
+        for (let i = 0; i < inflated.length; i++) text += String.fromCharCode(inflated[i]);
+        if (text) collected += ' ' + readTextOperators(text);
+      } catch (e) {
+        // Not a Flate stream (images, fonts) — nothing to read here
+      }
+      if (collected.length > 200000) break;
+    }
+
+    return collected.slice(0, 200000);
+  } catch (e) {
+    return '';
+  }
+};
+
+/**
+ * Looks for labelled start/end dates first, then falls back to the first two
+ * loose dates found so a document that just lists two dates still populates.
+ * Whichever of the pair is later always ends up as the end date.
+ */
+export const extractDatesFromText = (text: string): { startDate: string; endDate: string } => {
+  if (!text || typeof text !== 'string') return { startDate: '', endDate: '' };
+
+  // Compared as calendar days so the same date written two ways still matches
+  const sameDay = (a: string, b: string): boolean => {
+    const left = parseDateString(a);
+    const right = parseDateString(b);
+    return !!left && !!right && left.getTime() === right.getTime();
+  };
+
+  const birthDates = findBirthDates(text);
+  const isBirthDate = (value: string) => !!value && birthDates.some(b => sameDay(b, value));
+
+  let startDate = findDateAfterLabel(text, START_LABELS);
+  let endDate = findDateAfterLabel(text, END_LABELS);
+  // A loose synonym such as "from" or "to" can land on the birth date
+  if (isBirthDate(startDate)) startDate = '';
+  if (isBirthDate(endDate)) endDate = '';
+
+  if (!startDate || !endDate) {
+    const all = text.match(new RegExp(DATE_PATTERN.source, 'gi')) || [];
+    const unused = all
+      .map(d => d.trim())
+      .filter(d => isPlausibleDate(d) && !isBirthDate(d) && d !== startDate && d !== endDate);
+    if (!startDate) startDate = unused.shift() || '';
+    if (!endDate) endDate = unused.shift() || '';
+  }
+
+  const parsedStart = parseDateString(startDate);
+  const parsedEnd = parseDateString(endDate);
+  if (parsedStart && parsedEnd && parsedStart.getTime() > parsedEnd.getTime()) {
+    return { startDate: endDate, endDate: startDate };
+  }
+
+  return { startDate, endDate };
+};
+
+/** How long before the end date a document starts showing the amber warning. */
+const EXPIRY_WARNING_DAYS = 7;
+
+export type ExpiryStatus = 'expired' | 'expiring' | 'safe';
+
+/** Midnight-based day difference, so "expires today" is 0 rather than a fraction. */
+const daysUntil = (target: Date): number => {
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  return Math.round((startOfDay(target) - startOfDay(new Date())) / 86400000);
+};
+
+/**
+ * Traffic-light state for a document's end date. Returns null when the document
+ * carries no expiry at all, so those keep their neutral styling.
+ */
+export const getExpiryStatus = (endDate: string): { status: ExpiryStatus; days: number } | null => {
+  const parsed = parseDateString((endDate || '').trim());
+  if (!parsed) return null;
+
+  const days = daysUntil(parsed);
+  if (days < 0) return { status: 'expired', days };
+  if (days <= EXPIRY_WARNING_DAYS) return { status: 'expiring', days };
+  return { status: 'safe', days };
+};
+
+/** Border, background and text colours for each state, plus the list label. */
+const EXPIRY_STYLES: Record<ExpiryStatus, { border: string; background: string; text: string; highlight?: string }> = {
+  expired: { border: '#ef4444', background: '#fef2f2', text: '#b91c1c' },
+  expiring: { border: '#f59e0b', background: '#fffbeb', text: '#b45309', highlight: '#fef08a' },
+  safe: { border: '#22c55e', background: '#f0fdf4', text: '#15803d' },
+};
+
+const expiryLabel = (status: ExpiryStatus, days: number): string => {
+  if (status === 'expired') {
+    const ago = Math.abs(days);
+    return ago === 0 ? 'Expired today' : `Expired ${ago} day${ago === 1 ? '' : 's'} ago`;
+  }
+  if (status === 'expiring') {
+    if (days === 0) return 'Expires today';
+    return `Expires in ${days} day${days === 1 ? '' : 's'}`;
+  }
+  return 'Valid';
+};
+
+/**
+ * The date fields accept free text as well as calendar picks, so a typo like
+ * "32/13/2025" would otherwise be stored verbatim and read back as a date the
+ * app cannot parse. Empty is allowed — only one of the two is ever required.
+ */
+const validateExpiryDates = (startDate: string, endDate: string): boolean => {
+  const start = startDate.trim();
+  const end = endDate.trim();
+
+  for (const [label, value] of [['Start Date', start], ['End Date', end]] as const) {
+    if (value && !parseDateString(value)) {
+      Alert.alert('Invalid Date', `${label} "${value}" is not a valid date. Use DD/MM/YYYY or pick one from the calendar.`);
+      return false;
+    }
+  }
+
+  const parsedStart = parseDateString(start);
+  const parsedEnd = parseDateString(end);
+  if (parsedStart && parsedEnd && parsedStart.getTime() > parsedEnd.getTime()) {
+    Alert.alert('Invalid Dates', 'Start Date cannot be after End Date.');
+    return false;
+  }
+
+  return true;
+};
 
 export default function TabDetailScreen({ route, navigation }: any) {
   const insets = useSafeAreaInsets();
@@ -42,6 +320,10 @@ export default function TabDetailScreen({ route, navigation }: any) {
   // New document
   const [docTitle, setDocTitle] = useState('');
   const [docContent, setDocContent] = useState('');
+  const [docHasExpiry, setDocHasExpiry] = useState(false);
+  const [docStartDate, setDocStartDate] = useState('');
+  const [docEndDate, setDocEndDate] = useState('');
+  const [docDatesEdited, setDocDatesEdited] = useState(false);
   const [fileUris, setFileUris] = useState<string[]>([]);
   const [fileType, setFileType] = useState<'image' | 'pdf' | null>(null);
 
@@ -50,6 +332,16 @@ export default function TabDetailScreen({ route, navigation }: any) {
   const [editingDoc, setEditingDoc] = useState<any>(null);
   const [editDocTitle, setEditDocTitle] = useState('');
   const [editDocContent, setEditDocContent] = useState('');
+  const [editDocHasExpiry, setEditDocHasExpiry] = useState(false);
+  const [editDocStartDate, setEditDocStartDate] = useState('');
+  const [editDocEndDate, setEditDocEndDate] = useState('');
+  const [editDocDatesEdited, setEditDocDatesEdited] = useState(false);
+  const [dateVerifyMode, setDateVerifyMode] = useState<'add' | 'edit' | null>(null);
+  const [datePickerTarget, setDatePickerTarget] = useState<'add-start' | 'add-end' | 'edit-start' | 'edit-end' | null>(null);
+  const [isScanningDates, setIsScanningDates] = useState(false);
+  const [dateScanStatus, setDateScanStatus] = useState<'idle' | 'found' | 'none'>('idle');
+  const [rasterTarget, setRasterTarget] = useState<string | null>(null);
+  const rasterResolveRef = useRef<((value: string) => void) | null>(null);
   const [editFileUris, setEditFileUris] = useState<string[]>([]);
   const [editFileType, setEditFileType] = useState<'image' | 'pdf' | 'text' | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
@@ -198,6 +490,96 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
   const [webCameraTarget, setWebCameraTarget] = useState<'add' | 'edit'>('add');
 
+  /**
+   * Runs when a document is attached: reads dates out of the file name, any typed
+   * notes and (for PDFs) readable text inside the file, then fills the fields.
+   * Manually entered dates are never overwritten.
+   */
+  /** Rasterizes page 1 of a PDF via an offscreen WebView so OCR has an image to read. */
+  const renderPdfFirstPage = async (dataUri: string): Promise<string> => {
+    if (Platform.OS === 'web') return '';
+
+    const source = dataUri.includes(',') ? dataUri.split(',')[1] : dataUri;
+    if (!source) return '';
+
+    return new Promise((resolve) => {
+      const finish = (value: string) => {
+        clearTimeout(timer);
+        rasterResolveRef.current = null;
+        setRasterTarget(null);
+        resolve(value);
+      };
+      const timer = setTimeout(() => finish(''), 30000);
+      rasterResolveRef.current = finish;
+      setRasterTarget(source);
+    });
+  };
+
+  const autoFetchDatesFromDocument = async (isEdit: boolean, sources: { fileName?: string; dataUri?: string }) => {
+    const alreadyEdited = isEdit ? editDocDatesEdited : docDatesEdited;
+    if (alreadyEdited) return;
+
+    const notes = isEdit ? editDocContent : docContent;
+    const title = isEdit ? editDocTitle : docTitle;
+    const isPdf = !!sources.dataUri && sources.dataUri.includes('application/pdf');
+    const pdfText = isPdf ? extractTextFromPdfDataUri(sources.dataUri!) : '';
+
+    const apply = (found: { startDate: string; endDate: string }) => {
+      if (!found.startDate && !found.endDate) return false;
+      if (isEdit) {
+        setEditDocStartDate(found.startDate);
+        setEditDocEndDate(found.endDate);
+        setEditDocHasExpiry(true);
+      } else {
+        setDocStartDate(found.startDate);
+        setDocEndDate(found.endDate);
+        setDocHasExpiry(true);
+      }
+      setDateScanStatus('found');
+      return true;
+    };
+
+    const scan = (text: string) => {
+      const mrz = extractDatesFromMrz(text);
+      const labelled = extractDatesFromText(text);
+      // MRZ expiry is more reliable than an OCR-misread printed label
+      return {
+        startDate: labelled.startDate,
+        endDate: mrz.endDate || labelled.endDate,
+      };
+    };
+
+    const textSources = [sources.fileName || '', title, notes, pdfText].filter(Boolean).join('\n');
+    console.log(`[dates] isPdf=${isPdf} pdfTextLen=${pdfText.length} textLen=${textSources.length}`);
+    if (apply(scan(textSources))) {
+      console.log('[dates] found in text');
+      return;
+    }
+
+    // Nothing readable as text — fall back to OCR on the image itself
+    if (!sources.dataUri) {
+      console.log('[dates] no file to OCR');
+      setDateScanStatus('none');
+      return;
+    }
+
+    setIsScanningDates(true);
+    try {
+      const imageUri = isPdf ? await renderPdfFirstPage(sources.dataUri) : sources.dataUri;
+      console.log(`[dates] rasterized=${imageUri ? imageUri.length : 0}`);
+      const ocrText = imageUri ? await recognizeTextFromImage(imageUri) : '';
+      console.log(`[dates] ocrLen=${ocrText.length}`);
+      if (!ocrText || !apply(scan(`${textSources}\n${ocrText}`))) {
+        console.log('[dates] nothing usable');
+        setDateScanStatus('none');
+      } else {
+        console.log('[dates] found via OCR');
+      }
+    } finally {
+      setIsScanningDates(false);
+    }
+  };
+
   const handleTakePhoto = async (isEdit = false) => {
     if (isPickerBusyRef.current) return;
     isPickerBusyRef.current = true;
@@ -240,6 +622,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
             setDocTitle('Photo');
           }
         }
+        autoFetchDatesFromDocument(isEdit, { dataUri: newUri });
       }
     } catch (e) {
       console.warn('Camera launch error:', e);
@@ -268,6 +651,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
         setDocTitle('Photo');
       }
     }
+    autoFetchDatesFromDocument(webCameraTarget === 'edit', { dataUri: optimized });
   };
 
   const handleGalleryPick = async (isEdit = false) => {
@@ -283,6 +667,12 @@ export default function TabDetailScreen({ route, navigation }: any) {
       if (!result.canceled && result.assets && result.assets.length > 0) {
         let newUri = `data:image/jpeg;base64,${result.assets[0].base64}`;
         newUri = await optimizeImageUri(newUri);
+        const firstAsset = result.assets[0];
+        let pickedName = (firstAsset as any).file?.name || firstAsset.fileName || (firstAsset.uri ? firstAsset.uri.split('/').pop() : '') || '';
+        if (pickedName) {
+          try { pickedName = decodeURIComponent(pickedName); } catch (e) {}
+        }
+
         if (isEdit) {
           const newIndex = editFileUris.length;
           setEditFileUris(prev => [...prev, newUri]);
@@ -296,17 +686,14 @@ export default function TabDetailScreen({ route, navigation }: any) {
           setCropTarget('add');
           setCropIndex(newIndex);
 
-          const firstAsset = result.assets[0];
-          let pickedName = (firstAsset as any).file?.name || firstAsset.fileName || (firstAsset.uri ? firstAsset.uri.split('/').pop() : '') || '';
-          if (pickedName) {
-            try { pickedName = decodeURIComponent(pickedName); } catch (e) {}
-          }
           if (pickedName && !pickedName.startsWith('data:') && !pickedName.startsWith('blob:')) {
             setDocTitle(pickedName);
           } else if (!docTitle.trim()) {
             setDocTitle('Image');
           }
         }
+
+        autoFetchDatesFromDocument(isEdit, { fileName: pickedName, dataUri: newUri });
       }
     } catch (e) {
       console.warn('Gallery pick error:', e);
@@ -345,20 +732,22 @@ export default function TabDetailScreen({ route, navigation }: any) {
           newUris.push(dataUri);
         }
 
+        const firstAsset = result.assets[0];
+        let fileName = firstAsset.name || (firstAsset.file as any)?.name || (firstAsset.uri ? firstAsset.uri.split('/').pop() : '') || 'Document.pdf';
+        if (fileName) {
+          try { fileName = decodeURIComponent(fileName); } catch (e) {}
+        }
+
         if (isEdit) {
           setEditFileType('pdf');
           setEditFileUris(prev => [...prev, ...newUris]);
         } else {
           setFileType('pdf');
           setFileUris(prev => [...prev, ...newUris]);
-
-          const firstAsset = result.assets[0];
-          let fileName = firstAsset.name || (firstAsset.file as any)?.name || (firstAsset.uri ? firstAsset.uri.split('/').pop() : '') || 'Document.pdf';
-          if (fileName) {
-            try { fileName = decodeURIComponent(fileName); } catch (e) {}
-          }
           setDocTitle(fileName);
         }
+
+        autoFetchDatesFromDocument(isEdit, { fileName, dataUri: newUris[0] });
       }
     } catch (error) {
       Alert.alert('Error', 'Could not pick PDF document.');
@@ -384,6 +773,21 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
     if (isEncrypting) return;
 
+    if (docHasExpiry && !validateExpiryDates(docStartDate, docEndDate)) return;
+
+    // Dates may have been auto-filled from the document, so ask the user to confirm them first
+    if (docHasExpiry && (docStartDate.trim() || docEndDate.trim())) {
+      setDateVerifyMode('add');
+      return;
+    }
+
+    performAddDocument();
+  };
+
+  const performAddDocument = async () => {
+    const trimmedTitle = docTitle.trim();
+    if (isEncrypting) return;
+
     setIsEncrypting(true);
 
     setTimeout(async () => {
@@ -396,18 +800,24 @@ export default function TabDetailScreen({ route, navigation }: any) {
           processedUris = await Promise.all(fileUris.map(uri => optimizeImageUri(uri)));
         }
 
+        const startDate = docHasExpiry ? docStartDate.trim() : '';
+        const endDate = docHasExpiry ? docEndDate.trim() : '';
+        const hasDates = Boolean(startDate || endDate);
+
         let contentToEncrypt = '';
-        if (processedUris.length > 0 && docContent.trim()) {
-          contentToEncrypt = JSON.stringify({ notes: docContent.trim(), files: processedUris });
+        if (processedUris.length > 0 && (docContent.trim() || hasDates)) {
+          contentToEncrypt = JSON.stringify({ notes: docContent.trim(), files: processedUris, startDate, endDate });
         } else if (processedUris.length > 0) {
           contentToEncrypt = JSON.stringify(processedUris);
+        } else if (hasDates) {
+          contentToEncrypt = JSON.stringify({ notes: docContent.trim(), files: [], startDate, endDate });
         } else {
           contentToEncrypt = docContent;
         }
 
         await addDocument(tabId, trimmedTitle, type, contentToEncrypt, encryptionKey);
         setModalVisible(false);
-        setDocTitle(''); setDocContent(''); setFileUris([]); setFileType(null);
+        setDocTitle(''); setDocContent(''); setDocStartDate(''); setDocEndDate(''); setDocDatesEdited(false); setDocHasExpiry(false); setDateScanStatus('idle'); setFileUris([]); setFileType(null);
       } catch (e) {
         console.error('handleAddDocument error:', e);
         Alert.alert('Error', 'Could not encrypt and save document.');
@@ -429,6 +839,15 @@ export default function TabDetailScreen({ route, navigation }: any) {
     setEditDocContent(payload.notes);
     setEditFileUris(payload.files);
 
+    // Saved dates win; otherwise try to read them out of the document text
+    const detected = extractDatesFromText(`${doc.title || ''}\n${payload.notes}`);
+    const startDate = payload.startDate || detected.startDate;
+    const endDate = payload.endDate || detected.endDate;
+    setEditDocStartDate(startDate);
+    setEditDocEndDate(endDate);
+    setEditDocDatesEdited(Boolean(payload.startDate || payload.endDate));
+    setEditDocHasExpiry(Boolean(startDate || endDate));
+
     setEditModalVisible(true);
   };
 
@@ -449,6 +868,19 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
     if (isUpdating) return;
 
+    if (editDocHasExpiry && !validateExpiryDates(editDocStartDate, editDocEndDate)) return;
+
+    if (editDocHasExpiry && (editDocStartDate.trim() || editDocEndDate.trim())) {
+      setDateVerifyMode('edit');
+      return;
+    }
+
+    performSaveEditDoc();
+  };
+
+  const performSaveEditDoc = async () => {
+    if (isUpdating || !editingDoc) return;
+
     setIsUpdating(true);
 
     setTimeout(async () => {
@@ -461,11 +893,17 @@ export default function TabDetailScreen({ route, navigation }: any) {
           processedUris = await Promise.all(editFileUris.map(uri => optimizeImageUri(uri)));
         }
 
+        const startDate = editDocHasExpiry ? editDocStartDate.trim() : '';
+        const endDate = editDocHasExpiry ? editDocEndDate.trim() : '';
+        const hasDates = Boolean(startDate || endDate);
+
         let contentToEncrypt = '';
-        if (processedUris.length > 0 && editDocContent.trim()) {
-          contentToEncrypt = JSON.stringify({ notes: editDocContent.trim(), files: processedUris });
+        if (processedUris.length > 0 && (editDocContent.trim() || hasDates)) {
+          contentToEncrypt = JSON.stringify({ notes: editDocContent.trim(), files: processedUris, startDate, endDate });
         } else if (processedUris.length > 0) {
           contentToEncrypt = JSON.stringify(processedUris);
+        } else if (hasDates) {
+          contentToEncrypt = JSON.stringify({ notes: editDocContent.trim(), files: [], startDate, endDate });
         } else {
           contentToEncrypt = editDocContent;
         }
@@ -489,7 +927,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
         setEditModalVisible(false);
         setEditingDoc(null);
-        setEditDocTitle(''); setEditDocContent(''); setEditFileUris([]); setEditFileType(null);
+        setEditDocTitle(''); setEditDocContent(''); setEditDocStartDate(''); setEditDocEndDate(''); setEditDocDatesEdited(false); setEditDocHasExpiry(false); setEditFileUris([]); setEditFileType(null);
       } catch (e) {
         console.error('handleSaveEditDoc error:', e);
         Alert.alert('Error', 'Could not update document.');
@@ -499,8 +937,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
     }, 50);
   };
 
-  const parseDecryptedPayload = (plainText: string): { notes: string; files: string[] } => {
-    if (!plainText || typeof plainText !== 'string' || plainText.startsWith('⚠️')) return { notes: '', files: [] };
+  const parseDecryptedPayload = (plainText: string): { notes: string; files: string[]; startDate: string; endDate: string } => {
+    if (!plainText || typeof plainText !== 'string' || plainText.startsWith('⚠️')) return { notes: '', files: [], startDate: '', endDate: '' };
     const trimmed = plainText.trim();
     if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
       try {
@@ -508,7 +946,9 @@ export default function TabDetailScreen({ route, navigation }: any) {
         if (parsed && typeof parsed === 'object') {
           const notes = typeof parsed.notes === 'string' ? parsed.notes : '';
           const files = Array.isArray(parsed.files) ? parsed.files.filter((f: any) => typeof f === 'string') : [];
-          return { notes, files };
+          const startDate = typeof parsed.startDate === 'string' ? parsed.startDate : '';
+          const endDate = typeof parsed.endDate === 'string' ? parsed.endDate : '';
+          return { notes, files, startDate, endDate };
         }
       } catch (e) { }
     }
@@ -517,16 +957,37 @@ export default function TabDetailScreen({ route, navigation }: any) {
         const parsed = JSON.parse(trimmed);
         if (Array.isArray(parsed)) {
           const files = parsed.filter((item: any) => typeof item === 'string' && item.length > 0);
-          return { notes: '', files };
+          return { notes: '', files, startDate: '', endDate: '' };
         }
       } catch (e) { }
     }
-    return { notes: plainText, files: [] };
+    return { notes: plainText, files: [], startDate: '', endDate: '' };
   };
 
   const parseDecryptedContent = (plainText: string): string[] => {
     return parseDecryptedPayload(plainText).files;
   };
+
+  /**
+   * Expiry state per document. Decrypting is the expensive part, so it happens
+   * once per list change here rather than inside the row renderer.
+   */
+  const expiryByDocId = useMemo(() => {
+    const map = new Map<number, { status: ExpiryStatus; days: number }>();
+    activeDocuments.forEach(doc => {
+      if (doc.id == null) return;
+      try {
+        const payload = parseDecryptedPayload(decryptDoc(doc.encryptedContent || ''));
+        const detected = extractDatesFromText(`${doc.title || ''}
+${payload.notes}`);
+        const state = getExpiryStatus(payload.endDate || detected.endDate || '');
+        if (state) map.set(doc.id, state);
+      } catch (e) {
+        // A document that will not decrypt simply gets no expiry styling
+      }
+    });
+    return map;
+  }, [activeDocuments, candidateKeys]);
 
   const getSafeImageUri = (uri: string) => {
     if (!uri) return '';
@@ -997,16 +1458,16 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
           {/* LEFT PANE: List of Documents ("All Files") */}
           <View style={{
-            width: '35%',
+            width: isMobile ? '52%' : '35%',
             borderRightWidth: 1,
             borderColor: '#e2e8f0',
             backgroundColor: '#ffffff',
             flexDirection: 'column',
           }}>
-            <View style={{ 
-              paddingHorizontal: 6, 
-              paddingVertical: 6, 
-              borderBottomWidth: 1, 
+            <View style={{
+              paddingHorizontal: isMobile ? 8 : 6,
+              paddingVertical: isMobile ? 8 : 6,
+              borderBottomWidth: 1,
               borderColor: '#e2e8f0',
               flexDirection: 'row',
               justifyContent: 'center',
@@ -1019,8 +1480,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
                   alignItems: 'center',
                   justifyContent: 'center',
                   backgroundColor: AppTheme.colors.primaryLight,
-                  paddingHorizontal: 7,
-                  paddingVertical: 3,
+                  paddingHorizontal: isMobile ? 9 : 7,
+                  paddingVertical: isMobile ? 5 : 3,
                   borderRadius: 8,
                   borderWidth: 1,
                   borderColor: AppTheme.colors.primaryBorder,
@@ -1028,21 +1489,23 @@ export default function TabDetailScreen({ route, navigation }: any) {
                 }}
                 {...(Platform.OS === 'web' ? { title: 'Sort files' } : {})}
               >
-                <Ionicons name="swap-vertical" size={10} color={AppTheme.colors.primary} style={{ marginRight: 2 }} />
-                <Text style={{ fontSize: 9, fontWeight: '600', color: AppTheme.colors.primary }} numberOfLines={1}>
+                <Ionicons name="swap-vertical" size={isMobile ? 11 : 10} color={AppTheme.colors.primary} style={{ marginRight: 2 }} />
+                <Text style={{ fontSize: isMobile ? 10 : 9, fontWeight: '600', color: AppTheme.colors.primary }} numberOfLines={1}>
                   {getDocSortLabel(sortOption)}
                 </Text>
-                <Ionicons name="chevron-down" size={9} color={AppTheme.colors.primary} style={{ marginLeft: 2 }} />
+                <Ionicons name="chevron-down" size={isMobile ? 10 : 9} color={AppTheme.colors.primary} style={{ marginLeft: 2 }} />
               </TouchableOpacity>
             </View>
 
             <FlatList
               data={sortedDocuments}
               keyExtractor={item => item.id!.toString()}
-              contentContainerStyle={{ padding: 8 }}
+              contentContainerStyle={{ padding: isMobile ? 9 : 8 }}
               renderItem={({ item }) => {
                 const isSelected = previewDoc?.id === item.id;
                 const formattedDate = new Date(item.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+                const expiry = item.id != null ? expiryByDocId.get(item.id) : undefined;
+                const expiryStyle = expiry ? EXPIRY_STYLES[expiry.status] : null;
                 
                 const isPdf = item.type === 'pdf' || (item.title && item.title.toLowerCase().endsWith('.pdf'));
                 const isImage = item.type === 'image' || (item.title && /\.(jpg|jpeg|png|webp|gif)$/i.test(item.title));
@@ -1062,24 +1525,30 @@ export default function TabDetailScreen({ route, navigation }: any) {
                     onPress={() => handleItemPress(item)}
                     {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(item) } : {})}
                     style={{
-                      backgroundColor: isSelected ? AppTheme.colors.primaryLight : '#ffffff',
-                      paddingVertical: 8,
-                      paddingHorizontal: 8,
-                      borderRadius: 12,
-                      marginBottom: 8,
-                      borderWidth: 1,
-                      borderColor: isSelected ? AppTheme.colors.primaryBorder : '#e2e8f0',
+                      backgroundColor: isSelected
+                        ? AppTheme.colors.primaryLight
+                        : (expiryStyle ? expiryStyle.background : '#ffffff'),
+                      paddingVertical: isMobile ? 9 : 8,
+                      paddingHorizontal: isMobile ? 7 : 8,
+                      borderRadius: isMobile ? 12 : 12,
+                      marginBottom: isMobile ? 8 : 8,
+                      // The expiry state is the more urgent signal, so it keeps the
+                      // border even while the row is selected
+                      borderWidth: expiryStyle ? 2 : 1,
+                      borderColor: expiryStyle
+                        ? expiryStyle.border
+                        : (isSelected ? AppTheme.colors.primaryBorder : '#e2e8f0'),
                       flexDirection: 'row',
                       alignItems: 'center',
                       width: '100%',
                     }}
                   >
                     {/* Left File Type Icon Box (Compact) */}
-                    <View style={{ marginRight: 8 }}>
+                    <View style={{ marginRight: isMobile ? 7 : 8 }}>
                       {isPdf ? (
                         <View style={{
-                          width: 30,
-                          height: 34,
+                          width: isMobile ? 27 : 30,
+                          height: isMobile ? 31 : 34,
                           borderRadius: 6,
                           backgroundColor: '#ffffff',
                           borderWidth: 1,
@@ -1103,8 +1572,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
                         </View>
                       ) : isImage ? (
                         <View style={{
-                          width: 30,
-                          height: 34,
+                          width: isMobile ? 27 : 30,
+                          height: isMobile ? 31 : 34,
                           borderRadius: 6,
                           backgroundColor: AppTheme.colors.primaryLight,
                           borderWidth: 1,
@@ -1112,12 +1581,12 @@ export default function TabDetailScreen({ route, navigation }: any) {
                           alignItems: 'center',
                           justifyContent: 'center',
                         }}>
-                          <Ionicons name="image" size={17} color={AppTheme.colors.primary} />
+                          <Ionicons name="image" size={isMobile ? 16 : 17} color={AppTheme.colors.primary} />
                         </View>
                       ) : (
                         <View style={{
-                          width: 30,
-                          height: 34,
+                          width: isMobile ? 27 : 30,
+                          height: isMobile ? 31 : 34,
                           borderRadius: 6,
                           backgroundColor: '#f1f5f9',
                           borderWidth: 1,
@@ -1125,43 +1594,60 @@ export default function TabDetailScreen({ route, navigation }: any) {
                           alignItems: 'center',
                           justifyContent: 'center',
                         }}>
-                          <Ionicons name="document-text" size={17} color="#64748b" />
+                          <Ionicons name="document-text" size={isMobile ? 16 : 17} color="#64748b" />
                         </View>
                       )}
                     </View>
 
                     {/* Middle: Title & Metadata subtitle */}
-                    <View style={{ flex: 1, marginRight: 4 }}>
-                      <Text 
-                        style={{ 
-                          fontSize: isMobile ? 11.5 : 12.5, 
-                          fontWeight: '700', 
+                    <View style={{ flex: 1, marginRight: isMobile ? 2 : 4 }}>
+                      <Text
+                        style={{
+                          fontSize: isMobile ? 12 : 12.5,
+                          fontWeight: '700',
                           color: '#0f172a',
-                          lineHeight: isMobile ? 15 : 17,
-                        }} 
-                        numberOfLines={2}
+                          lineHeight: isMobile ? 15.5 : 17,
+                          // Only the about-to-expire state highlights the name itself
+                          backgroundColor: expiryStyle?.highlight,
+                        }}
+                        numberOfLines={isMobile ? 3 : 2}
                       >
                         {item.title}
                       </Text>
-                      <Text 
-                        style={{ 
-                          fontSize: 9.5, 
+                      <Text
+                        style={{
+                          fontSize: 9.5,
                           color: '#64748b',
                           marginTop: 2,
                           fontWeight: '500',
-                        }} 
-                        numberOfLines={1}
+                          lineHeight: 13,
+                        }}
+                        numberOfLines={isMobile ? 2 : 1}
                       >
                         {typeLabel} • {formatFileSize(item.encryptedContent)} • {formattedDate}
                       </Text>
+                      {expiry && expiryStyle && (
+                        <Text
+                          style={{
+                            fontSize: 9.5,
+                            marginTop: 2,
+                            fontWeight: '800',
+                            lineHeight: 13,
+                            color: expiryStyle.text,
+                          }}
+                          numberOfLines={1}
+                        >
+                          {expiryLabel(expiry.status, expiry.days)}
+                        </Text>
+                      )}
                     </View>
 
                     {/* Right: Three Dots Action Menu Trigger */}
-                    <TouchableOpacity 
+                    <TouchableOpacity
                       onPress={() => handleOpenEditDoc(item)}
                       style={{ padding: 2 }}
                     >
-                      <Ionicons name="ellipsis-vertical" size={15} color="#94a3b8" />
+                      <Ionicons name="ellipsis-vertical" size={isMobile ? 14 : 15} color="#94a3b8" />
                     </TouchableOpacity>
                   </TouchableOpacity>
                 );
@@ -1174,9 +1660,23 @@ export default function TabDetailScreen({ route, navigation }: any) {
                 );
               }}
               ListEmptyComponent={
-                <View style={{ padding: 20, alignItems: 'center' }}>
-                  <Text style={{ color: AppTheme.colors.textSecondary, fontSize: 13, textAlign: 'center' }}>
-                    No files found in this vault.
+                <View style={{ paddingVertical: isMobile ? 24 : 32, paddingHorizontal: isMobile ? 10 : 20, alignItems: 'center' }}>
+                  <View style={{
+                    width: isMobile ? 42 : 52,
+                    height: isMobile ? 42 : 52,
+                    borderRadius: isMobile ? 12 : 14,
+                    backgroundColor: '#f1f5f9',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    marginBottom: 10,
+                  }}>
+                    <Ionicons name="folder-open-outline" size={isMobile ? 22 : 26} color="#94a3b8" />
+                  </View>
+                  <Text style={{ color: AppTheme.colors.text, fontSize: isMobile ? 12 : 13.5, fontWeight: '700', textAlign: 'center' }}>
+                    No files yet
+                  </Text>
+                  <Text style={{ color: AppTheme.colors.textSecondary, fontSize: isMobile ? 10.5 : 12, textAlign: 'center', marginTop: 5, lineHeight: isMobile ? 14.5 : 17 }}>
+                    The added file names will be listed here.
                   </Text>
                 </View>
               }
@@ -1190,11 +1690,11 @@ export default function TabDetailScreen({ route, navigation }: any) {
           </View>
 
           {/* RIGHT PANE: File Preview & Details */}
-          <View style={{ width: '65%', backgroundColor: '#ffffff', padding: isMobile ? 12 : 20 }}>
+          <View style={{ width: isMobile ? '48%' : '65%', backgroundColor: '#ffffff', padding: isMobile ? 10 : 20 }}>
             {previewDoc ? (
               <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
                 {/* PREVIEW TOP ACTIONS TOOLBAR (Full Width across Right Pane) */}
-                <View style={{ flexDirection: 'row', width: '100%', alignItems: 'center', gap: isMobile ? 8 : 12, marginBottom: 16 }}>
+                <View style={{ flexDirection: 'row', width: '100%', alignItems: 'center', gap: isMobile ? 5 : 12, marginBottom: 14 }}>
                   {/* 1. Open Button */}
                   {renderWithTooltip(
                     <TouchableOpacity 
@@ -1207,14 +1707,14 @@ export default function TabDetailScreen({ route, navigation }: any) {
                         backgroundColor: AppTheme.colors.primaryLight, 
                         borderWidth: 1, 
                         borderColor: AppTheme.colors.primaryBorder, 
-                        paddingHorizontal: isMobile ? 4 : 12, 
-                        paddingVertical: isMobile ? 8 : 10, 
+                        paddingHorizontal: isMobile ? 2 : 12,
+                        paddingVertical: isMobile ? 7 : 10,
                         borderRadius: 10,
                         minHeight: isMobile ? 48 : 42,
                       }}
                     >
-                      <Ionicons name="eye-outline" size={isMobile ? 18 : 19} color={AppTheme.colors.primary} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
-                      <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: isMobile ? 11 : 14, textAlign: 'center' }} numberOfLines={1}>Open</Text>
+                      <Ionicons name="eye-outline" size={isMobile ? 16 : 19} color={AppTheme.colors.primary} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
+                      <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: isMobile ? 9 : 14, textAlign: 'center' }} numberOfLines={1}>Open</Text>
                     </TouchableOpacity>,
                     `Open ${previewDoc.title}`,
                     'flex'
@@ -1232,14 +1732,14 @@ export default function TabDetailScreen({ route, navigation }: any) {
                         backgroundColor: AppTheme.colors.primaryLight, 
                         borderWidth: 1, 
                         borderColor: AppTheme.colors.primaryBorder, 
-                        paddingHorizontal: isMobile ? 4 : 12, 
-                        paddingVertical: isMobile ? 8 : 10, 
+                        paddingHorizontal: isMobile ? 2 : 12,
+                        paddingVertical: isMobile ? 7 : 10,
                         borderRadius: 10,
                         minHeight: isMobile ? 48 : 42,
                       }}
                     >
-                      <Ionicons name="download-outline" size={isMobile ? 18 : 19} color={AppTheme.colors.primary} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
-                      <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: isMobile ? 11 : 14, textAlign: 'center' }} numberOfLines={1}>Save</Text>
+                      <Ionicons name="download-outline" size={isMobile ? 16 : 19} color={AppTheme.colors.primary} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
+                      <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: isMobile ? 9 : 14, textAlign: 'center' }} numberOfLines={1}>Save</Text>
                     </TouchableOpacity>,
                     `Save ${previewDoc.title}`,
                     'flex'
@@ -1257,14 +1757,14 @@ export default function TabDetailScreen({ route, navigation }: any) {
                         backgroundColor: AppTheme.colors.primaryLight, 
                         borderWidth: 1, 
                         borderColor: AppTheme.colors.primaryBorder, 
-                        paddingHorizontal: isMobile ? 4 : 12, 
-                        paddingVertical: isMobile ? 8 : 10, 
+                        paddingHorizontal: isMobile ? 2 : 12,
+                        paddingVertical: isMobile ? 7 : 10,
                         borderRadius: 10,
                         minHeight: isMobile ? 48 : 42,
                       }}
                     >
-                      <Ionicons name="create-outline" size={isMobile ? 18 : 19} color={AppTheme.colors.primary} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
-                      <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: isMobile ? 11 : 14, textAlign: 'center' }} numberOfLines={1}>Edit</Text>
+                      <Ionicons name="create-outline" size={isMobile ? 16 : 19} color={AppTheme.colors.primary} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
+                      <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: isMobile ? 9 : 14, textAlign: 'center' }} numberOfLines={1}>Edit</Text>
                     </TouchableOpacity>,
                     `Edit ${previewDoc.title}`,
                     'flex'
@@ -1282,14 +1782,14 @@ export default function TabDetailScreen({ route, navigation }: any) {
                         backgroundColor: '#fef2f2', 
                         borderWidth: 1, 
                         borderColor: '#fecaca', 
-                        paddingHorizontal: isMobile ? 4 : 12, 
-                        paddingVertical: isMobile ? 8 : 10, 
+                        paddingHorizontal: isMobile ? 2 : 12,
+                        paddingVertical: isMobile ? 7 : 10,
                         borderRadius: 10,
                         minHeight: isMobile ? 48 : 42,
                       }}
                     >
-                      <Ionicons name="trash-outline" size={isMobile ? 18 : 19} color={AppTheme.colors.error} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
-                      <Text style={{ color: AppTheme.colors.error, fontWeight: '600', fontSize: isMobile ? 11 : 14, textAlign: 'center' }} numberOfLines={1}>Delete</Text>
+                      <Ionicons name="trash-outline" size={isMobile ? 16 : 19} color={AppTheme.colors.error} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
+                      <Text style={{ color: AppTheme.colors.error, fontWeight: '600', fontSize: isMobile ? 9 : 14, textAlign: 'center' }} numberOfLines={1}>Delete</Text>
                     </TouchableOpacity>,
                     `Delete ${previewDoc.title}`,
                     'flex'
@@ -1302,12 +1802,11 @@ export default function TabDetailScreen({ route, navigation }: any) {
                   borderRadius: 16,
                   borderWidth: 1,
                   borderColor: '#e2e8f0',
-                  overflow: 'hidden',
-                  minHeight: isMobile ? 220 : 360,
+                  minHeight: isMobile ? 210 : 360,
                   justifyContent: 'center',
                 }}>
                   {previewLoading ? (
-                    <View style={{ padding: 40, alignItems: 'center', justifyContent: 'center', minHeight: isMobile ? 220 : 360 }}>
+                    <View style={{ padding: 40, alignItems: 'center', justifyContent: 'center', minHeight: isMobile ? 210 : 360 }}>
                       <ActivityIndicator size="large" color={AppTheme.colors.primary} />
                       <Text style={{ marginTop: 12, fontSize: 13, color: AppTheme.colors.textSecondary, fontWeight: '500' }}>
                         Loading preview...
@@ -1358,10 +1857,10 @@ export default function TabDetailScreen({ route, navigation }: any) {
                                     {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(previewDoc) } : {})}
                                     style={{ marginBottom: 12, alignItems: 'center' }}
                                   >
-                                    <Image 
-                                      source={{ uri: safeUri }} 
-                                      style={{ width: '100%', height: isMobile ? 240 : 380, borderRadius: 12 }} 
-                                      resizeMode="contain" 
+                                    <Image
+                                      source={{ uri: safeUri }}
+                                      style={{ width: '100%', height: isMobile ? 190 : 380, borderRadius: 12 }}
+                                      resizeMode="contain"
                                     />
                                   </TouchableOpacity>
                                 );
@@ -1377,7 +1876,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                                     {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(previewDoc) } : {})}
                                     style={{ marginBottom: 16, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#ffffff' }}
                                   >
-                                    <View style={{ position: 'relative', width: '100%', height: isMobile ? 320 : 500 }}>
+                                    <View style={{ position: 'relative', width: '100%', height: isMobile ? 260 : 500 }}>
                                       {React.createElement('div', {
                                         style: { width: '100%', height: '100%', backgroundColor: '#ffffff', pointerEvents: 'none' },
                                       }, React.createElement('iframe', {
@@ -1399,7 +1898,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                                     onPress={() => handleRightPanePress(previewDoc)}
                                     style={{ marginBottom: 16, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#ffffff' }}
                                   >
-                                    <View style={{ height: isMobile ? 300 : 480, position: 'relative' }}>
+                                    <View style={{ height: isMobile ? 250 : 480, position: 'relative' }}>
                                       <PdfViewer 
                                         uri={uri} 
                                         style={{ flex: 1 }} 
@@ -1489,28 +1988,93 @@ export default function TabDetailScreen({ route, navigation }: any) {
                         {previewDoc.title}
                       </Text>
                     </TouchableOpacity>
-                    <View style={{ width: '50%', marginBottom: 14 }}>
+
+                    {/* VALIDITY DATES (main info) */}
+                    {(() => {
+                      const payload = parseDecryptedPayload(previewData);
+                      const detected = extractDatesFromText(`${previewDoc.title || ''}\n${payload.notes}`);
+                      const startDate = payload.startDate || detected.startDate || 'NA';
+                      const endDate = payload.endDate || detected.endDate || 'NA';
+                      const expiry = getExpiryStatus(endDate);
+                      const expiryStyle = expiry ? EXPIRY_STYLES[expiry.status] : null;
+                      const labelColor = expiryStyle ? expiryStyle.text : AppTheme.colors.primary;
+                      return (
+                        <View style={{
+                          width: '100%',
+                          backgroundColor: expiryStyle ? expiryStyle.background : AppTheme.colors.primaryLight,
+                          borderWidth: expiryStyle ? 2 : 1,
+                          borderColor: expiryStyle ? expiryStyle.border : AppTheme.colors.primaryBorder,
+                          borderRadius: 12,
+                          paddingHorizontal: 12,
+                          paddingVertical: 10,
+                          marginBottom: 14,
+                        }}>
+                          <View style={{ flexDirection: isMobile ? 'column' : 'row' }}>
+                            <View style={{ flex: isMobile ? undefined : 1, marginBottom: isMobile ? 8 : 0 }}>
+                              <Text style={{ fontSize: 11, color: labelColor, fontWeight: '600' }}>Start Date</Text>
+                              <Text style={{ fontSize: 13, fontWeight: '700', color: AppTheme.colors.text, marginTop: 2 }} numberOfLines={1}>
+                                {startDate}
+                              </Text>
+                            </View>
+                            <View style={{ flex: isMobile ? undefined : 1 }}>
+                              <Text style={{ fontSize: 11, color: labelColor, fontWeight: '600' }}>End Date</Text>
+                              <Text style={{
+                                fontSize: 13,
+                                fontWeight: '700',
+                                color: AppTheme.colors.text,
+                                marginTop: 2,
+                                backgroundColor: expiryStyle?.highlight,
+                              }} numberOfLines={1}>
+                                {endDate}
+                              </Text>
+                            </View>
+                          </View>
+                          {expiry && expiryStyle && (
+                            <View style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              marginTop: 10,
+                              paddingTop: 8,
+                              borderTopWidth: 1,
+                              borderColor: expiryStyle.border,
+                            }}>
+                              <Ionicons
+                                name={expiry.status === 'safe' ? 'checkmark-circle' : expiry.status === 'expiring' ? 'alert-circle' : 'close-circle'}
+                                size={15}
+                                color={expiryStyle.text}
+                                style={{ marginRight: 6 }}
+                              />
+                              <Text style={{ fontSize: 12, fontWeight: '800', color: expiryStyle.text }}>
+                                {expiryLabel(expiry.status, expiry.days)}
+                              </Text>
+                            </View>
+                          )}
+                        </View>
+                      );
+                    })()}
+
+                    <View style={{ width: isMobile ? '100%' : '50%', marginBottom: isMobile ? 12 : 14 }}>
                       <Text style={{ fontSize: 11, color: AppTheme.colors.textSecondary }}>Type</Text>
                       <Text style={{ fontSize: 13, fontWeight: '600', color: AppTheme.colors.text, marginTop: 2 }}>
                         {previewDoc.type === 'image' ? 'JPEG Image' : previewDoc.type === 'pdf' ? 'PDF Document' : 'Text Document'}
                       </Text>
                     </View>
 
-                    <View style={{ width: '50%', marginBottom: 14 }}>
+                    <View style={{ width: isMobile ? '100%' : '50%', marginBottom: isMobile ? 12 : 14 }}>
                       <Text style={{ fontSize: 11, color: AppTheme.colors.textSecondary }}>Size</Text>
                       <Text style={{ fontSize: 13, fontWeight: '600', color: AppTheme.colors.text, marginTop: 2 }}>
                         {formatFileSize(previewDoc.encryptedContent)}
                       </Text>
                     </View>
 
-                    <View style={{ width: '50%', marginBottom: 10 }}>
+                    <View style={{ width: isMobile ? '100%' : '50%', marginBottom: isMobile ? 12 : 10 }}>
                       <Text style={{ fontSize: 11, color: AppTheme.colors.textSecondary }}>Date Modified</Text>
                       <Text style={{ fontSize: 13, fontWeight: '600', color: AppTheme.colors.text, marginTop: 2 }}>
                         {new Date(previewDoc.createdAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
                       </Text>
                     </View>
 
-                    <View style={{ width: '50%', marginBottom: 10 }}>
+                    <View style={{ width: isMobile ? '100%' : '50%', marginBottom: isMobile ? 12 : 10 }}>
                       <Text style={{ fontSize: 11, color: AppTheme.colors.textSecondary }}>Path</Text>
                       <Text style={{ fontSize: 13, fontWeight: '600', color: AppTheme.colors.text, marginTop: 2 }} numberOfLines={1}>
                         /{displayTabName}/{previewDoc.title}
@@ -1536,12 +2100,61 @@ export default function TabDetailScreen({ route, navigation }: any) {
                 </View>
               </ScrollView>
             ) : (
-              <View style={styles.center}>
-                <Ionicons name="document-text-outline" size={72} color={AppTheme.colors.border} />
-                <Text style={{ color: AppTheme.colors.textSecondary, marginTop: 16, fontSize: 15, fontWeight: '500', textAlign: 'center' }}>
-                  Select a document to preview
-                </Text>
-              </View>
+              <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+                {/* PREVIEW AREA PLACEHOLDER */}
+                <View style={{
+                  backgroundColor: '#f8fafc',
+                  borderRadius: 16,
+                  borderWidth: 1,
+                  borderColor: '#e2e8f0',
+                  borderStyle: 'dashed',
+                  minHeight: isMobile ? 300 : 440,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  paddingHorizontal: isMobile ? 12 : 24,
+                  paddingVertical: 20,
+                }}>
+                  <Ionicons name="document-text-outline" size={isMobile ? 34 : 64} color={AppTheme.colors.border} />
+                  <Text style={{
+                    color: AppTheme.colors.textSecondary,
+                    marginTop: isMobile ? 10 : 16,
+                    fontSize: isMobile ? 11 : 15,
+                    fontWeight: '500',
+                    textAlign: 'center',
+                    lineHeight: isMobile ? 15 : 21,
+                  }}>
+                    The preview of the selected file will be shown here.
+                  </Text>
+                </View>
+
+                {/* DETAILS AREA PLACEHOLDER */}
+                <View style={{ marginTop: 20, paddingTop: 16, borderTopWidth: 1, borderColor: '#e2e8f0' }}>
+                  <Text style={{ fontSize: isMobile ? 13 : 15, fontWeight: '700', color: AppTheme.colors.text, marginBottom: 10 }}>
+                    Details
+                  </Text>
+                  <View style={{
+                    backgroundColor: '#f8fafc',
+                    borderRadius: 12,
+                    borderWidth: 1,
+                    borderColor: '#e2e8f0',
+                    borderStyle: 'dashed',
+                    paddingHorizontal: isMobile ? 12 : 20,
+                    paddingVertical: isMobile ? 16 : 22,
+                    alignItems: 'center',
+                  }}>
+                    <Ionicons name="information-circle-outline" size={isMobile ? 20 : 26} color={AppTheme.colors.border} />
+                    <Text style={{
+                      color: AppTheme.colors.textSecondary,
+                      marginTop: 6,
+                      fontSize: isMobile ? 10.5 : 13,
+                      textAlign: 'center',
+                      lineHeight: isMobile ? 14.5 : 18,
+                    }}>
+                      The details of the selected file will be shown here.
+                    </Text>
+                  </View>
+                </View>
+              </ScrollView>
             )}
           </View>
 
@@ -1549,6 +2162,13 @@ export default function TabDetailScreen({ route, navigation }: any) {
       </View>
 
       <DraggableFAB onPress={() => setModalVisible(true)} />
+
+      {rasterTarget ? (
+        <PdfRasterizer
+          base64={rasterTarget}
+          onResult={(image) => rasterResolveRef.current?.(image)}
+        />
+      ) : null}
 
       {/* ADD DOCUMENT MODAL */}
       <Modal visible={modalVisible} animationType="slide" transparent>
@@ -1559,9 +2179,111 @@ export default function TabDetailScreen({ route, navigation }: any) {
           <View style={[styles.modalContent, { maxHeight: '95%' }]}>
             <Text style={styles.modalTitle}>Add Secure Document</Text>
 
-            <TextInput style={[styles.input, { letterSpacing: 0 }]} placeholder="Title" placeholderTextColor={AppTheme.colors.textSecondary} value={docTitle} onChangeText={setDocTitle} />
+            <TextInput
+              style={[styles.input, { letterSpacing: 0 }]}
+              placeholder="Title"
+              placeholderTextColor={AppTheme.colors.textSecondary}
+              value={docTitle}
+              onChangeText={(text) => {
+                setDocTitle(text);
+                if (!docDatesEdited) {
+                  const detected = extractDatesFromText(`${text}\n${docContent}`);
+                  setDocStartDate(detected.startDate);
+                  setDocEndDate(detected.endDate);
+                  if (detected.startDate || detected.endDate) setDocHasExpiry(true);
+                }
+              }}
+            />
 
-            <TextInput style={[styles.input, { height: 90, textAlignVertical: 'top', letterSpacing: 0 }]} placeholder="Description / Notes" placeholderTextColor={AppTheme.colors.textSecondary} value={docContent} onChangeText={setDocContent} multiline />
+            <TextInput
+              style={[styles.input, { height: 90, textAlignVertical: 'top', letterSpacing: 0 }]}
+              placeholder="Description / Notes"
+              placeholderTextColor={AppTheme.colors.textSecondary}
+              value={docContent}
+              onChangeText={(text) => {
+                setDocContent(text);
+                if (!docDatesEdited) {
+                  const detected = extractDatesFromText(`${docTitle}\n${text}`);
+                  setDocStartDate(detected.startDate);
+                  setDocEndDate(detected.endDate);
+                  if (detected.startDate || detected.endDate) setDocHasExpiry(true);
+                }
+              }}
+              multiline
+            />
+
+            <TouchableOpacity
+              onPress={() => setDocHasExpiry(!docHasExpiry)}
+              style={styles.checkboxRow}
+              activeOpacity={0.7}
+            >
+              <View style={[styles.checkbox, docHasExpiry && styles.checkboxChecked]}>
+                {docHasExpiry && <Ionicons name="checkmark" size={14} color="#ffffff" />}
+              </View>
+              <Text style={styles.checkboxLabel}>Has expiry?</Text>
+              {isScanningDates && (
+                <View style={styles.scanningBadge}>
+                  <ActivityIndicator size="small" color={AppTheme.colors.primary} />
+                  <Text style={styles.scanningText}>Reading dates…</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+
+            {!isScanningDates && dateScanStatus === 'none' && !docHasExpiry && (
+              <Text style={styles.dateHint}>
+                No dates could be read from this document — tick "Has expiry?" to enter them yourself.
+              </Text>
+            )}
+
+            {docHasExpiry && (
+              <>
+                <View style={styles.dateRow}>
+                  <View style={styles.dateField}>
+                    <Text style={styles.dateLabel}>Start Date</Text>
+                    <View style={styles.dateInputWrap}>
+                      <TextInput
+                        style={[styles.input, styles.dateInput]}
+                        placeholder="DD/MM/YYYY"
+                        placeholderTextColor={AppTheme.colors.textSecondary}
+                        value={docStartDate}
+                        onChangeText={(text) => { setDocDatesEdited(true); setDocStartDate(text); }}
+                      />
+                      <TouchableOpacity
+                        onPress={() => setDatePickerTarget('add-start')}
+                        style={styles.calendarBtn}
+                        {...(Platform.OS === 'web' ? { title: 'Pick start date' } : {})}
+                      >
+                        <Ionicons name="calendar-outline" size={18} color={AppTheme.colors.primary} />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                  <View style={styles.dateField}>
+                    <Text style={styles.dateLabel}>End Date</Text>
+                    <View style={styles.dateInputWrap}>
+                      <TextInput
+                        style={[styles.input, styles.dateInput]}
+                        placeholder="DD/MM/YYYY"
+                        placeholderTextColor={AppTheme.colors.textSecondary}
+                        value={docEndDate}
+                        onChangeText={(text) => { setDocDatesEdited(true); setDocEndDate(text); }}
+                      />
+                      <TouchableOpacity
+                        onPress={() => setDatePickerTarget('add-end')}
+                        style={styles.calendarBtn}
+                        {...(Platform.OS === 'web' ? { title: 'Pick end date' } : {})}
+                      >
+                        <Ionicons name="calendar-outline" size={18} color={AppTheme.colors.primary} />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+                {!docDatesEdited && (docStartDate || docEndDate) ? (
+                  <Text style={styles.dateHint}>
+                    Dates were read from the document — check the file and confirm them. You can edit them later too.
+                  </Text>
+                ) : null}
+              </>
+            )}
 
             {fileUris.length > 0 && (
               <View style={styles.filePreviewContainer}>
@@ -1655,7 +2377,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
               const isAddSaveEnabled = docTitle.trim().length > 0 && (docContent.trim().length > 0 || fileUris.length > 0) && !isEncrypting;
               return (
                 <View style={styles.modalActions}>
-                  <TouchableOpacity onPress={() => { setModalVisible(false); setFileUris([]); setFileType(null); setDocTitle(''); setDocContent(''); }} style={[styles.button, { backgroundColor: AppTheme.colors.border }]} disabled={isEncrypting}>
+                  <TouchableOpacity onPress={() => { setModalVisible(false); setFileUris([]); setFileType(null); setDocTitle(''); setDocContent(''); setDocStartDate(''); setDocEndDate(''); setDocDatesEdited(false); setDocHasExpiry(false); setDateScanStatus('idle'); }} style={[styles.button, { backgroundColor: AppTheme.colors.border }]} disabled={isEncrypting}>
                     <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
                   </TouchableOpacity>
                   <TouchableOpacity 
@@ -1676,6 +2398,20 @@ export default function TabDetailScreen({ route, navigation }: any) {
           </View>
 
         </KeyboardAvoidingView>
+
+        {/* Rendered inside this modal so touches work on iOS */}
+        <DatePickerModal
+          inline
+          visible={datePickerTarget === 'add-start' || datePickerTarget === 'add-end'}
+          title={datePickerTarget === 'add-start' ? 'Select Start Date' : 'Select End Date'}
+          value={datePickerTarget === 'add-start' ? docStartDate : docEndDate}
+          onSelect={(picked) => {
+            setDocDatesEdited(true);
+            if (datePickerTarget === 'add-start') setDocStartDate(picked);
+            else setDocEndDate(picked);
+          }}
+          onClose={() => setDatePickerTarget(null)}
+        />
 
         {Platform.OS === 'ios' && cropTarget === 'add' && cropIndex !== null && cropIndex >= 0 && !!fileUris[cropIndex] && (
           <View style={[StyleSheet.absoluteFill, { width: '100%', height: '100%', zIndex: 999999, elevation: 999999, backgroundColor: '#000' }]}>
@@ -1711,7 +2447,15 @@ export default function TabDetailScreen({ route, navigation }: any) {
               placeholder="Title"
               placeholderTextColor={AppTheme.colors.textSecondary}
               value={editDocTitle}
-              onChangeText={setEditDocTitle}
+              onChangeText={(text) => {
+                setEditDocTitle(text);
+                if (!editDocDatesEdited) {
+                  const detected = extractDatesFromText(`${text}\n${editDocContent}`);
+                  setEditDocStartDate(detected.startDate);
+                  setEditDocEndDate(detected.endDate);
+                  if (detected.startDate || detected.endDate) setEditDocHasExpiry(true);
+                }
+              }}
             />
 
             <TextInput
@@ -1719,9 +2463,84 @@ export default function TabDetailScreen({ route, navigation }: any) {
               placeholder="Description / Notes"
               placeholderTextColor={AppTheme.colors.textSecondary}
               value={editDocContent}
-              onChangeText={setEditDocContent}
+              onChangeText={(text) => {
+                setEditDocContent(text);
+                if (!editDocDatesEdited) {
+                  const detected = extractDatesFromText(`${editDocTitle}\n${text}`);
+                  setEditDocStartDate(detected.startDate);
+                  setEditDocEndDate(detected.endDate);
+                  if (detected.startDate || detected.endDate) setEditDocHasExpiry(true);
+                }
+              }}
               multiline
             />
+
+            <TouchableOpacity
+              onPress={() => setEditDocHasExpiry(!editDocHasExpiry)}
+              style={styles.checkboxRow}
+              activeOpacity={0.7}
+            >
+              <View style={[styles.checkbox, editDocHasExpiry && styles.checkboxChecked]}>
+                {editDocHasExpiry && <Ionicons name="checkmark" size={14} color="#ffffff" />}
+              </View>
+              <Text style={styles.checkboxLabel}>Has expiry?</Text>
+              {isScanningDates && (
+                <View style={styles.scanningBadge}>
+                  <ActivityIndicator size="small" color={AppTheme.colors.primary} />
+                  <Text style={styles.scanningText}>Reading dates…</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+
+            {editDocHasExpiry && (
+              <>
+                <View style={styles.dateRow}>
+                  <View style={styles.dateField}>
+                    <Text style={styles.dateLabel}>Start Date</Text>
+                    <View style={styles.dateInputWrap}>
+                      <TextInput
+                        style={[styles.input, styles.dateInput]}
+                        placeholder="DD/MM/YYYY"
+                        placeholderTextColor={AppTheme.colors.textSecondary}
+                        value={editDocStartDate}
+                        onChangeText={(text) => { setEditDocDatesEdited(true); setEditDocStartDate(text); }}
+                      />
+                      <TouchableOpacity
+                        onPress={() => setDatePickerTarget('edit-start')}
+                        style={styles.calendarBtn}
+                        {...(Platform.OS === 'web' ? { title: 'Pick start date' } : {})}
+                      >
+                        <Ionicons name="calendar-outline" size={18} color={AppTheme.colors.primary} />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                  <View style={styles.dateField}>
+                    <Text style={styles.dateLabel}>End Date</Text>
+                    <View style={styles.dateInputWrap}>
+                      <TextInput
+                        style={[styles.input, styles.dateInput]}
+                        placeholder="DD/MM/YYYY"
+                        placeholderTextColor={AppTheme.colors.textSecondary}
+                        value={editDocEndDate}
+                        onChangeText={(text) => { setEditDocDatesEdited(true); setEditDocEndDate(text); }}
+                      />
+                      <TouchableOpacity
+                        onPress={() => setDatePickerTarget('edit-end')}
+                        style={styles.calendarBtn}
+                        {...(Platform.OS === 'web' ? { title: 'Pick end date' } : {})}
+                      >
+                        <Ionicons name="calendar-outline" size={18} color={AppTheme.colors.primary} />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+                {!editDocDatesEdited && (editDocStartDate || editDocEndDate) ? (
+                  <Text style={styles.dateHint}>
+                    Dates were read from the document — check the file and confirm them. You can edit them later too.
+                  </Text>
+                ) : null}
+              </>
+            )}
 
             {editFileUris.length > 0 && (
               <View style={styles.filePreviewContainer}>
@@ -1822,6 +2641,10 @@ export default function TabDetailScreen({ route, navigation }: any) {
                       setEditingDoc(null);
                       setEditDocTitle('');
                       setEditDocContent('');
+                      setEditDocStartDate('');
+                      setEditDocEndDate('');
+                      setEditDocDatesEdited(false);
+                      setEditDocHasExpiry(false);
                       setEditFileUris([]);
                       setEditFileType(null);
                     }}
@@ -1847,6 +2670,20 @@ export default function TabDetailScreen({ route, navigation }: any) {
             })()}
           </View>
         </KeyboardAvoidingView>
+
+        {/* Rendered inside this modal so touches work on iOS */}
+        <DatePickerModal
+          inline
+          visible={datePickerTarget === 'edit-start' || datePickerTarget === 'edit-end'}
+          title={datePickerTarget === 'edit-start' ? 'Select Start Date' : 'Select End Date'}
+          value={datePickerTarget === 'edit-start' ? editDocStartDate : editDocEndDate}
+          onSelect={(picked) => {
+            setEditDocDatesEdited(true);
+            if (datePickerTarget === 'edit-start') setEditDocStartDate(picked);
+            else setEditDocEndDate(picked);
+          }}
+          onClose={() => setDatePickerTarget(null)}
+        />
 
         {Platform.OS === 'ios' && cropTarget === 'edit' && cropIndex !== null && cropIndex >= 0 && !!editFileUris[cropIndex] && (
           <View style={[StyleSheet.absoluteFill, { width: '100%', height: '100%', zIndex: 999999, elevation: 999999, backgroundColor: '#000' }]}>
@@ -1991,6 +2828,98 @@ export default function TabDetailScreen({ route, navigation }: any) {
                 </ScrollView>
               );
             })()}
+          </View>
+        </View>
+      </Modal>
+
+      {/* DATE VERIFICATION WARNING MODAL */}
+      <Modal visible={!!dateVerifyMode} animationType="fade" transparent>
+        <View style={{
+          flex: 1,
+          backgroundColor: 'rgba(15, 23, 42, 0.5)',
+          justifyContent: 'center',
+          alignItems: 'center',
+          padding: 20,
+        }}>
+          <View style={{
+            backgroundColor: '#ffffff',
+            borderRadius: 16,
+            padding: 24,
+            maxWidth: 380,
+            width: '100%',
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 12 },
+            shadowOpacity: 0.15,
+            shadowRadius: 24,
+            elevation: 8,
+          }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 14 }}>
+              <View style={{
+                width: 40,
+                height: 40,
+                borderRadius: 20,
+                backgroundColor: '#fef3c7',
+                justifyContent: 'center',
+                alignItems: 'center',
+                marginRight: 12,
+              }}>
+                <Ionicons name="alert-circle-outline" size={22} color="#d97706" />
+              </View>
+              <Text style={{ fontSize: 18, fontWeight: '700', color: AppTheme.colors.text, flex: 1 }}>Verify Dates</Text>
+            </View>
+
+            <Text style={{ fontSize: 14, color: AppTheme.colors.textSecondary, lineHeight: 20, marginBottom: 14 }}>
+              Please check the file and confirm these dates are correct. You can still edit them later — open the document and tap Edit at any time, even after saving.
+            </Text>
+
+            <View style={{ backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 12, padding: 14, marginBottom: 20 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
+                <Text style={{ fontSize: 13, color: AppTheme.colors.textSecondary }}>Start Date</Text>
+                <Text style={{ fontSize: 13, fontWeight: '700', color: AppTheme.colors.text }}>
+                  {(dateVerifyMode === 'edit' ? editDocStartDate.trim() : docStartDate.trim()) || 'NA'}
+                </Text>
+              </View>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                <Text style={{ fontSize: 13, color: AppTheme.colors.textSecondary }}>End Date</Text>
+                <Text style={{ fontSize: 13, fontWeight: '700', color: AppTheme.colors.text }}>
+                  {(dateVerifyMode === 'edit' ? editDocEndDate.trim() : docEndDate.trim()) || 'NA'}
+                </Text>
+              </View>
+            </View>
+
+            <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
+              <TouchableOpacity
+                onPress={() => setDateVerifyMode(null)}
+                style={{
+                  paddingVertical: 10,
+                  paddingHorizontal: 18,
+                  borderRadius: 8,
+                  backgroundColor: '#f1f5f9',
+                  marginRight: 10,
+                }}
+              >
+                <Text style={{ color: AppTheme.colors.text, fontWeight: '600', fontSize: 14 }}>Review</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => {
+                  const mode = dateVerifyMode;
+                  setDateVerifyMode(null);
+                  if (mode === 'edit') {
+                    performSaveEditDoc();
+                  } else {
+                    performAddDocument();
+                  }
+                }}
+                style={{
+                  paddingVertical: 10,
+                  paddingHorizontal: 18,
+                  borderRadius: 8,
+                  backgroundColor: AppTheme.colors.primary,
+                }}
+              >
+                <Text style={{ color: '#ffffff', fontWeight: '600', fontSize: 14 }}>Confirm & Save</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -2233,6 +3162,29 @@ const styles = StyleSheet.create({
   modalContent: { backgroundColor: '#ffffff', padding: AppTheme.spacing.l, borderRadius: AppTheme.borderRadius.xl, maxWidth: 600, width: '100%', alignSelf: 'center', borderWidth: 1, borderColor: '#f1f5f9', shadowColor: '#000', shadowOffset: { width: 0, height: 12 }, shadowOpacity: 0.08, shadowRadius: 24, elevation: 6 },
   modalTitle: { color: AppTheme.colors.text, fontSize: 20, fontWeight: 'bold', marginBottom: AppTheme.spacing.m },
   input: { backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0', color: AppTheme.colors.text, padding: 14, borderRadius: AppTheme.borderRadius.s, marginBottom: AppTheme.spacing.m, fontSize: 15, letterSpacing: 0 },
+  checkboxRow: { flexDirection: 'row', alignItems: 'center', marginBottom: AppTheme.spacing.m },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: AppTheme.colors.border,
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  checkboxChecked: { backgroundColor: AppTheme.colors.primary, borderColor: AppTheme.colors.primary },
+  checkboxLabel: { fontSize: 15, fontWeight: '600', color: AppTheme.colors.text },
+  scanningBadge: { flexDirection: 'row', alignItems: 'center', marginLeft: 12 },
+  scanningText: { marginLeft: 6, fontSize: 12, color: AppTheme.colors.primary, fontWeight: '600' },
+  dateRow: { flexDirection: 'row', marginBottom: AppTheme.spacing.m },
+  dateField: { flex: 1, marginHorizontal: 3 },
+  dateInputWrap: { position: 'relative', justifyContent: 'center' },
+  dateInput: { marginBottom: 0, paddingLeft: 10, paddingRight: 34, fontSize: 14, letterSpacing: 0 },
+  calendarBtn: { position: 'absolute', right: 4, padding: 5 },
+  dateLabel: { color: AppTheme.colors.textSecondary, fontSize: 12, fontWeight: '600', marginBottom: 5 },
+  dateHint: { color: '#b45309', fontSize: 12, marginTop: -8, marginBottom: AppTheme.spacing.m, lineHeight: 16 },
   mediaActions: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: AppTheme.spacing.m },
   mediaButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: AppTheme.colors.primaryLight, borderWidth: 1, borderColor: AppTheme.colors.primaryBorder, padding: 12, borderRadius: AppTheme.borderRadius.s, marginHorizontal: 2 },
   mediaButtonText: { color: AppTheme.colors.primary, marginLeft: 6, fontWeight: '600', fontSize: 13 },
