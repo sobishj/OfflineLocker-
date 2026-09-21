@@ -73,15 +73,15 @@ const yymmddToBirthDate = (value: string): string => {
 
 /**
  * Passports and ID cards carry a machine readable zone that encodes the
- * expiry and birth dates at fixed offsets, which survives OCR better than the
- * printed labels do. The birth date is reported so callers can keep it out of
+ * document number and the expiry and birth dates at fixed offsets, which
+ * survives OCR better than the printed labels do. The birth date is reported so callers can keep it out of
  * the validity period — on a scan the printed "Date of Birth" label is often
  * misread, but the MRZ still gives the value away.
  *
  * Line 2 layout: docNo(9) check(1) nationality(3) dob(6) check(1) sex(1) expiry(6)
  */
-export const extractDatesFromMrz = (text: string): { startDate: string; endDate: string; birthDate: string } => {
-  if (!text) return { startDate: '', endDate: '', birthDate: '' };
+export const extractDatesFromMrz = (text: string): { startDate: string; endDate: string; birthDate: string; documentNumber: string } => {
+  if (!text) return { startDate: '', endDate: '', birthDate: '', documentNumber: '' };
 
   const candidates = text
     .split(/\r?\n/)
@@ -93,9 +93,13 @@ export const extractDatesFromMrz = (text: string): { startDate: string; endDate:
     if (match) {
       const birthDate = yymmddToBirthDate(match[4]);
       const expiry = yymmddToDate(match[7]);
-      if (expiry || birthDate) return { startDate: '', endDate: expiry, birthDate };
+      // Positions 1-9 are the document number, padded with '<' when shorter
+      const documentNumber = match[1].replace(/</g, '').trim();
+      if (expiry || birthDate || documentNumber) {
+        return { startDate: '', endDate: expiry, birthDate, documentNumber };
+      }
     }
   }
 
-  return { startDate: '', endDate: '', birthDate: '' };
+  return { startDate: '', endDate: '', birthDate: '', documentNumber: '' };
 };

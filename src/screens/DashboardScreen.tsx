@@ -1,13 +1,17 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, KeyboardAvoidingView, Platform, ActivityIndicator, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, KeyboardAvoidingView, Platform, ActivityIndicator, ScrollView, useWindowDimensions } from 'react-native';
 import { useLockerStore } from '../store/useLockerStore';
 import { AppTheme } from '../theme/AppTheme';
+import { HomeTab } from '../models';
+import DiaryView from '../components/DiaryView';
+import NotesView from '../components/NotesView';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 
 import DraggableFAB from '../components/DraggableFAB';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StorageService } from '../utils/storage';
 import { CryptoService } from '../services/CryptoService';
 
@@ -15,8 +19,40 @@ type DashboardProps = {
   navigation: NativeStackNavigationProp<any>;
 };
 
+/** The three home tabs, shared by the bottom bar and the launch preference. */
+const HOME_TAB_OPTIONS: { key: HomeTab; label: string; icon: 'folder' | 'book' | 'document-text' }[] = [
+  { key: 'files', label: 'Files', icon: 'folder' },
+  { key: 'diary', label: 'Diary', icon: 'book' },
+  { key: 'notes', label: 'Notes', icon: 'document-text' },
+];
+
 export default function DashboardScreen({ navigation }: DashboardProps) {
   const { tabs, tabDocCounts, logout, createTab, updateTab, deleteTab, verifyTabPin, exportBackup, importBackup, currentUser, updateUserProfile } = useLockerStore();
+  const { width: screenWidth } = useWindowDimensions();
+  const isMobile = screenWidth < 768;
+  const insets = useSafeAreaInsets();
+
+  const { defaultHomeTab, loadDefaultHomeTab, setDefaultHomeTab } = useLockerStore();
+  const [homeTab, setHomeTab] = useState<HomeTab>('files');
+  // Only the first arrival should follow the preference; later tab taps stand
+  const appliedDefaultRef = useRef(false);
+  const [tabPickerOpen, setTabPickerOpen] = useState(false);
+  // Held as a draft so Save Changes commits it, like the other fields here
+  const [accountDefaultTab, setAccountDefaultTab] = useState<HomeTab>('files');
+
+  // The preference is read from the database, so the tab can only be applied
+  // once that read has come back — doing it on mount would just re-apply the
+  // store's initial value and then ignore the real one.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await loadDefaultHomeTab();
+      if (cancelled || appliedDefaultRef.current) return;
+      appliedDefaultRef.current = true;
+      setHomeTab(useLockerStore.getState().defaultHomeTab);
+    })();
+    return () => { cancelled = true; };
+  }, []);
   const [modalVisible, setModalVisible] = useState(false);
   const [pinModalVisible, setPinModalVisible] = useState(false);
   
@@ -383,6 +419,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     setIsEditingUsername(false);
     setIsEditingNewPin(false);
     setAccountError(null);
+    setAccountDefaultTab(defaultHomeTab);
+    setTabPickerOpen(false);
     setAccountModalVisible(true);
   };
 
@@ -397,6 +435,19 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
   const handleUpdateAccount = async () => {
     setAccountError(null);
+
+    const isTabChanged = accountDefaultTab !== defaultHomeTab;
+    const wantsCredentialChange =
+      (isEditingUsername && accountUsername.trim() !== (currentUser?.username || '')) || isEditingNewPin;
+
+    // A launch preference is not a credential, so on its own it saves without
+    // asking for the current PIN
+    if (isTabChanged && !wantsCredentialChange) {
+      await setDefaultHomeTab(accountDefaultTab);
+      setAccountModalVisible(false);
+      showAccountFeedback('Saved', 'Your default tab has been updated.');
+      return;
+    }
 
     // 1. Check if user clicked save without entering old pin
     if (!accountCurrentPin.trim()) {
@@ -419,9 +470,13 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     const isPinChanged = isEditingNewPin;
 
     // 3. Check if any fields were actually changed
-    if (!isUsernameChanged && !isPinChanged) {
-      showAccountFeedback('No Changes', 'Please click Change on Username or New PIN to make changes.');
+    if (!isUsernameChanged && !isPinChanged && !isTabChanged) {
+      showAccountFeedback('No Changes', 'Please click Edit on Username or New PIN, or pick a different default tab.');
       return;
+    }
+
+    if (isTabChanged) {
+      await setDefaultHomeTab(accountDefaultTab);
     }
 
     if (isEditingUsername && !accountUsername.trim()) {
@@ -644,9 +699,37 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     return element;
   };
 
+  const renderHomeTabs = () => (
+    <View style={[styles.homeTabBar, { paddingBottom: Math.max(insets.bottom, 6) }]}>
+      {HOME_TAB_OPTIONS.map(tab => {
+        const active = homeTab === tab.key;
+        return (
+          <TouchableOpacity
+            key={tab.key}
+            onPress={() => setHomeTab(tab.key)}
+            style={[styles.homeTabItem, active && styles.homeTabItemActive]}
+            activeOpacity={0.7}
+          >
+            <Ionicons
+              name={(active ? tab.icon : `${tab.icon}-outline`) as any}
+              size={20}
+              color={active ? AppTheme.colors.primary : AppTheme.colors.textSecondary}
+            />
+            <Text style={[styles.homeTabLabel, active && styles.homeTabLabelActive]}>{tab.label}</Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+
   return (
     <View style={styles.container}>
+      {homeTab === 'diary' && <DiaryView isMobile={isMobile} />}
+      {homeTab === 'notes' && <NotesView isMobile={isMobile} />}
+
+      {homeTab === 'files' && (
       <FlatList
+        style={{ flex: 1 }}
         data={sortedTabs}
         keyExtractor={item => item.uuid}
         contentContainerStyle={{ padding: AppTheme.spacing.m, paddingBottom: 100 }}
@@ -680,12 +763,12 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               <View style={styles.folderIconContainer}>
                 <Ionicons 
                   name="folder" 
-                  size={28} 
+                  size={18} 
                   color={AppTheme.colors.primary} 
                 />
                 {item.isSensitive === 1 && (
                   <View style={styles.lockBadge}>
-                    <Ionicons name="lock-closed" size={10} color="#fff" />
+                    <Ionicons name="lock-closed" size={8} color="#fff" />
                   </View>
                 )}
               </View>
@@ -734,13 +817,19 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         }}
         ListEmptyComponent={<Text style={styles.emptyText}>No tabs available. Create one below.</Text>}
       />
+      )}
 
-      <DraggableFAB onPress={() => setModalVisible(true)} />
+      {homeTab === 'files' && (
+        <DraggableFAB onPress={() => setModalVisible(true)} initialBottom={96 + insets.bottom} />
+      )}
+
+      {renderHomeTabs()}
 
       {/* CREATE TAB MODAL */}
       <Modal visible={modalVisible} animationType="slide" transparent>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { maxHeight: '95%' }]}>
+          <View style={[styles.modalContent, { maxHeight: '90%' }]}>
+            <ScrollView contentContainerStyle={{ paddingBottom: 4 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             <Text style={styles.modalTitle}>New Vault Tab</Text>
             <TextInput style={[styles.input, { letterSpacing: 0 }]} placeholder="Tab Name" placeholderTextColor={AppTheme.colors.textSecondary} value={tabName} onChangeText={setTabName} />
             <TextInput style={[styles.input, { letterSpacing: 0 }]} placeholder="Description" placeholderTextColor={AppTheme.colors.textSecondary} value={tabDesc} onChangeText={setTabDesc} />
@@ -811,6 +900,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 );
               })()}
             </View>
+            </ScrollView>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -818,7 +908,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       {/* EDIT TAB MODAL */}
       <Modal visible={editModalVisible} animationType="slide" transparent>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { maxHeight: '95%' }]}>
+          <View style={[styles.modalContent, { maxHeight: '90%' }]}>
+            <ScrollView contentContainerStyle={{ paddingBottom: 4 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             <Text style={styles.modalTitle}>Edit Vault Tab</Text>
             <TextInput 
               style={[styles.input, { letterSpacing: 0 }]} 
@@ -901,6 +992,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 <Text style={[styles.buttonText, !editTabName.trim() && { color: AppTheme.colors.textSecondary }]}>Save Changes</Text>
               </TouchableOpacity>
             </View>
+            </ScrollView>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -908,7 +1000,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       {/* UNLOCK TAB MODAL */}
       <Modal visible={pinModalVisible} animationType="fade" transparent>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { maxHeight: '95%' }]}>
+          <View style={[styles.modalContent, { maxHeight: '90%' }]}>
+            <ScrollView contentContainerStyle={{ paddingBottom: 4 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             <Text style={styles.modalTitle}>
               {pinActionTarget === 'edit' 
                 ? `Verify PIN to Edit ${selectedTab?.name}` 
@@ -945,6 +1038,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 );
               })()}
             </View>
+            </ScrollView>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -952,7 +1046,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       {/* UNIFIED BACKUP MENU MODAL */}
       <Modal visible={backupModalVisible} animationType="slide" transparent>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { maxHeight: '95%' }]}>
+          <View style={[styles.modalContent, { maxHeight: '90%' }]}>
+            <ScrollView contentContainerStyle={{ paddingBottom: 4 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: AppTheme.spacing.m }}>
               <Text style={styles.modalTitle}>Vault Backup & Restore</Text>
               <TouchableOpacity onPress={() => setBackupModalVisible(false)}>
@@ -1008,6 +1103,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             <TouchableOpacity onPress={() => setBackupModalVisible(false)} style={[styles.button, { backgroundColor: AppTheme.colors.border, marginTop: 8 }]}>
               <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Close</Text>
             </TouchableOpacity>
+            </ScrollView>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -1016,6 +1112,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       <Modal visible={accountModalVisible} animationType="slide" transparent>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
           <View style={[styles.modalContent, { maxHeight: '92%' }]}>
+            <ScrollView contentContainerStyle={{ paddingBottom: 4 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: AppTheme.spacing.m }}>
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                 <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: AppTheme.colors.primaryLight, justifyContent: 'center', alignItems: 'center', marginRight: 10 }}>
@@ -1096,6 +1193,62 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                   </Text>
                 </TouchableOpacity>
               </View>
+
+              {/* Which tab the app opens on */}
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, marginBottom: 6 }}>
+                <Text style={styles.label}>Default tab on launch</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setTabPickerOpen(!tabPickerOpen)}
+                style={styles.tabPickerBtn}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={HOME_TAB_OPTIONS.find(o => o.key === accountDefaultTab)?.icon || 'folder'}
+                  size={17}
+                  color={AppTheme.colors.primary}
+                  style={{ marginRight: 9 }}
+                />
+                <Text style={styles.tabPickerText}>
+                  {HOME_TAB_OPTIONS.find(o => o.key === accountDefaultTab)?.label || 'Files'}
+                </Text>
+                <Ionicons
+                  name={tabPickerOpen ? 'chevron-up' : 'chevron-down'}
+                  size={15}
+                  color={AppTheme.colors.textSecondary}
+                />
+              </TouchableOpacity>
+
+              {tabPickerOpen && (
+                <View style={styles.tabPickerList}>
+                  {HOME_TAB_OPTIONS.map(option => {
+                    const selected = option.key === accountDefaultTab;
+                    return (
+                      <TouchableOpacity
+                        key={option.key}
+                        onPress={() => {
+                          setAccountDefaultTab(option.key);
+                          setTabPickerOpen(false);
+                          setAccountError(null);
+                        }}
+                        style={[styles.tabPickerItem, selected && styles.tabPickerItemActive]}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons
+                          name={option.icon}
+                          size={16}
+                          color={selected ? AppTheme.colors.primary : AppTheme.colors.textSecondary}
+                          style={{ marginRight: 9 }}
+                        />
+                        <Text style={[styles.tabPickerItemText, selected && styles.tabPickerItemTextActive]}>
+                          {option.label}
+                        </Text>
+                        {selected && <Ionicons name="checkmark" size={16} color={AppTheme.colors.primary} />}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
 
               {/* New PIN field */}
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, marginBottom: 6 }}>
@@ -1236,6 +1389,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
               </TouchableOpacity>
             </ScrollView>
+            </ScrollView>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -1243,7 +1397,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       {/* EXPORT BACKUP MODAL */}
       <Modal visible={exportModalVisible} animationType="slide" transparent>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { maxHeight: '95%' }]}>
+          <View style={[styles.modalContent, { maxHeight: '90%' }]}>
+            <ScrollView contentContainerStyle={{ paddingBottom: 4 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             <Text style={styles.modalTitle}>Export Encrypted Backup</Text>
             <Text style={{ color: AppTheme.colors.textSecondary, marginBottom: AppTheme.spacing.m, fontSize: 13 }}>
               Enter a 4-digit PIN to encrypt your backup. You must enter this exact PIN when restoring your data.
@@ -1279,6 +1434,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 );
               })()}
             </View>
+            </ScrollView>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -1287,9 +1443,10 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       <Modal visible={importModalVisible} animationType="slide" transparent>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
           <View 
-            style={[styles.modalContent, { maxHeight: '95%' }]}
+            style={[styles.modalContent, { maxHeight: '90%' }]}
             pointerEvents={isImporting || isReadingFile ? 'none' : 'auto'}
           >
+            <ScrollView contentContainerStyle={{ paddingBottom: 4 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             <Text style={styles.modalTitle}>Import Encrypted Backup</Text>
             
             {pickedFileName && (
@@ -1398,6 +1555,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 );
               })()}
             </View>
+            </ScrollView>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -1564,28 +1722,72 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: AppTheme.colors.background },
-  tabCard: { 
-    backgroundColor: AppTheme.colors.surface, 
-    padding: AppTheme.spacing.l, 
-    borderRadius: AppTheme.borderRadius.l, 
-    marginBottom: AppTheme.spacing.m, 
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
-    alignItems: 'center', 
-    borderWidth: 1, 
-    borderColor: AppTheme.colors.cardBorder, 
-    shadowColor: '#000', 
-    shadowOffset: { width: 0, height: 4 }, 
-    shadowOpacity: 0.03, 
-    shadowRadius: 12, 
-    elevation: 2 
+  tabPickerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: AppTheme.borderRadius.s,
+    paddingHorizontal: 13,
+    paddingVertical: 13,
   },
-  tabName: { color: AppTheme.colors.text, fontSize: 19, fontWeight: '700' },
-  tabDesc: { color: AppTheme.colors.textSecondary, fontSize: 14, marginTop: 4 },
+  tabPickerText: { flex: 1, fontSize: 14, fontWeight: '600', color: AppTheme.colors.text },
+  tabPickerList: {
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: AppTheme.borderRadius.s,
+    overflow: 'hidden',
+  },
+  tabPickerItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 13,
+    paddingVertical: 12,
+    backgroundColor: '#ffffff',
+  },
+  tabPickerItemActive: { backgroundColor: AppTheme.colors.primaryLight },
+  tabPickerItemText: { flex: 1, fontSize: 13.5, fontWeight: '600', color: AppTheme.colors.text },
+  tabPickerItemTextActive: { color: AppTheme.colors.primary, fontWeight: '700' },
+  homeTabBar: {
+    flexDirection: 'row',
+    backgroundColor: AppTheme.colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    paddingHorizontal: 8,
+  },
+  homeTabItem: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 9,
+    paddingBottom: 7,
+    // The active marker sits above the item now that the bar is at the bottom
+    borderTopWidth: 2,
+    borderTopColor: 'transparent',
+  },
+  homeTabItemActive: { borderTopColor: AppTheme.colors.primary },
+  homeTabLabel: { marginTop: 2, fontSize: 11, fontWeight: '600', color: AppTheme.colors.textSecondary },
+  homeTabLabelActive: { color: AppTheme.colors.primary, fontWeight: '800' },
+  // Sized to match a note row in the Notes tab
+  tabCard: {
+    backgroundColor: '#ffffff',
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 8,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  tabName: { color: AppTheme.colors.text, fontSize: 13.5, fontWeight: '700' },
+  tabDesc: { color: AppTheme.colors.textSecondary, fontSize: 11.5, marginTop: 4 },
   emptyText: { color: AppTheme.colors.textSecondary, textAlign: 'center', marginTop: 40, fontSize: 15 },
   fab: { position: 'absolute', bottom: 30, right: 30, width: 60, height: 60, borderRadius: 30, backgroundColor: AppTheme.colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 6, shadowColor: AppTheme.colors.primary, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.35, shadowRadius: 10 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.4)', justifyContent: 'center', padding: AppTheme.spacing.l },
-  modalContent: { backgroundColor: '#ffffff', padding: AppTheme.spacing.l, borderRadius: AppTheme.borderRadius.xl, borderWidth: 1, borderColor: '#f1f5f9', shadowColor: '#000', shadowOffset: { width: 0, height: 12 }, shadowOpacity: 0.08, shadowRadius: 24, elevation: 8 },
+  modalContent: { maxHeight: '90%', backgroundColor: '#ffffff', padding: AppTheme.spacing.l, borderRadius: AppTheme.borderRadius.xl, borderWidth: 1, borderColor: '#f1f5f9', shadowColor: '#000', shadowOffset: { width: 0, height: 12 }, shadowOpacity: 0.08, shadowRadius: 24, elevation: 8 },
   modalTitle: { color: AppTheme.colors.text, fontSize: 20, fontWeight: 'bold', marginBottom: AppTheme.spacing.m },
   input: { backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0', color: AppTheme.colors.text, padding: 14, borderRadius: AppTheme.borderRadius.s, marginBottom: AppTheme.spacing.m, fontSize: 15, letterSpacing: 0 },
   checkboxRow: { flexDirection: 'row', alignItems: 'center', marginBottom: AppTheme.spacing.m },
@@ -1593,15 +1795,15 @@ const styles = StyleSheet.create({
   modalActions: { flexDirection: 'row', justifyContent: 'space-between', marginTop: AppTheme.spacing.s },
   button: { flex: 1, backgroundColor: AppTheme.colors.primary, paddingVertical: 14, borderRadius: AppTheme.borderRadius.s, alignItems: 'center', marginHorizontal: 4 },
   buttonText: { color: '#fff', fontWeight: 'bold', fontSize: 15 },
-  editBtn: { width: 40, height: 40, borderRadius: 10, backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#cbd5e1', justifyContent: 'center', alignItems: 'center' },
-  deleteBtn: { width: 40, height: 40, borderRadius: 10, backgroundColor: '#fef2f2', borderWidth: 1, borderColor: '#fecaca', justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
+  editBtn: { width: 32, height: 32, borderRadius: 8, backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#cbd5e1', justifyContent: 'center', alignItems: 'center' },
+  deleteBtn: { width: 32, height: 32, borderRadius: 8, backgroundColor: '#fef2f2', borderWidth: 1, borderColor: '#fecaca', justifyContent: 'center', alignItems: 'center', marginLeft: 6 },
   sectionHeaderContainer: { marginTop: 8, marginBottom: AppTheme.spacing.l, paddingHorizontal: 4 },
   sectionTitle: { color: AppTheme.colors.text, fontSize: 24, fontWeight: 'bold', letterSpacing: -0.3 },
   sectionSubtitle: { color: AppTheme.colors.textSecondary, fontSize: 15, marginTop: 4 },
-  folderIconContainer: { width: 56, height: 56, borderRadius: 16, backgroundColor: AppTheme.colors.iconFolderBg, justifyContent: 'center', alignItems: 'center', marginRight: 16, position: 'relative' },
-  lockBadge: { position: 'absolute', bottom: -2, right: -2, backgroundColor: AppTheme.colors.sensitive, borderRadius: 10, padding: 3, borderWidth: 1.5, borderColor: '#ffffff' },
-  countBadge: { alignSelf: 'flex-start', backgroundColor: AppTheme.colors.primaryLight, paddingHorizontal: 12, paddingVertical: 4, borderRadius: 16, marginTop: 10 },
-  countBadgeText: { color: AppTheme.colors.primary, fontSize: 12, fontWeight: '600' },
+  folderIconContainer: { width: 36, height: 36, borderRadius: 10, backgroundColor: AppTheme.colors.iconFolderBg, justifyContent: 'center', alignItems: 'center', marginRight: 10, position: 'relative' },
+  lockBadge: { position: 'absolute', bottom: -3, right: -3, backgroundColor: AppTheme.colors.sensitive, borderRadius: 8, padding: 2, borderWidth: 1.5, borderColor: '#ffffff' },
+  countBadge: { alignSelf: 'flex-start', backgroundColor: AppTheme.colors.primaryLight, paddingHorizontal: 9, paddingVertical: 2, borderRadius: 10, marginTop: 6 },
+  countBadgeText: { color: AppTheme.colors.primary, fontSize: 10, fontWeight: '600' },
   sortFilterBtn: {
     flexDirection: 'row',
     alignItems: 'center',

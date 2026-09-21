@@ -18,6 +18,7 @@ import DraggableFAB from '../components/DraggableFAB';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StorageService } from '../utils/storage';
 import DatePickerModal, { parseDateString } from '../components/DatePickerModal';
+import * as Clipboard from 'expo-clipboard';
 import { inflate as inflateStream } from 'pako';
 import { recognizeTextFromImage, extractDatesFromMrz } from '../services/OcrService';
 import PdfRasterizer from '../components/PdfRasterizer';
@@ -70,6 +71,35 @@ const isPlausibleDate = (value: string): boolean => {
     return y >= 1900 && y <= 2100;
   }
   return true;
+};
+
+/**
+ * Bank cards print their validity as MM/YY, which the full-date pattern does
+ * not match. This is only ever read straight after a label such as "valid
+ * thru", because a bare "05/28" in running text is far more likely to be
+ * something else.
+ */
+const MONTH_YEAR = /^(0?[1-9]|1[0-2])\s*[\/\-]\s*(\d{2})(?!\d)/;
+
+const findMonthYearAfterLabel = (text: string, labels: string[], asEnd: boolean): string => {
+  for (const label of labels) {
+    const labelRegex = new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(label)}[.:\\s]*`, 'gi');
+    let hit: RegExpExecArray | null;
+    while ((hit = labelRegex.exec(text)) !== null) {
+      const after = hit.index + hit[0].length;
+      const match = text.slice(after, after + 12).match(MONTH_YEAR);
+      if (match) {
+        const month = Number(match[1]);
+        const year = 2000 + Number(match[2]);
+        // A card is good until the end of its stated month, and valid from the start of one
+        const day = asEnd ? new Date(year, month, 0).getDate() : 1;
+        const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+        return `${pad(day)}/${pad(month)}/${year}`;
+      }
+      if (labelRegex.lastIndex <= hit.index) labelRegex.lastIndex = hit.index + 1;
+    }
+  }
+  return '';
 };
 
 /** Every date that follows any of `labels`, in the order the labels are given. */
@@ -208,6 +238,10 @@ export const extractDatesFromText = (text: string): { startDate: string; endDate
   if (isBirthDate(startDate)) startDate = '';
   if (isBirthDate(endDate)) endDate = '';
 
+  // Cards state MM/YY rather than a full date
+  if (!startDate) startDate = findMonthYearAfterLabel(text, START_LABELS, false);
+  if (!endDate) endDate = findMonthYearAfterLabel(text, END_LABELS, true);
+
   if (!startDate || !endDate) {
     const all = text.match(new RegExp(DATE_PATTERN.source, 'gi')) || [];
     const unused = all
@@ -224,6 +258,84 @@ export const extractDatesFromText = (text: string): { startDate: string; endDate
   }
 
   return { startDate, endDate };
+};
+
+// Labels are ordered most-specific first so "Passport No" beats a bare "No".
+const NUMBER_LABELS = [
+  'passport no', 'passport number', 'passport num',
+  'card number', 'card no', 'account number', 'account no', 'a/c no',
+  'policy number', 'policy no', 'licence number', 'license number', 'licence no', 'license no',
+  'registration number', 'registration no', 'reg no',
+  'document number', 'document no', 'certificate number', 'certificate no',
+  'membership number', 'membership no', 'reference number', 'reference no',
+  'id number', 'id no', 'serial number', 'serial no',
+  'number', 'no',
+];
+
+/** Payment-card check digit, so a random 16-digit run is not mistaken for a PAN. */
+const isLuhnValid = (digits: string): boolean => {
+  if (digits.length < 13 || digits.length > 19) return false;
+  let sum = 0;
+  let double = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let n = Number(digits[i]);
+    if (double) {
+      n *= 2;
+      if (n > 9) n -= 9;
+    }
+    sum += n;
+    double = !double;
+  }
+  return sum % 10 === 0;
+};
+
+/** Finds a payment card number and returns it grouped in fours for readability. */
+const findCardNumber = (text: string): string => {
+  const runs = text.match(/\d[\d\s-]{11,22}\d/g) || [];
+  for (const run of runs) {
+    const digits = run.replace(/\D/g, '');
+    if (isLuhnValid(digits)) return digits.replace(/(.{4})/g, '$1 ').trim();
+  }
+  return '';
+};
+
+/** Rejects values that are really dates, or carry no digits at all. */
+const isPlausibleNumber = (value: string): boolean => {
+  const trimmed = value.trim();
+  if (trimmed.length < 4 || trimmed.length > 30) return false;
+  if (!/\d/.test(trimmed)) return false;
+  if (parseDateString(trimmed)) return false;
+  if (DATE_PATTERN.test(trimmed)) return false;
+  return true;
+};
+
+const findNumberAfterLabel = (text: string, labels: string[]): string => {
+  for (const label of labels) {
+    const labelRegex = new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(label)}[.:\\s#-]*`, 'gi');
+    let hit: RegExpExecArray | null;
+    while ((hit = labelRegex.exec(text)) !== null) {
+      const after = hit.index + hit[0].length;
+      const candidate = text.slice(after, after + 30).match(/^[A-Z0-9][A-Z0-9\/-]*(?:[ ][A-Z0-9][A-Z0-9\/-]*)?/i);
+      if (candidate && isPlausibleNumber(candidate[0])) return candidate[0].trim();
+      if (labelRegex.lastIndex <= hit.index) labelRegex.lastIndex = hit.index + 1;
+    }
+  }
+  return '';
+};
+
+/**
+ * The document's own identifying number — a passport number, a card number, a
+ * policy number and so on. The machine readable zone is tried first because it
+ * survives OCR better than the printed label does, then a Luhn-valid card
+ * number, then whatever follows a recognised label.
+ */
+export const extractDocumentNumber = (text: string): string => {
+  if (!text || typeof text !== 'string') return '';
+  const { documentNumber } = extractDatesFromMrz(text);
+  if (documentNumber && isPlausibleNumber(documentNumber)) return documentNumber;
+  const card = findCardNumber(text);
+  if (card) return card;
+  return findNumberAfterLabel(text, NUMBER_LABELS);
 };
 
 /** How long before the end date a document starts showing the amber warning. */
@@ -321,6 +433,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
   const [docTitle, setDocTitle] = useState('');
   const [docContent, setDocContent] = useState('');
   const [docHasExpiry, setDocHasExpiry] = useState(false);
+  const [copiedNumber, setCopiedNumber] = useState('');
+  const [docNumber, setDocNumber] = useState('');
   const [docStartDate, setDocStartDate] = useState('');
   const [docEndDate, setDocEndDate] = useState('');
   const [docDatesEdited, setDocDatesEdited] = useState(false);
@@ -333,6 +447,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
   const [editDocTitle, setEditDocTitle] = useState('');
   const [editDocContent, setEditDocContent] = useState('');
   const [editDocHasExpiry, setEditDocHasExpiry] = useState(false);
+  const [editDocNumber, setEditDocNumber] = useState('');
   const [editDocStartDate, setEditDocStartDate] = useState('');
   const [editDocEndDate, setEditDocEndDate] = useState('');
   const [editDocDatesEdited, setEditDocDatesEdited] = useState(false);
@@ -515,7 +630,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
     });
   };
 
-  const autoFetchDatesFromDocument = async (isEdit: boolean, sources: { fileName?: string; dataUri?: string }) => {
+  const autoFetchDetailsFromDocument = async (isEdit: boolean, sources: { fileName?: string; dataUri?: string }) => {
     const alreadyEdited = isEdit ? editDocDatesEdited : docDatesEdited;
     if (alreadyEdited) return;
 
@@ -524,57 +639,66 @@ export default function TabDetailScreen({ route, navigation }: any) {
     const isPdf = !!sources.dataUri && sources.dataUri.includes('application/pdf');
     const pdfText = isPdf ? extractTextFromPdfDataUri(sources.dataUri!) : '';
 
-    const apply = (found: { startDate: string; endDate: string }) => {
-      if (!found.startDate && !found.endDate) return false;
+    type Found = { startDate: string; endDate: string; number: string };
+
+    /**
+     * Writes through only the fields that were actually found. Assigning the
+     * blanks too would wipe a value the previous pass had recovered.
+     */
+    const apply = (found: Found) => {
       if (isEdit) {
-        setEditDocStartDate(found.startDate);
-        setEditDocEndDate(found.endDate);
-        setEditDocHasExpiry(true);
+        if (found.startDate) setEditDocStartDate(found.startDate);
+        if (found.endDate) setEditDocEndDate(found.endDate);
+        if (found.number) setEditDocNumber(found.number);
+        if (found.startDate || found.endDate) setEditDocHasExpiry(true);
       } else {
-        setDocStartDate(found.startDate);
-        setDocEndDate(found.endDate);
-        setDocHasExpiry(true);
+        if (found.startDate) setDocStartDate(found.startDate);
+        if (found.endDate) setDocEndDate(found.endDate);
+        if (found.number) setDocNumber(found.number);
+        if (found.startDate || found.endDate) setDocHasExpiry(true);
       }
-      setDateScanStatus('found');
-      return true;
     };
 
-    const scan = (text: string) => {
+    const scan = (text: string): Found => {
       const mrz = extractDatesFromMrz(text);
       const labelled = extractDatesFromText(text);
       // MRZ expiry is more reliable than an OCR-misread printed label
       return {
         startDate: labelled.startDate,
         endDate: mrz.endDate || labelled.endDate,
+        number: extractDocumentNumber(text),
       };
     };
 
-    const textSources = [sources.fileName || '', title, notes, pdfText].filter(Boolean).join('\n');
-    console.log(`[dates] isPdf=${isPdf} pdfTextLen=${pdfText.length} textLen=${textSources.length}`);
-    if (apply(scan(textSources))) {
-      console.log('[dates] found in text');
-      return;
-    }
+    const merge = (a: Found, b: Found): Found => ({
+      startDate: a.startDate || b.startDate,
+      endDate: a.endDate || b.endDate,
+      number: a.number || b.number,
+    });
 
-    // Nothing readable as text — fall back to OCR on the image itself
-    if (!sources.dataUri) {
-      console.log('[dates] no file to OCR');
-      setDateScanStatus('none');
+    const textSources = [sources.fileName || '', title, notes, pdfText].filter(Boolean).join('\n');
+    let found = scan(textSources);
+    apply(found);
+
+    const isComplete = (f: Found) => !!f.startDate && !!f.endDate && !!f.number;
+
+    // Anything still missing is worth a look at the document itself. Returning
+    // early just because a filename yielded a number is what previously stopped
+    // photos from ever reaching OCR.
+    if (isComplete(found) || !sources.dataUri) {
+      setDateScanStatus(found.startDate || found.endDate || found.number ? 'found' : 'none');
       return;
     }
 
     setIsScanningDates(true);
     try {
       const imageUri = isPdf ? await renderPdfFirstPage(sources.dataUri) : sources.dataUri;
-      console.log(`[dates] rasterized=${imageUri ? imageUri.length : 0}`);
       const ocrText = imageUri ? await recognizeTextFromImage(imageUri) : '';
-      console.log(`[dates] ocrLen=${ocrText.length}`);
-      if (!ocrText || !apply(scan(`${textSources}\n${ocrText}`))) {
-        console.log('[dates] nothing usable');
-        setDateScanStatus('none');
-      } else {
-        console.log('[dates] found via OCR');
+      if (ocrText) {
+        found = merge(found, scan(`${textSources}\n${ocrText}`));
+        apply(found);
       }
+      setDateScanStatus(found.startDate || found.endDate || found.number ? 'found' : 'none');
     } finally {
       setIsScanningDates(false);
     }
@@ -622,7 +746,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
             setDocTitle('Photo');
           }
         }
-        autoFetchDatesFromDocument(isEdit, { dataUri: newUri });
+        autoFetchDetailsFromDocument(isEdit, { dataUri: newUri });
       }
     } catch (e) {
       console.warn('Camera launch error:', e);
@@ -651,7 +775,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
         setDocTitle('Photo');
       }
     }
-    autoFetchDatesFromDocument(webCameraTarget === 'edit', { dataUri: optimized });
+    autoFetchDetailsFromDocument(webCameraTarget === 'edit', { dataUri: optimized });
   };
 
   const handleGalleryPick = async (isEdit = false) => {
@@ -693,7 +817,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
           }
         }
 
-        autoFetchDatesFromDocument(isEdit, { fileName: pickedName, dataUri: newUri });
+        autoFetchDetailsFromDocument(isEdit, { fileName: pickedName, dataUri: newUri });
       }
     } catch (e) {
       console.warn('Gallery pick error:', e);
@@ -747,7 +871,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
           setDocTitle(fileName);
         }
 
-        autoFetchDatesFromDocument(isEdit, { fileName, dataUri: newUris[0] });
+        autoFetchDetailsFromDocument(isEdit, { fileName, dataUri: newUris[0] });
       }
     } catch (error) {
       Alert.alert('Error', 'Could not pick PDF document.');
@@ -802,22 +926,25 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
         const startDate = docHasExpiry ? docStartDate.trim() : '';
         const endDate = docHasExpiry ? docEndDate.trim() : '';
-        const hasDates = Boolean(startDate || endDate);
+        const number = docNumber.trim();
+        // The number is independent of the expiry, so it alone is enough to
+        // require the structured payload rather than a bare notes string
+        const hasDetails = Boolean(startDate || endDate || number);
 
         let contentToEncrypt = '';
-        if (processedUris.length > 0 && (docContent.trim() || hasDates)) {
-          contentToEncrypt = JSON.stringify({ notes: docContent.trim(), files: processedUris, startDate, endDate });
+        if (processedUris.length > 0 && (docContent.trim() || hasDetails)) {
+          contentToEncrypt = JSON.stringify({ notes: docContent.trim(), files: processedUris, startDate, endDate, number });
         } else if (processedUris.length > 0) {
           contentToEncrypt = JSON.stringify(processedUris);
-        } else if (hasDates) {
-          contentToEncrypt = JSON.stringify({ notes: docContent.trim(), files: [], startDate, endDate });
+        } else if (hasDetails) {
+          contentToEncrypt = JSON.stringify({ notes: docContent.trim(), files: [], startDate, endDate, number });
         } else {
           contentToEncrypt = docContent;
         }
 
         await addDocument(tabId, trimmedTitle, type, contentToEncrypt, encryptionKey);
         setModalVisible(false);
-        setDocTitle(''); setDocContent(''); setDocStartDate(''); setDocEndDate(''); setDocDatesEdited(false); setDocHasExpiry(false); setDateScanStatus('idle'); setFileUris([]); setFileType(null);
+        setDocTitle(''); setDocContent(''); setDocNumber(''); setDocStartDate(''); setDocEndDate(''); setDocDatesEdited(false); setDocHasExpiry(false); setDateScanStatus('idle'); setFileUris([]); setFileType(null);
       } catch (e) {
         console.error('handleAddDocument error:', e);
         Alert.alert('Error', 'Could not encrypt and save document.');
@@ -825,6 +952,19 @@ export default function TabDetailScreen({ route, navigation }: any) {
         setIsEncrypting(false);
       }
     }, 50);
+  };
+
+  /** Copies a number to the clipboard and confirms it, since nothing else would. */
+  const handleCopyNumber = async (value: string) => {
+    const trimmed = (value || '').trim();
+    if (!trimmed) return;
+    try {
+      await Clipboard.setStringAsync(trimmed);
+      setCopiedNumber(trimmed);
+      setTimeout(() => setCopiedNumber(''), 2500);
+    } catch (e) {
+      Alert.alert('Copy failed', 'Could not copy the number to the clipboard.');
+    }
   };
 
   const handleOpenEditDoc = (doc: any) => {
@@ -847,6 +987,9 @@ export default function TabDetailScreen({ route, navigation }: any) {
     setEditDocEndDate(endDate);
     setEditDocDatesEdited(Boolean(payload.startDate || payload.endDate));
     setEditDocHasExpiry(Boolean(startDate || endDate));
+
+    // Same rule for the number: a saved value wins over a re-read of the text
+    setEditDocNumber(payload.number || extractDocumentNumber(`${doc.title || ''}\n${payload.notes}`));
 
     setEditModalVisible(true);
   };
@@ -895,15 +1038,18 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
         const startDate = editDocHasExpiry ? editDocStartDate.trim() : '';
         const endDate = editDocHasExpiry ? editDocEndDate.trim() : '';
-        const hasDates = Boolean(startDate || endDate);
+        const number = editDocNumber.trim();
+        // The number is independent of the expiry, so it alone is enough to
+        // require the structured payload rather than a bare notes string
+        const hasDetails = Boolean(startDate || endDate || number);
 
         let contentToEncrypt = '';
-        if (processedUris.length > 0 && (editDocContent.trim() || hasDates)) {
-          contentToEncrypt = JSON.stringify({ notes: editDocContent.trim(), files: processedUris, startDate, endDate });
+        if (processedUris.length > 0 && (editDocContent.trim() || hasDetails)) {
+          contentToEncrypt = JSON.stringify({ notes: editDocContent.trim(), files: processedUris, startDate, endDate, number });
         } else if (processedUris.length > 0) {
           contentToEncrypt = JSON.stringify(processedUris);
-        } else if (hasDates) {
-          contentToEncrypt = JSON.stringify({ notes: editDocContent.trim(), files: [], startDate, endDate });
+        } else if (hasDetails) {
+          contentToEncrypt = JSON.stringify({ notes: editDocContent.trim(), files: [], startDate, endDate, number });
         } else {
           contentToEncrypt = editDocContent;
         }
@@ -937,8 +1083,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
     }, 50);
   };
 
-  const parseDecryptedPayload = (plainText: string): { notes: string; files: string[]; startDate: string; endDate: string } => {
-    if (!plainText || typeof plainText !== 'string' || plainText.startsWith('⚠️')) return { notes: '', files: [], startDate: '', endDate: '' };
+  const parseDecryptedPayload = (plainText: string): { notes: string; files: string[]; startDate: string; endDate: string; number: string } => {
+    if (!plainText || typeof plainText !== 'string' || plainText.startsWith('⚠️')) return { notes: '', files: [], startDate: '', endDate: '', number: '' };
     const trimmed = plainText.trim();
     if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
       try {
@@ -948,7 +1094,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
           const files = Array.isArray(parsed.files) ? parsed.files.filter((f: any) => typeof f === 'string') : [];
           const startDate = typeof parsed.startDate === 'string' ? parsed.startDate : '';
           const endDate = typeof parsed.endDate === 'string' ? parsed.endDate : '';
-          return { notes, files, startDate, endDate };
+          const number = typeof parsed.number === 'string' ? parsed.number : '';
+          return { notes, files, startDate, endDate, number };
         }
       } catch (e) { }
     }
@@ -957,11 +1104,11 @@ export default function TabDetailScreen({ route, navigation }: any) {
         const parsed = JSON.parse(trimmed);
         if (Array.isArray(parsed)) {
           const files = parsed.filter((item: any) => typeof item === 'string' && item.length > 0);
-          return { notes: '', files, startDate: '', endDate: '' };
+          return { notes: '', files, startDate: '', endDate: '', number: '' };
         }
       } catch (e) { }
     }
-    return { notes: plainText, files: [], startDate: '', endDate: '' };
+    return { notes: plainText, files: [], startDate: '', endDate: '', number: '' };
   };
 
   const parseDecryptedContent = (plainText: string): string[] => {
@@ -1998,7 +2145,52 @@ ${payload.notes}`);
                       const expiry = getExpiryStatus(endDate);
                       const expiryStyle = expiry ? EXPIRY_STYLES[expiry.status] : null;
                       const labelColor = expiryStyle ? expiryStyle.text : AppTheme.colors.primary;
+                      const number = payload.number || extractDocumentNumber(`${previewDoc.title || ''}
+${payload.notes}`);
                       return (
+                        <>
+                        {/* Document number sits above the validity dates */}
+                        <View style={{
+                          width: '100%',
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          backgroundColor: AppTheme.colors.primaryLight,
+                          borderWidth: 1,
+                          borderColor: AppTheme.colors.primaryBorder,
+                          borderRadius: 12,
+                          paddingHorizontal: 12,
+                          paddingVertical: 10,
+                          marginBottom: 10,
+                        }}>
+                          <View style={{ flex: 1, marginRight: 8 }}>
+                            <Text style={{ fontSize: 11, color: AppTheme.colors.primary, fontWeight: '600' }}>Number</Text>
+                            <Text style={{ fontSize: 13, fontWeight: '700', color: AppTheme.colors.text, marginTop: 2 }} numberOfLines={1}>
+                              {number || 'NA'}
+                            </Text>
+                          </View>
+                          {!!number && (
+                            <TouchableOpacity
+                              onPress={() => handleCopyNumber(number)}
+                              style={{
+                                width: 34,
+                                height: 34,
+                                borderRadius: 8,
+                                borderWidth: 1,
+                                borderColor: AppTheme.colors.primaryBorder,
+                                backgroundColor: '#ffffff',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                              }}
+                              activeOpacity={0.7}
+                            >
+                              <Ionicons
+                                name={copiedNumber === number ? 'checkmark' : 'copy-outline'}
+                                size={16}
+                                color={copiedNumber === number ? '#15803d' : AppTheme.colors.primary}
+                              />
+                            </TouchableOpacity>
+                          )}
+                        </View>
                         <View style={{
                           width: '100%',
                           backgroundColor: expiryStyle ? expiryStyle.background : AppTheme.colors.primaryLight,
@@ -2050,6 +2242,7 @@ ${payload.notes}`);
                             </View>
                           )}
                         </View>
+                        </>
                       );
                     })()}
 
@@ -2176,7 +2369,8 @@ ${payload.notes}`);
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalOverlay}
         >
-          <View style={[styles.modalContent, { maxHeight: '95%' }]}>
+          <View style={[styles.modalContent, { maxHeight: '90%' }]}>
+            <ScrollView contentContainerStyle={{ paddingBottom: 4 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             <Text style={styles.modalTitle}>Add Secure Document</Text>
 
             <TextInput
@@ -2188,9 +2382,15 @@ ${payload.notes}`);
                 setDocTitle(text);
                 if (!docDatesEdited) {
                   const detected = extractDatesFromText(`${text}\n${docContent}`);
-                  setDocStartDate(detected.startDate);
-                  setDocEndDate(detected.endDate);
-                  if (detected.startDate || detected.endDate) setDocHasExpiry(true);
+                  // Only ever fill in what was found. Overwriting unconditionally
+                  // would wipe dates the OCR scan already recovered from the file.
+                  if (detected.startDate || detected.endDate) {
+                    setDocStartDate(detected.startDate);
+                    setDocEndDate(detected.endDate);
+                    setDocHasExpiry(true);
+                  }
+                  const foundNumber = extractDocumentNumber(`${text}\n${docContent}`);
+                  if (foundNumber && !docNumber.trim()) setDocNumber(foundNumber);
                 }
               }}
             />
@@ -2204,14 +2404,44 @@ ${payload.notes}`);
                 setDocContent(text);
                 if (!docDatesEdited) {
                   const detected = extractDatesFromText(`${docTitle}\n${text}`);
-                  setDocStartDate(detected.startDate);
-                  setDocEndDate(detected.endDate);
-                  if (detected.startDate || detected.endDate) setDocHasExpiry(true);
+                  // Only ever fill in what was found. Overwriting unconditionally
+                  // would wipe dates the OCR scan already recovered from the file.
+                  if (detected.startDate || detected.endDate) {
+                    setDocStartDate(detected.startDate);
+                    setDocEndDate(detected.endDate);
+                    setDocHasExpiry(true);
+                  }
+                  const foundNumber = extractDocumentNumber(`${docTitle}\n${text}`);
+                  if (foundNumber && !docNumber.trim()) setDocNumber(foundNumber);
                 }
               }}
               multiline
             />
 
+
+            {/* DOCUMENT NUMBER — passport no, card no, policy no and so on */}
+            <Text style={styles.fieldLabel}>Number</Text>
+            <View style={styles.numberRow}>
+              <TextInput
+                style={[styles.input, styles.numberInput]}
+                placeholder="Passport / card / policy number"
+                placeholderTextColor={AppTheme.colors.textSecondary}
+                value={docNumber}
+                onChangeText={(text) => { setDocNumber(text); setDocDatesEdited(true); }}
+                autoCapitalize="characters"
+              />
+              <TouchableOpacity
+                onPress={() => handleCopyNumber(docNumber)}
+                style={[styles.copyButton, !docNumber.trim() && styles.copyButtonDisabled]}
+                disabled={!docNumber.trim()}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="copy-outline" size={18} color={docNumber.trim() ? AppTheme.colors.primary : '#cbd5e1'} />
+              </TouchableOpacity>
+            </View>
+            {!!docNumber.trim() && copiedNumber === docNumber.trim() && (
+              <Text style={styles.copiedBadge}>Copied to clipboard</Text>
+            )}
             <TouchableOpacity
               onPress={() => setDocHasExpiry(!docHasExpiry)}
               style={styles.checkboxRow}
@@ -2377,7 +2607,7 @@ ${payload.notes}`);
               const isAddSaveEnabled = docTitle.trim().length > 0 && (docContent.trim().length > 0 || fileUris.length > 0) && !isEncrypting;
               return (
                 <View style={styles.modalActions}>
-                  <TouchableOpacity onPress={() => { setModalVisible(false); setFileUris([]); setFileType(null); setDocTitle(''); setDocContent(''); setDocStartDate(''); setDocEndDate(''); setDocDatesEdited(false); setDocHasExpiry(false); setDateScanStatus('idle'); }} style={[styles.button, { backgroundColor: AppTheme.colors.border }]} disabled={isEncrypting}>
+                  <TouchableOpacity onPress={() => { setModalVisible(false); setFileUris([]); setFileType(null); setDocTitle(''); setDocContent(''); setDocNumber(''); setDocStartDate(''); setDocEndDate(''); setDocDatesEdited(false); setDocHasExpiry(false); setDateScanStatus('idle'); }} style={[styles.button, { backgroundColor: AppTheme.colors.border }]} disabled={isEncrypting}>
                     <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
                   </TouchableOpacity>
                   <TouchableOpacity 
@@ -2395,6 +2625,7 @@ ${payload.notes}`);
                 </View>
               );
             })()}
+            </ScrollView>
           </View>
 
         </KeyboardAvoidingView>
@@ -2439,7 +2670,8 @@ ${payload.notes}`);
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalOverlay}
         >
-          <View style={[styles.modalContent, { maxHeight: '95%' }]}>
+          <View style={[styles.modalContent, { maxHeight: '90%' }]}>
+            <ScrollView contentContainerStyle={{ paddingBottom: 4 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             <Text style={styles.modalTitle}>Edit Document</Text>
 
             <TextInput
@@ -2451,9 +2683,15 @@ ${payload.notes}`);
                 setEditDocTitle(text);
                 if (!editDocDatesEdited) {
                   const detected = extractDatesFromText(`${text}\n${editDocContent}`);
-                  setEditDocStartDate(detected.startDate);
-                  setEditDocEndDate(detected.endDate);
-                  if (detected.startDate || detected.endDate) setEditDocHasExpiry(true);
+                  // Only ever fill in what was found. Overwriting unconditionally
+                  // would wipe dates the OCR scan already recovered from the file.
+                  if (detected.startDate || detected.endDate) {
+                    setEditDocStartDate(detected.startDate);
+                    setEditDocEndDate(detected.endDate);
+                    setEditDocHasExpiry(true);
+                  }
+                  const foundNumber = extractDocumentNumber(`${text}\n${editDocContent}`);
+                  if (foundNumber && !editDocNumber.trim()) setEditDocNumber(foundNumber);
                 }
               }}
             />
@@ -2467,14 +2705,44 @@ ${payload.notes}`);
                 setEditDocContent(text);
                 if (!editDocDatesEdited) {
                   const detected = extractDatesFromText(`${editDocTitle}\n${text}`);
-                  setEditDocStartDate(detected.startDate);
-                  setEditDocEndDate(detected.endDate);
-                  if (detected.startDate || detected.endDate) setEditDocHasExpiry(true);
+                  // Only ever fill in what was found. Overwriting unconditionally
+                  // would wipe dates the OCR scan already recovered from the file.
+                  if (detected.startDate || detected.endDate) {
+                    setEditDocStartDate(detected.startDate);
+                    setEditDocEndDate(detected.endDate);
+                    setEditDocHasExpiry(true);
+                  }
+                  const foundNumber = extractDocumentNumber(`${editDocTitle}\n${text}`);
+                  if (foundNumber && !editDocNumber.trim()) setEditDocNumber(foundNumber);
                 }
               }}
               multiline
             />
 
+
+            {/* DOCUMENT NUMBER — passport no, card no, policy no and so on */}
+            <Text style={styles.fieldLabel}>Number</Text>
+            <View style={styles.numberRow}>
+              <TextInput
+                style={[styles.input, styles.numberInput]}
+                placeholder="Passport / card / policy number"
+                placeholderTextColor={AppTheme.colors.textSecondary}
+                value={editDocNumber}
+                onChangeText={(text) => { setEditDocNumber(text); setEditDocDatesEdited(true); }}
+                autoCapitalize="characters"
+              />
+              <TouchableOpacity
+                onPress={() => handleCopyNumber(editDocNumber)}
+                style={[styles.copyButton, !editDocNumber.trim() && styles.copyButtonDisabled]}
+                disabled={!editDocNumber.trim()}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="copy-outline" size={18} color={editDocNumber.trim() ? AppTheme.colors.primary : '#cbd5e1'} />
+              </TouchableOpacity>
+            </View>
+            {!!editDocNumber.trim() && copiedNumber === editDocNumber.trim() && (
+              <Text style={styles.copiedBadge}>Copied to clipboard</Text>
+            )}
             <TouchableOpacity
               onPress={() => setEditDocHasExpiry(!editDocHasExpiry)}
               style={styles.checkboxRow}
@@ -2668,6 +2936,7 @@ ${payload.notes}`);
                 </View>
               );
             })()}
+            </ScrollView>
           </View>
         </KeyboardAvoidingView>
 
@@ -2715,12 +2984,12 @@ ${payload.notes}`);
         <View style={styles.fullScreenModal}>
 
           <View style={[styles.fullScreenHeader, { paddingTop: isMobile ? Math.max(insets.top + 8, 16) : 16 }]}>
+            <TouchableOpacity onPress={() => setViewModalVisible(false)} style={styles.closeButton}>
+              <Ionicons name="close" size={22} color={AppTheme.colors.text} />
+            </TouchableOpacity>
             <Text style={styles.fullScreenTitle} numberOfLines={1} ellipsizeMode="tail">
               {selectedDoc?.title}
             </Text>
-            <TouchableOpacity onPress={() => setViewModalVisible(false)} style={styles.closeButton}>
-              <Ionicons name="close" size={24} color="#ffffff" />
-            </TouchableOpacity>
           </View>
 
           <View style={styles.fullScreenContent}>
@@ -3159,9 +3428,25 @@ const styles = StyleSheet.create({
   emptyText: { color: AppTheme.colors.textSecondary, textAlign: 'center', marginTop: 40, fontSize: 15 },
   fab: { position: 'absolute', bottom: 30, right: 30, width: 60, height: 60, borderRadius: 30, backgroundColor: AppTheme.colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 6, zIndex: 10, shadowColor: AppTheme.colors.primary, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.35, shadowRadius: 10 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.4)', justifyContent: 'center', padding: AppTheme.spacing.l },
-  modalContent: { backgroundColor: '#ffffff', padding: AppTheme.spacing.l, borderRadius: AppTheme.borderRadius.xl, maxWidth: 600, width: '100%', alignSelf: 'center', borderWidth: 1, borderColor: '#f1f5f9', shadowColor: '#000', shadowOffset: { width: 0, height: 12 }, shadowOpacity: 0.08, shadowRadius: 24, elevation: 6 },
+  modalContent: { maxHeight: '90%', backgroundColor: '#ffffff', padding: AppTheme.spacing.l, borderRadius: AppTheme.borderRadius.xl, maxWidth: 600, width: '100%', alignSelf: 'center', borderWidth: 1, borderColor: '#f1f5f9', shadowColor: '#000', shadowOffset: { width: 0, height: 12 }, shadowOpacity: 0.08, shadowRadius: 24, elevation: 6 },
   modalTitle: { color: AppTheme.colors.text, fontSize: 20, fontWeight: 'bold', marginBottom: AppTheme.spacing.m },
   input: { backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0', color: AppTheme.colors.text, padding: 14, borderRadius: AppTheme.borderRadius.s, marginBottom: AppTheme.spacing.m, fontSize: 15, letterSpacing: 0 },
+  fieldLabel: { fontSize: 12, fontWeight: '700', color: AppTheme.colors.textSecondary, marginBottom: 6 },
+  numberRow: { flexDirection: 'row', alignItems: 'flex-start' },
+  // The input keeps the shared `input` style; only the row layout differs
+  numberInput: { flex: 1, marginRight: 8 },
+  copyButton: {
+    width: 46,
+    height: 46,
+    borderRadius: AppTheme.borderRadius.s,
+    borderWidth: 1,
+    borderColor: AppTheme.colors.primaryBorder,
+    backgroundColor: AppTheme.colors.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  copyButtonDisabled: { borderColor: '#e2e8f0', backgroundColor: '#f8fafc' },
+  copiedBadge: { fontSize: 11, fontWeight: '700', color: '#15803d', marginTop: -8, marginBottom: 10 },
   checkboxRow: { flexDirection: 'row', alignItems: 'center', marginBottom: AppTheme.spacing.m },
   checkbox: {
     width: 22,
@@ -3204,9 +3489,10 @@ const styles = StyleSheet.create({
   decryptedText: { color: AppTheme.colors.text, fontSize: 16, lineHeight: 24 },
 
   fullScreenModal: { flex: 1, backgroundColor: AppTheme.colors.background },
-  fullScreenHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, backgroundColor: '#ffffff', borderBottomWidth: 1, borderBottomColor: '#e2e8f0' },
-  fullScreenTitle: { flex: 1, marginRight: 12, color: AppTheme.colors.text, fontSize: 18, fontWeight: '700' },
-  closeButton: { padding: 6, backgroundColor: '#ef4444', borderRadius: 20, shadowColor: '#ef4444', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 3 },
+  fullScreenHeader: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, backgroundColor: '#ffffff', borderBottomWidth: 1, borderBottomColor: '#e2e8f0' },
+  fullScreenTitle: { flex: 1, marginHorizontal: 8, color: AppTheme.colors.text, fontSize: 15, fontWeight: '800' },
+  // Matches the plain close in the Notes writer rather than a red badge
+  closeButton: { padding: 6 },
   fullScreenContent: { flex: 1, padding: 16 },
   fullScreenText: { color: AppTheme.colors.text, fontSize: 18, lineHeight: 28 },
 

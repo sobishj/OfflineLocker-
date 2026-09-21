@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
 import 'react-native-get-random-values'; // Needed for uuid in React Native
-import { User, Tab, Document } from '../models';
+import { User, Tab, Document, Note, DiaryPinMode, HomeTab } from '../models';
 import { DatabaseHelper } from '../services/DatabaseHelper';
 import { CryptoService } from '../services/CryptoService';
 import { BackupService } from '../services/BackupService';
@@ -16,6 +16,12 @@ interface LockerState {
   errorMessage: string | null;
   isAuthenticated: boolean;
   lockoutState: LockoutState | null;
+  diaryDates: string[];
+  notes: Note[];
+  defaultHomeTab: HomeTab;
+  diaryLined: boolean;
+  diaryPinMode: DiaryPinMode;
+  diaryPinHash: string | null;
 
   // Actions
   checkExistingUsers: () => Promise<void>;
@@ -31,6 +37,22 @@ interface LockerState {
   addDocument: (tabId: string, title: string, type: string, plainContent: string, encryptionPin: string) => Promise<void>;
   updateDocument: (id: number, tabId: string, title: string, plainContent: string, encryptionPin: string) => Promise<void>;
   deleteDocument: (id: number, tabId: string) => Promise<void>;
+  loadDiaryDates: () => Promise<void>;
+  getDiaryEntry: (entryDate: string) => Promise<string>;
+  saveDiaryEntry: (entryDate: string, plainContent: string) => Promise<void>;
+  loadNotes: () => Promise<void>;
+  addNote: (title: string, plainContent: string, isSensitive: boolean, notePin?: string) => Promise<void>;
+  updateNote: (id: number, title: string, plainContent: string, isSensitive: boolean, notePin?: string) => Promise<void>;
+  deleteNote: (id: number) => Promise<void>;
+  decryptNote: (note: Note) => string;
+  verifyNotePin: (note: Note, candidatePin: string) => boolean;
+  loadDefaultHomeTab: () => Promise<void>;
+  setDefaultHomeTab: (tab: HomeTab) => Promise<void>;
+  loadDiaryLined: () => Promise<void>;
+  setDiaryLined: (lined: boolean) => Promise<void>;
+  loadDiaryPinMode: () => Promise<void>;
+  setDiaryPin: (mode: DiaryPinMode, pin?: string) => Promise<void>;
+  verifyDiaryPin: (candidatePin: string) => boolean;
   exportBackup: (exportPin: string) => Promise<boolean>;
   importBackup: (encryptedContent: string, importPin: string) => Promise<{ success: boolean; tabsCount: number; docsCount: number }>;
   updateUserProfile: (currentPin: string, newUsername?: string, newPin?: string) => Promise<{ success: boolean; message: string }>;
@@ -47,6 +69,12 @@ export const useLockerStore = create<LockerState>((set, get) => ({
   errorMessage: null,
   isAuthenticated: false,
   lockoutState: null,
+  diaryDates: [],
+  notes: [],
+  defaultHomeTab: 'files',
+  diaryLined: true,
+  diaryPinMode: 'none',
+  diaryPinHash: null,
 
   checkExistingUsers: async () => {
     try {
@@ -148,7 +176,8 @@ export const useLockerStore = create<LockerState>((set, get) => ({
   },
 
   logout: () => {
-    set({ isAuthenticated: false, activeDocuments: [] });
+    // Decrypted diary and note content must not survive a lock
+    set({ isAuthenticated: false, activeDocuments: [], diaryDates: [], notes: [], diaryPinMode: 'none', diaryPinHash: null });
   },
 
   loadTabs: async () => {
@@ -289,6 +318,194 @@ export const useLockerStore = create<LockerState>((set, get) => ({
     } catch (error) {
       console.error('Error updating document', error);
     }
+  },
+
+  // --- DIARY ---
+  loadDiaryDates: async () => {
+    const { currentUser } = get();
+    if (!currentUser) return;
+    try {
+      set({ diaryDates: await DatabaseHelper.getDiaryDates(currentUser.uuid) });
+    } catch (error) {
+      set({ errorMessage: 'Could not load diary dates.' });
+    }
+  },
+
+  getDiaryEntry: async (entryDate: string) => {
+    const { currentUser } = get();
+    if (!currentUser) return '';
+    try {
+      const row = await DatabaseHelper.getDiaryEntry(currentUser.uuid, entryDate);
+      if (!row) return '';
+      return CryptoService.decryptText(row.encryptedContent, currentUser.pinHash);
+    } catch (error) {
+      return '';
+    }
+  },
+
+  saveDiaryEntry: async (entryDate: string, plainContent: string) => {
+    const { currentUser, diaryDates } = get();
+    if (!currentUser) return;
+    const now = new Date().toISOString();
+    try {
+      // An emptied page is removed rather than stored blank, so the day stops
+      // being marked as written in the navigator
+      if (!plainContent.trim()) {
+        await DatabaseHelper.deleteDiaryEntry(currentUser.uuid, entryDate);
+        set({ diaryDates: diaryDates.filter(d => d !== entryDate) });
+        return;
+      }
+      await DatabaseHelper.upsertDiaryEntry({
+        userId: currentUser.uuid,
+        entryDate,
+        encryptedContent: CryptoService.encryptText(plainContent, currentUser.pinHash),
+        createdAt: now,
+        updatedAt: now,
+      });
+      if (!diaryDates.includes(entryDate)) {
+        set({ diaryDates: [...diaryDates, entryDate].sort().reverse() });
+      }
+    } catch (error) {
+      set({ errorMessage: 'Could not save the diary page.' });
+    }
+  },
+
+  // --- NOTES ---
+  loadNotes: async () => {
+    const { currentUser } = get();
+    if (!currentUser) return;
+    try {
+      set({ notes: await DatabaseHelper.getNotes(currentUser.uuid) });
+    } catch (error) {
+      set({ errorMessage: 'Could not load notes.' });
+    }
+  },
+
+  addNote: async (title: string, plainContent: string, isSensitive: boolean, notePin?: string) => {
+    const { currentUser, loadNotes } = get();
+    if (!currentUser) return;
+    const now = new Date().toISOString();
+    await DatabaseHelper.createNote({
+      userId: currentUser.uuid,
+      title,
+      encryptedContent: CryptoService.encryptText(plainContent, currentUser.pinHash),
+      isSensitive: isSensitive ? 1 : 0,
+      // The PIN gates access; the content stays encrypted under the account key
+      notePinHash: isSensitive && notePin ? CryptoService.hashPin(notePin.trim()) : null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await loadNotes();
+  },
+
+  updateNote: async (id: number, title: string, plainContent: string, isSensitive: boolean, notePin?: string) => {
+    const { currentUser, loadNotes, notes } = get();
+    if (!currentUser) return;
+    const existing = notes.find(n => n.id === id);
+    // An unchanged PIN is left alone rather than cleared
+    const pinHash = !isSensitive
+      ? null
+      : notePin && notePin.trim()
+        ? CryptoService.hashPin(notePin.trim())
+        : existing?.notePinHash || null;
+
+    await DatabaseHelper.updateNote(
+      id,
+      title,
+      CryptoService.encryptText(plainContent, currentUser.pinHash),
+      isSensitive ? 1 : 0,
+      pinHash,
+      new Date().toISOString()
+    );
+    await loadNotes();
+  },
+
+  deleteNote: async (id: number) => {
+    const { loadNotes } = get();
+    await DatabaseHelper.deleteNote(id);
+    await loadNotes();
+  },
+
+  decryptNote: (note: Note) => {
+    const { currentUser } = get();
+    if (!currentUser) return '';
+    return CryptoService.decryptText(note.encryptedContent, currentUser.pinHash);
+  },
+
+  verifyNotePin: (note: Note, candidatePin: string) => {
+    if (!note.isSensitive || !note.notePinHash) return true;
+    return CryptoService.verifyPin(candidatePin.trim(), note.notePinHash);
+  },
+
+  // --- PREFERENCES ---
+  loadDefaultHomeTab: async () => {
+    const { currentUser } = get();
+    if (!currentUser) return;
+    try {
+      const stored = (await DatabaseHelper.getSetting(currentUser.uuid, 'default_home_tab')) as HomeTab | null;
+      if (stored === 'files' || stored === 'diary' || stored === 'notes') set({ defaultHomeTab: stored });
+    } catch (error) {
+      // A missing preference simply leaves the default alone
+    }
+  },
+
+  setDefaultHomeTab: async (tab: HomeTab) => {
+    const { currentUser } = get();
+    set({ defaultHomeTab: tab });
+    if (!currentUser) return;
+    await DatabaseHelper.setSetting(currentUser.uuid, 'default_home_tab', tab);
+  },
+
+  loadDiaryLined: async () => {
+    const { currentUser } = get();
+    if (!currentUser) return;
+    try {
+      const stored = await DatabaseHelper.getSetting(currentUser.uuid, 'diary_lined');
+      // Absent means never set, and lined paper is the default
+      if (stored !== null) set({ diaryLined: stored === '1' });
+    } catch (error) {
+      // Leave the default in place
+    }
+  },
+
+  setDiaryLined: async (lined: boolean) => {
+    const { currentUser } = get();
+    set({ diaryLined: lined });
+    if (!currentUser) return;
+    await DatabaseHelper.setSetting(currentUser.uuid, 'diary_lined', lined ? '1' : '0');
+  },
+
+  // --- DIARY PIN ---
+  loadDiaryPinMode: async () => {
+    const { currentUser } = get();
+    if (!currentUser) return;
+    try {
+      const mode = (await DatabaseHelper.getSetting(currentUser.uuid, 'diary_pin_mode')) as DiaryPinMode | null;
+      const hash = await DatabaseHelper.getSetting(currentUser.uuid, 'diary_pin_hash');
+      set({ diaryPinMode: mode || 'none', diaryPinHash: hash });
+    } catch (error) {
+      set({ diaryPinMode: 'none', diaryPinHash: null });
+    }
+  },
+
+  setDiaryPin: async (mode: DiaryPinMode, pin?: string) => {
+    const { currentUser } = get();
+    if (!currentUser) return;
+    // 'app' reuses the account's own unlock PIN, so no separate hash is stored
+    const hash = mode === 'custom' && pin ? CryptoService.hashPin(pin.trim()) : null;
+    await DatabaseHelper.setSetting(currentUser.uuid, 'diary_pin_mode', mode === 'none' ? null : mode);
+    await DatabaseHelper.setSetting(currentUser.uuid, 'diary_pin_hash', hash);
+    set({ diaryPinMode: mode, diaryPinHash: hash });
+  },
+
+  verifyDiaryPin: (candidatePin: string) => {
+    const { diaryPinMode, diaryPinHash, currentUser } = get();
+    if (diaryPinMode === 'none') return true;
+    const pin = candidatePin.trim();
+    if (diaryPinMode === 'app') {
+      return !!currentUser && CryptoService.verifyPin(pin, currentUser.pinHash);
+    }
+    return !!diaryPinHash && CryptoService.verifyPin(pin, diaryPinHash);
   },
 
   exportBackup: async (exportPin: string) => {

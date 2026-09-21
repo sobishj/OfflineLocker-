@@ -1,5 +1,5 @@
 import * as SQLite from 'expo-sqlite';
-import { User, Tab, Document } from '../models';
+import { User, Tab, Document, DiaryEntry, Note } from '../models';
 
 export class DatabaseHelper {
   private static db: SQLite.SQLiteDatabase | null = null;
@@ -39,7 +39,63 @@ export class DatabaseHelper {
         createdAt TEXT NOT NULL,
         FOREIGN KEY (tabId) REFERENCES tabs (uuid) ON DELETE CASCADE
       );
+
+      CREATE TABLE IF NOT EXISTS diary_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        userId TEXT NOT NULL,
+        entryDate TEXT NOT NULL,
+        encryptedContent TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+
+      -- One page per calendar day, so the date is what upserts key on
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_diary_user_date
+        ON diary_entries (userId, entryDate);
+
+      CREATE TABLE IF NOT EXISTS notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        userId TEXT NOT NULL,
+        title TEXT NOT NULL,
+        encryptedContent TEXT NOT NULL,
+        isSensitive INTEGER NOT NULL DEFAULT 0,
+        notePinHash TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+
+      -- Per-user key/value, currently only the diary's PIN settings
+      CREATE TABLE IF NOT EXISTS app_settings (
+        userId TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT,
+        PRIMARY KEY (userId, key)
+      );
     `);
+
+    await this.migrate(db);
+  }
+
+  /**
+   * Columns added after a table shipped. SQLite has no `ADD COLUMN IF NOT
+   * EXISTS`, so each one is checked against the table's actual columns first.
+   */
+  private static async migrate(db: SQLite.SQLiteDatabase) {
+    const additions: { table: string; column: string; definition: string }[] = [
+      { table: 'notes', column: 'isSensitive', definition: 'INTEGER NOT NULL DEFAULT 0' },
+      { table: 'notes', column: 'notePinHash', definition: 'TEXT' },
+    ];
+
+    for (const { table, column, definition } of additions) {
+      try {
+        const columns = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`);
+        if (!columns.some(c => c.name === column)) {
+          await db.execAsync(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+        }
+      } catch (e) {
+        // A missing table is created above, so there is nothing to migrate
+      }
+    }
   }
 
   // --- USER OPERATIONS ---
@@ -139,11 +195,109 @@ export class DatabaseHelper {
     return counts;
   }
 
+
+  // --- DIARY OPERATIONS ---
+  /** Writes the page for a day, replacing whatever was there before. */
+  static async upsertDiaryEntry(entry: DiaryEntry): Promise<void> {
+    const db = await this.getDatabase();
+    await db.runAsync(
+      `INSERT INTO diary_entries (userId, entryDate, encryptedContent, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(userId, entryDate)
+       DO UPDATE SET encryptedContent = excluded.encryptedContent, updatedAt = excluded.updatedAt`,
+      [entry.userId, entry.entryDate, entry.encryptedContent, entry.createdAt, entry.updatedAt]
+    );
+  }
+
+  static async getDiaryEntry(userId: string, entryDate: string): Promise<DiaryEntry | null> {
+    const db = await this.getDatabase();
+    const row = await db.getFirstAsync<DiaryEntry>(
+      'SELECT * FROM diary_entries WHERE userId = ? AND entryDate = ?',
+      [userId, entryDate]
+    );
+    return row || null;
+  }
+
+  /** Just the dates that have content, for marking days in the navigator. */
+  static async getDiaryDates(userId: string): Promise<string[]> {
+    const db = await this.getDatabase();
+    const rows = await db.getAllAsync<{ entryDate: string }>(
+      'SELECT entryDate FROM diary_entries WHERE userId = ? ORDER BY entryDate DESC',
+      [userId]
+    );
+    return rows.map(r => r.entryDate);
+  }
+
+  static async deleteDiaryEntry(userId: string, entryDate: string): Promise<void> {
+    const db = await this.getDatabase();
+    await db.runAsync('DELETE FROM diary_entries WHERE userId = ? AND entryDate = ?', [userId, entryDate]);
+  }
+
+  // --- NOTE OPERATIONS ---
+  static async createNote(note: Note): Promise<void> {
+    const db = await this.getDatabase();
+    await db.runAsync(
+      'INSERT INTO notes (userId, title, encryptedContent, isSensitive, notePinHash, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [note.userId, note.title, note.encryptedContent, note.isSensitive, note.notePinHash || null, note.createdAt, note.updatedAt]
+    );
+  }
+
+  static async getNotes(userId: string): Promise<Note[]> {
+    const db = await this.getDatabase();
+    return await db.getAllAsync<Note>('SELECT * FROM notes WHERE userId = ? ORDER BY updatedAt DESC', [userId]);
+  }
+
+  static async updateNote(
+    id: number,
+    title: string,
+    encryptedContent: string,
+    isSensitive: number,
+    notePinHash: string | null,
+    updatedAt: string
+  ): Promise<void> {
+    const db = await this.getDatabase();
+    await db.runAsync(
+      'UPDATE notes SET title = ?, encryptedContent = ?, isSensitive = ?, notePinHash = ?, updatedAt = ? WHERE id = ?',
+      [title, encryptedContent, isSensitive, notePinHash, updatedAt, id]
+    );
+  }
+
+  static async deleteNote(id: number): Promise<void> {
+    const db = await this.getDatabase();
+    await db.runAsync('DELETE FROM notes WHERE id = ?', [id]);
+  }
+
+  // --- SETTINGS OPERATIONS ---
+  static async getSetting(userId: string, key: string): Promise<string | null> {
+    const db = await this.getDatabase();
+    const row = await db.getFirstAsync<{ value: string }>(
+      'SELECT value FROM app_settings WHERE userId = ? AND key = ?',
+      [userId, key]
+    );
+    return row ? row.value : null;
+  }
+
+  static async setSetting(userId: string, key: string, value: string | null): Promise<void> {
+    const db = await this.getDatabase();
+    if (value === null) {
+      await db.runAsync('DELETE FROM app_settings WHERE userId = ? AND key = ?', [userId, key]);
+      return;
+    }
+    await db.runAsync(
+      `INSERT INTO app_settings (userId, key, value) VALUES (?, ?, ?)
+       ON CONFLICT(userId, key) DO UPDATE SET value = excluded.value`,
+      [userId, key, value]
+    );
+  }
+
   // --- SYSTEM OPERATIONS ---
   static async clearAllData(): Promise<void> {
     const db = await this.getDatabase();
     await db.execAsync(`
       DELETE FROM documents;
+      DELETE FROM diary_entries;
+      DELETE FROM notes;
+      DELETE FROM app_settings;
       DELETE FROM tabs;
       DELETE FROM users;
     `);
