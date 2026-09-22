@@ -5,8 +5,9 @@ import { useLockerStore } from './src/store/useLockerStore';
 import AuthScreen from './src/screens/AuthScreen';
 import DashboardScreen from './src/screens/DashboardScreen';
 import TabDetailScreen from './src/screens/TabDetailScreen';
-import { ActivityIndicator, View, StatusBar } from 'react-native';
+import { ActivityIndicator, View, StatusBar, AppState } from 'react-native';
 import { AppTheme } from './src/theme/AppTheme';
+import { isAutoLockSuppressed } from './src/services/AutoLockService';
 
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
@@ -17,6 +18,19 @@ export default function App() {
 
   useEffect(() => {
     checkExistingUsers();
+  }, []);
+
+  useEffect(() => {
+    // Switching away hands the screen to another app, so the vault closes
+    // behind us and the PIN is needed again. Reading the store at the moment
+    // of the event keeps this listener out of the render cycle.
+    const subscription = AppState.addEventListener('change', next => {
+      if (next !== 'background' && next !== 'inactive') return;
+      if (isAutoLockSuppressed()) return;
+      const state = useLockerStore.getState();
+      if (state.isAuthenticated) state.logout();
+    });
+    return () => subscription.remove();
   }, []);
 
   if (isLoading) {

@@ -14,6 +14,7 @@ import DraggableFAB from '../components/DraggableFAB';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StorageService } from '../utils/storage';
 import { CryptoService } from '../services/CryptoService';
+import { withoutAutoLock } from '../services/AutoLockService';
 
 type DashboardProps = {
   navigation: NativeStackNavigationProp<any>;
@@ -352,11 +353,11 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     if (isReadingFile || isImporting) return;
     setIsReadingFile(true);
     try {
-      const result = await DocumentPicker.getDocumentAsync({
+      const result = await withoutAutoLock(() => DocumentPicker.getDocumentAsync({
         type: '*/*',
         copyToCacheDirectory: true,
         multiple: false,
-      });
+      }));
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const asset = result.assets[0];

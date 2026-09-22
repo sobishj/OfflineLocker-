@@ -16,6 +16,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLockerStore } from '../store/useLockerStore';
 import { Note } from '../models';
 import { AppTheme } from '../theme/AppTheme';
+import DraggableFAB from './DraggableFAB';
 
 interface NotesViewProps {
   isMobile: boolean;
@@ -347,28 +348,14 @@ export default function NotesView({ isMobile }: NotesViewProps) {
     <View style={{ flex: 1 }}>
       {renderList()}
 
-      <TouchableOpacity
+      {/* Its own storage key, so moving it here does not move the one in Files */}
+      <DraggableFAB
         onPress={() => openDetails(null)}
-        style={{
-          position: 'absolute',
-          right: 18,
-          bottom: 18,
-          width: 52,
-          height: 52,
-          borderRadius: 26,
-          backgroundColor: AppTheme.colors.primary,
-          alignItems: 'center',
-          justifyContent: 'center',
-          elevation: 4,
-          shadowColor: '#000',
-          shadowOpacity: 0.2,
-          shadowRadius: 6,
-          shadowOffset: { width: 0, height: 3 },
-        }}
-        activeOpacity={0.85}
-      >
-        <Ionicons name="add" size={26} color="#ffffff" />
-      </TouchableOpacity>
+        storageKey="@offline_locker_fab_position_notes"
+        initialBottom={18}
+        initialRight={18}
+        title="New Note"
+      />
 
       {/* STEP 1 — name and protection */}
       <Modal visible={detailsVisible} transparent animationType="fade" onRequestClose={closeDetails}>

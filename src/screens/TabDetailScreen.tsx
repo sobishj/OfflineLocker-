@@ -22,6 +22,7 @@ import * as Clipboard from 'expo-clipboard';
 import { inflate as inflateStream } from 'pako';
 import { recognizeTextFromImage, extractDatesFromMrz } from '../services/OcrService';
 import PdfRasterizer from '../components/PdfRasterizer';
+import { withoutAutoLock } from '../services/AutoLockService';
 
 const MONTHS = 'jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec';
 const DATE_PATTERN = new RegExp(
@@ -52,6 +53,13 @@ const BIRTH_LABELS = [
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/**
+ * A label as it survives OCR. The space inside "valid thru" or "date of issue"
+ * is whatever gap the card's layout left there, which on a scan is just as
+ * often a line break as a space.
+ */
+const labelPattern = (label: string) => escapeRegExp(label).replace(/ /g, '\\s+');
+
 // Guards against binary noise (e.g. inside PDF bytes) matching the date shape
 const isPlausibleDate = (value: string): boolean => {
   const numeric = value.match(/^(\d{1,4})[\/\-.](\d{1,2})[\/\-.](\d{1,4})$/);
@@ -81,21 +89,22 @@ const isPlausibleDate = (value: string): boolean => {
  */
 const MONTH_YEAR = /^(0?[1-9]|1[0-2])\s*[\/\-]\s*(\d{2})(?!\d)/;
 
+/** A card is valid from the first of its stated month and until the last day of one. */
+const monthYearToDate = (month: number, twoDigitYear: number, asEnd: boolean): string => {
+  const year = 2000 + twoDigitYear;
+  const day = asEnd ? new Date(year, month, 0).getDate() : 1;
+  const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+  return `${pad(day)}/${pad(month)}/${year}`;
+};
+
 const findMonthYearAfterLabel = (text: string, labels: string[], asEnd: boolean): string => {
   for (const label of labels) {
-    const labelRegex = new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(label)}[.:\\s]*`, 'gi');
+    const labelRegex = new RegExp(`(?:^|[^a-z0-9])${labelPattern(label)}[.:\\s]*`, 'gi');
     let hit: RegExpExecArray | null;
     while ((hit = labelRegex.exec(text)) !== null) {
       const after = hit.index + hit[0].length;
       const match = text.slice(after, after + 12).match(MONTH_YEAR);
-      if (match) {
-        const month = Number(match[1]);
-        const year = 2000 + Number(match[2]);
-        // A card is good until the end of its stated month, and valid from the start of one
-        const day = asEnd ? new Date(year, month, 0).getDate() : 1;
-        const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
-        return `${pad(day)}/${pad(month)}/${year}`;
-      }
+      if (match) return monthYearToDate(Number(match[1]), Number(match[2]), asEnd);
       if (labelRegex.lastIndex <= hit.index) labelRegex.lastIndex = hit.index + 1;
     }
   }
@@ -107,7 +116,7 @@ const findDatesAfterLabels = (text: string, labels: string[]): string[] => {
   const found: string[] = [];
   for (const label of labels) {
     // Word boundaries stop "end" matching inside "extended", "to" inside "total", etc.
-    const labelRegex = new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(label)}(?![a-z0-9])`, 'gi');
+    const labelRegex = new RegExp(`(?:^|[^a-z0-9])${labelPattern(label)}(?![a-z0-9])`, 'gi');
     let hit: RegExpExecArray | null;
     while ((hit = labelRegex.exec(text)) !== null) {
       const after = hit.index + hit[0].length;
@@ -242,6 +251,13 @@ export const extractDatesFromText = (text: string): { startDate: string; endDate
   if (!startDate) startDate = findMonthYearAfterLabel(text, START_LABELS, false);
   if (!endDate) endDate = findMonthYearAfterLabel(text, END_LABELS, true);
 
+  // ...and print the label away from the date, which the pass above needs
+  if (!startDate || !endDate) {
+    const card = findCardValidity(text);
+    if (!startDate) startDate = card.startDate;
+    if (!endDate) endDate = card.endDate;
+  }
+
   if (!startDate || !endDate) {
     const all = text.match(new RegExp(DATE_PATTERN.source, 'gi')) || [];
     const unused = all
@@ -289,14 +305,92 @@ const isLuhnValid = (digits: string): boolean => {
   return sum % 10 === 0;
 };
 
-/** Finds a payment card number and returns it grouped in fours for readability. */
-const findCardNumber = (text: string): string => {
-  const runs = text.match(/\d[\d\s-]{11,22}\d/g) || [];
-  for (const run of runs) {
-    const digits = run.replace(/\D/g, '');
-    if (isLuhnValid(digits)) return digits.replace(/(.{4})/g, '$1 ').trim();
+const groupInFours = (digits: string) => digits.replace(/(.{4})/g, '$1 ').trim();
+
+/** The card number inside one run of digits, spaces and hyphens. */
+const panFromRun = (run: string): string => {
+  const groups = run.split(/[\s-]+/).filter(Boolean);
+  const all = groups.join('');
+  if (isLuhnValid(all)) return groupInFours(all);
+
+  // Only a run too long to be a card number has picked up a neighbour. A
+  // 16-digit run that merely fails the check is a misread, and carving a
+  // shorter "valid" number out of it would be inventing one.
+  if (all.length <= 19) return '';
+
+  for (let from = 0; from < groups.length; from++) {
+    for (let to = groups.length; to > from; to--) {
+      const digits = groups.slice(from, to).join('');
+      if (digits.length !== all.length && isLuhnValid(digits)) return groupInFours(digits);
+    }
   }
   return '';
+};
+
+/**
+ * Finds a payment card number and returns it grouped in fours for readability.
+ * Read a line at a time, because a card prints its number on one line and a
+ * run allowed to cross line breaks swallows whatever OCR put underneath it.
+ */
+const findCardNumber = (text: string): string => {
+  for (const line of text.split(/\r?\n/)) {
+    for (const run of line.match(/\d[\d -]{11,22}\d/g) || []) {
+      const found = panFromRun(run);
+      if (found) return found;
+    }
+  }
+  return '';
+};
+
+/**
+ * Card faces print "VALID THRU" above or beside the MM/YY rather than in front
+ * of it, and OCR returns the two in whatever order it read them. So once a
+ * document looks like a card, every MM/YY on it is collected and the pair is
+ * resolved by whatever cue is nearby, falling back on chronology.
+ */
+const MONTH_YEAR_SCAN = /(^|[^\d\/\-.])(0?[1-9]|1[0-2])\s*[\/\-]\s*(\d{2})(?![\d\/\-.])/g;
+
+const CARD_HINTS = /valid\s*(?:thru|through|from)|good\s*(?:thru|through)|member\s*since|month\s*\/\s*year|mm\s*\/\s*yy|visa|mastercard|master\s*card|maestro|rupay|amex|american\s*express|discover|credit\s*card|debit\s*card|cvv|cvc/i;
+
+/** Either a card's own wording or a Luhn-valid PAN is enough to treat it as one. */
+const looksLikeCard = (text: string): boolean => CARD_HINTS.test(text) || !!findCardNumber(text);
+
+// Checked against the text immediately preceding an MM/YY, end cues first so
+// that the "valid" in "valid from" cannot be read as "valid thru"
+const END_CUES = /(valid\s*thru|valid\s*through|valid\s*until|valid\s*till|good\s*thru|good\s*through|expires?|expiry|exp|thru|through|until|till|valid)[^a-z0-9]{0,8}$/i;
+const START_CUES = /(valid\s*from|member\s*since|since|from|issued|issue|w\.?e\.?f)[^a-z0-9]{0,8}$/i;
+
+type MonthYearHit = { month: number; year: number; cue: 'start' | 'end' | 'none' };
+
+const findCardValidity = (text: string): { startDate: string; endDate: string } => {
+  if (!looksLikeCard(text)) return { startDate: '', endDate: '' };
+
+  const hits: MonthYearHit[] = [];
+  const scan = new RegExp(MONTH_YEAR_SCAN.source, 'g');
+  let hit: RegExpExecArray | null;
+  while ((hit = scan.exec(text)) !== null) {
+    const at = hit.index + hit[1].length;
+    const before = text.slice(Math.max(0, at - 28), at);
+    const cue = END_CUES.test(before) ? 'end' : START_CUES.test(before) ? 'start' : 'none';
+    hits.push({ month: Number(hit[2]), year: Number(hit[3]), cue });
+  }
+  if (!hits.length) return { startDate: '', endDate: '' };
+
+  let start = hits.find(h => h.cue === 'start');
+  let end = hits.find(h => h.cue === 'end');
+
+  if (!start || !end) {
+    const spare = hits.filter(h => h !== start && h !== end);
+    spare.sort((a, b) => a.year - b.year || a.month - b.month);
+    // A card that states one date is stating when it runs out
+    if (!end) end = spare.pop();
+    if (!start) start = spare.shift();
+  }
+
+  return {
+    startDate: start ? monthYearToDate(start.month, start.year, false) : '',
+    endDate: end ? monthYearToDate(end.month, end.year, true) : '',
+  };
 };
 
 /** Rejects values that are really dates, or carry no digits at all. */
@@ -311,7 +405,7 @@ const isPlausibleNumber = (value: string): boolean => {
 
 const findNumberAfterLabel = (text: string, labels: string[]): string => {
   for (const label of labels) {
-    const labelRegex = new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(label)}[.:\\s#-]*`, 'gi');
+    const labelRegex = new RegExp(`(?:^|[^a-z0-9])${labelPattern(label)}[.:\\s#-]*`, 'gi');
     let hit: RegExpExecArray | null;
     while ((hit = labelRegex.exec(text)) !== null) {
       const after = hit.index + hit[0].length;
@@ -714,18 +808,18 @@ export default function TabDetailScreen({ route, navigation }: any) {
         return;
       }
 
-      const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
+      const permissionResult = await withoutAutoLock(() => ImagePicker.requestCameraPermissionsAsync());
       if (!permissionResult.granted) {
         Alert.alert('Permission required', 'Camera permission is required to take photos.');
         return;
       }
 
-      const result = await ImagePicker.launchCameraAsync({
+      const result = await withoutAutoLock(() => ImagePicker.launchCameraAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         quality: 0.5,
         base64: true,
         allowsEditing: false,
-      });
+      }));
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
         let newUri = `data:image/jpeg;base64,${result.assets[0].base64}`;
@@ -782,12 +876,12 @@ export default function TabDetailScreen({ route, navigation }: any) {
     if (isPickerBusyRef.current) return;
     isPickerBusyRef.current = true;
     try {
-      const result = await ImagePicker.launchImageLibraryAsync({
+      const result = await withoutAutoLock(() => ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         quality: 0.5,
         base64: true,
         allowsEditing: false,
-      });
+      }));
       if (!result.canceled && result.assets && result.assets.length > 0) {
         let newUri = `data:image/jpeg;base64,${result.assets[0].base64}`;
         newUri = await optimizeImageUri(newUri);
@@ -830,11 +924,11 @@ export default function TabDetailScreen({ route, navigation }: any) {
     if (isPickerBusyRef.current) return;
     isPickerBusyRef.current = true;
     try {
-      const result = await DocumentPicker.getDocumentAsync({
+      const result = await withoutAutoLock(() => DocumentPicker.getDocumentAsync({
         type: 'application/pdf',
         copyToCacheDirectory: true,
         multiple: false,
-      });
+      }));
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const newUris: string[] = [];
@@ -1332,7 +1426,7 @@ ${payload.notes}`);
           targetUri = `${FileSystem.cacheDirectory}${safeTitle}${index > 0 ? `_${index + 1}` : ''}.${ext}`;
           await FileSystem.writeAsStringAsync(targetUri, base64Data, { encoding: 'base64' });
         }
-        await Sharing.shareAsync(targetUri);
+        await withoutAutoLock(() => Sharing.shareAsync(targetUri));
       } catch (error) {
         console.warn('Share error:', error);
       } finally {
@@ -2164,7 +2258,10 @@ ${payload.notes}`);
                         }}>
                           <View style={{ flex: 1, marginRight: 8 }}>
                             <Text style={{ fontSize: 11, color: AppTheme.colors.primary, fontWeight: '600' }}>Number</Text>
-                            <Text style={{ fontSize: 13, fontWeight: '700', color: AppTheme.colors.text, marginTop: 2 }} numberOfLines={1}>
+                            {/* A card number is too long for this column on one line,
+                                and half a number is no use to anyone reading it, so it
+                                is left free to wrap rather than capped and clipped */}
+                            <Text style={{ fontSize: 13, fontWeight: '700', color: AppTheme.colors.text, marginTop: 2 }}>
                               {number || 'NA'}
                             </Text>
                           </View>

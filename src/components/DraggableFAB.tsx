@@ -11,10 +11,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { AppTheme } from '../theme/AppTheme';
 
-const FAB_SIZE = 60;
+const FAB_SIZE = 52;
 const DEFAULT_STORAGE_KEY = '@offline_locker_fab_position';
 
-let cachedFabPosition: { x: number; y: number } | null = null;
+// Keyed by storage key: each list keeps its own button where its owner left it,
+// and a shared cache would have handed one screen's position to another.
+const cachedFabPositions: Record<string, { x: number; y: number }> = {};
 
 const getItem = async (key: string): Promise<string | null> => {
   try {
@@ -55,7 +57,7 @@ export default function DraggableFAB({
   storageKey = DEFAULT_STORAGE_KEY,
 }: DraggableFABProps) {
   const pan = useRef(
-    new Animated.ValueXY(cachedFabPosition || { x: 0, y: 0 })
+    new Animated.ValueXY(cachedFabPositions[storageKey] || { x: 0, y: 0 })
   ).current;
 
   const clampPosition = (x: number, y: number) => {
@@ -71,7 +73,7 @@ export default function DraggableFAB({
   };
 
   const savePosition = (x: number, y: number) => {
-    cachedFabPosition = { x, y };
+    cachedFabPositions[storageKey] = { x, y };
     setItem(storageKey, JSON.stringify({ x, y }));
   };
 
@@ -84,7 +86,7 @@ export default function DraggableFAB({
           const parsed = JSON.parse(saved);
           if (typeof parsed.x === 'number' && typeof parsed.y === 'number') {
             const { x: clampedX, y: clampedY } = clampPosition(parsed.x, parsed.y);
-            cachedFabPosition = { x: clampedX, y: clampedY };
+            cachedFabPositions[storageKey] = { x: clampedX, y: clampedY };
             pan.setValue({ x: clampedX, y: clampedY });
           }
         }
@@ -157,7 +159,7 @@ export default function DraggableFAB({
         style={styles.fabButton}
         {...(Platform.OS === 'web' ? { title } : {})}
       >
-        <Ionicons name={iconName} size={32} color="#ffffff" />
+        <Ionicons name={iconName} size={26} color="#ffffff" />
       </TouchableOpacity>
     </Animated.View>
   );

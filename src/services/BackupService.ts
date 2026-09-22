@@ -3,6 +3,7 @@ import * as Sharing from 'expo-sharing';
 import { Platform } from 'react-native';
 import { DatabaseHelper } from './DatabaseHelper';
 import { CryptoService } from './CryptoService';
+import { withoutAutoLock } from './AutoLockService';
 import { User, Tab, Document } from '../models';
 
 export interface BackupData {
@@ -57,11 +58,11 @@ export class BackupService {
       } else {
         const fileUri = `${FileSystem.cacheDirectory}${fileName}`;
         await FileSystem.writeAsStringAsync(fileUri, encryptedData, { encoding: 'utf8' });
-        await Sharing.shareAsync(fileUri, {
+        await withoutAutoLock(() => Sharing.shareAsync(fileUri, {
           mimeType: 'application/octet-stream',
           dialogTitle: 'Save OfflineLocker Encrypted Backup',
           UTI: 'public.data',
-        });
+        }));
         return true;
       }
     } catch (error) {

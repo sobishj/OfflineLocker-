@@ -45,6 +45,10 @@ const addDays = (key: string, delta: number): string => {
 
 const daysInMonth = (year: number, monthIndex: number) => new Date(year, monthIndex + 1, 0).getDate();
 
+/** Ruled-line spacing, shared by the written text and the lines behind it. */
+const PAGE_LINE_HEIGHT = 24;
+const PAGE_PADDING = 16;
+
 /** Rings in the spiral binding down the left edge. */
 const SPIRAL_COUNT = 16;
 
@@ -59,6 +63,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
   const {
     diaryDates, loadDiaryDates, getDiaryEntry, saveDiaryEntry,
     diaryPinMode, loadDiaryPinMode, setDiaryPin, verifyDiaryPin,
+    diaryLined, loadDiaryLined, setDiaryLined,
   } = useLockerStore();
   const { width: screenWidth } = useWindowDimensions();
 
@@ -99,6 +104,9 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
   const [isFlipping, setIsFlipping] = useState(false);
   // The page underneath, revealed as the top sheet swings across
   const [underText, setUnderText] = useState<string | null>(null);
+  // Measured so exactly the right number of rules is drawn, which avoids
+  // needing overflow clipping on a sheet that is being rotated in 3D
+  const [pageHeight, setPageHeight] = useState(0);
 
   // Kept in refs so the PanResponder, created once, always sees current values
   const pageTextRef = useRef(pageText);
@@ -109,6 +117,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
   useEffect(() => {
     loadDiaryDates();
     loadDiaryPinMode();
+    loadDiaryLined();
   }, []);
 
   useEffect(() => {
@@ -254,6 +263,17 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
       outputRange: [0.06, 0.28, 0.06],
     }),
   };
+
+  const ruleCount = Math.max(0, Math.floor((pageHeight - PAGE_PADDING * 2) / PAGE_LINE_HEIGHT));
+
+  const renderRules = () =>
+    diaryLined && ruleCount > 0 ? (
+      <View style={styles.ruleLayer} pointerEvents="none">
+        {Array.from({ length: ruleCount }, (_, i) => (
+          <View key={i} style={styles.rule} />
+        ))}
+      </View>
+    ) : null;
 
   const dateObj = fromDateKey(currentDate);
   const headingDay = `${WEEKDAY_NAMES[dateObj.getDay()]}`;
@@ -618,6 +638,18 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
           />
         </TouchableOpacity>
 
+        <TouchableOpacity
+          onPress={() => setDiaryLined(!diaryLined)}
+          style={[styles.headerBtn, diaryLined && styles.headerBtnActive]}
+          accessibilityLabel={diaryLined ? 'Switch to plain pages' : 'Switch to lined pages'}
+        >
+          <Ionicons
+            name="reorder-four-outline"
+            size={18}
+            color={diaryLined ? '#ffffff' : AppTheme.colors.primary}
+          />
+        </TouchableOpacity>
+
         <TouchableOpacity onPress={openManage} style={{ padding: 6 }} accessibilityLabel="Diary PIN settings">
           <Ionicons
             name={diaryPinMode === 'none' ? 'lock-open-outline' : 'lock-closed'}
@@ -641,11 +673,16 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
           {/* The sheet being uncovered, lying flat under the one that moves */}
           {underText !== null && (
             <View style={[styles.page, styles.pageFill]} pointerEvents="none">
+              {renderRules()}
               <Text style={styles.pageInput}>{underText}</Text>
             </View>
           )}
 
-          <Animated.View style={[styles.page, styles.pageFill, pageStyle]}>
+          <Animated.View
+            style={[styles.page, styles.pageFill, pageStyle]}
+            onLayout={e => setPageHeight(e.nativeEvent.layout.height)}
+          >
+            {renderRules()}
             <TextInput
               style={[styles.pageInput, Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : null]}
               placeholder={isLoadingPage ? '' : 'Write about your day\u2026'}
@@ -956,9 +993,9 @@ const styles = StyleSheet.create({
   dateGroup: {
     position: 'absolute',
     left: 0,
-    // Stop short of the calendar and lock buttons so the TODAY badge is not
-    // drawn underneath them; the date then centres in the space that is left
-    right: 84,
+    // Stop short of the buttons on the right so the TODAY badge is not drawn
+    // underneath them; the date then centres in the space that is left
+    right: 126,
     top: 0,
     bottom: 0,
     flexDirection: 'row',
@@ -1190,14 +1227,22 @@ const styles = StyleSheet.create({
     borderColor: '#e7e2d4',
     borderLeftWidth: 1,
     borderLeftColor: '#e7e2d4',
-    padding: 16,
+    padding: PAGE_PADDING,
     // Room down the left for the spiral binding
     paddingLeft: 40,
   },
+  ruleLayer: {
+    position: 'absolute',
+    left: 40,
+    right: PAGE_PADDING,
+    top: PAGE_PADDING,
+    bottom: PAGE_PADDING,
+  },
+  rule: { height: PAGE_LINE_HEIGHT, borderBottomWidth: 1, borderBottomColor: '#e6e0d0' },
   pageInput: {
     flex: 1,
     fontSize: 14.5,
-    lineHeight: 24,
+    lineHeight: PAGE_LINE_HEIGHT,
     color: AppTheme.colors.text,
     textAlignVertical: 'top',
     padding: 0,
