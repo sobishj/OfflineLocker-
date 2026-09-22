@@ -18,6 +18,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useLockerStore } from '../store/useLockerStore';
 import { AppTheme, getPageColor, PAGE_COLORS, CUSTOM_KEY, DEFAULT_PAGE_COLOR_KEY } from '../theme/AppTheme';
+import { useTextHistory } from '../hooks/useTextHistory';
 import ColorPickerModal from './ColorPickerModal';
 import { DiaryPinMode } from '../models';
 
@@ -78,7 +79,25 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
    * Below this the date and four buttons cannot share a line: the date was
    * being squeezed down to one letter per row. They go on two lines instead.
    */
-  const isTightHeader = viewportWidth < 380;
+  // Undo and redo brought the header up to five controls, which no longer
+  // leave a phone-width row enough space for the date to keep its year. Past
+  // this point the header splits in two: the date gets the first row to
+  // itself, the controls line up under it on the right.
+  const isTightHeader = viewportWidth < 480;
+  // Wider still, the mirror goes back in so the date sits dead centre
+  const showDateMirror = viewportWidth >= 560;
+
+  /** The date is the control: tapping it opens the month panel, and again closes it. */
+  const toggleCalendarPanel = () => {
+    if (!panelOpen) {
+      // Open on the month being read, not wherever it was left last time
+      const d = fromDateKey(currentDate);
+      setCalendarMonth(d.getMonth());
+      setCalendarYear(d.getFullYear());
+      setPanelMode('days');
+    }
+    setPanelOpen(!panelOpen);
+  };
   const paper = getPageColor(diaryPageColor, customDiaryPageColor);
   const { width: screenWidth } = useWindowDimensions();
 
@@ -90,7 +109,6 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
   // The month navigator slides down from the top. Pinning keeps it there;
   // unpinned it collapses again so the page gets the whole tab.
   const [panelOpen, setPanelOpen] = useState(false);
-  const [panelPinned, setPanelPinned] = useState(false);
   const panelAnim = useRef(new Animated.Value(0)).current;
   // Tapping the month or the year in the popup header swaps which list is shown
   const [panelMode, setPanelMode] = useState<'days' | 'months' | 'years'>('days');
@@ -124,6 +142,11 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
   // Measured so exactly the right number of rules is drawn, which avoids
   // needing overflow clipping on a sheet that is being rotated in 3D
   const [pageHeight, setPageHeight] = useState(0);
+
+  // The page writes itself to disk a moment after each keystroke, so a
+  // deletion cannot be walked away from. This is what stands in for the Save
+  // button the diary deliberately does not have.
+  const history = useTextHistory(setPageText);
 
   // Kept in refs so the PanResponder, created once, always sees current values
   const pageTextRef = useRef(pageText);
@@ -166,6 +189,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
     try {
       const text = await getDiaryEntry(dateKey);
       setPageText(text);
+      history.reset(text);
       setCurrentDate(dateKey);
     } finally {
       setIsLoadingPage(false);
@@ -209,6 +233,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
         useNativeDriver: true,
       }).start(() => {
         setPageText(targetText);
+        history.reset(targetText);
         setCurrentDate(target);
         setUnderText(null);
         turn.setValue(0);
@@ -217,6 +242,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
     } else {
       setUnderText(pageTextRef.current);
       setPageText(targetText);
+      history.reset(targetText);
       setCurrentDate(target);
       turn.setValue(1);
       Animated.timing(turn, {
@@ -356,7 +382,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
   /** Jumps to a day and closes whichever picker was used to get there. */
   const pickDate = async (dateKey: string) => {
     setPanelMode('days');
-    collapsePanelIfUnpinned();
+    collapsePanel();
     if (dateKey === currentDate) return;
     await persistCurrent();
     openDate(dateKey);
@@ -381,10 +407,8 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
     }).start();
   }, [panelOpen, panelAnim]);
 
-  /** Closing only happens when the panel is not pinned. */
-  const collapsePanelIfUnpinned = () => {
-    if (!panelPinned) setPanelOpen(false);
-  };
+  /** Picking a date closes the panel behind it. */
+  const collapsePanel = () => setPanelOpen(false);
 
   // Open the year list near the year being viewed rather than at its start
   useEffect(() => {
@@ -454,11 +478,6 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
             );
           })}
         </View>
-
-        <View style={styles.legendRow}>
-          <View style={[styles.legendDot, { backgroundColor: AppTheme.colors.primaryLight, borderColor: AppTheme.colors.primaryBorder }]} />
-          <Text style={styles.legendText}>Has an entry</Text>
-        </View>
       </>
     );
   };
@@ -520,7 +539,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
   const renderSlidePanel = () => (
     <Animated.View
       style={{
-        height: panelAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 412] }),
+        height: panelAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 356] }),
         opacity: panelAnim,
         overflow: 'hidden',
       }}
@@ -562,15 +581,12 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
           <View style={{ flex: 1 }} />
 
           <TouchableOpacity
-            onPress={() => setPanelPinned(!panelPinned)}
-            style={[styles.pinBtn, panelPinned && styles.pinBtnActive]}
-            accessibilityLabel={panelPinned ? 'Unpin panel' : 'Pin panel open'}
+            onPress={() => pickDate(today)}
+            style={styles.todayBtn}
+            activeOpacity={0.7}
+            accessibilityLabel="Go to today"
           >
-            <Ionicons
-              name={panelPinned ? 'pin' : 'pin-outline'}
-              size={15}
-              color={panelPinned ? '#ffffff' : AppTheme.colors.primary}
-            />
+            <Text style={styles.todayBtnText}>Today</Text>
           </TouchableOpacity>
         </View>
 
@@ -596,14 +612,6 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
           {panelMode === 'years' && renderYearList()}
         </View>
 
-        <View style={styles.panelFooter}>
-          <Text style={styles.panelCount}>
-            {diaryDates.length} {diaryDates.length === 1 ? 'page written' : 'pages written'}
-          </Text>
-          <TouchableOpacity onPress={() => pickDate(today)} style={styles.todayBtn} activeOpacity={0.7}>
-            <Text style={styles.todayBtnText}>Today</Text>
-          </TouchableOpacity>
-        </View>
       </View>
     </Animated.View>
   );
@@ -616,17 +624,24 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
             date shortens rather than being drawn underneath them */}
         <View style={[styles.dateGroup, isTightHeader && styles.dateGroupStacked]} pointerEvents="box-none">
           {/* Mirrors the badge slot on the right so the date stays dead centre
-              whether or not the badge is showing */}
-          <View style={styles.todaySlot} />
+              whether or not the badge is showing. On a narrow screen that
+              mirror is space the date needs, so it goes and the row runs
+              from the left instead. */}
+          {showDateMirror && <View style={styles.todaySlot} />}
 
           <TouchableOpacity onPress={() => turnPage(-1)} style={styles.arrowBtn} accessibilityLabel="Previous day">
             <Ionicons name="chevron-back" size={20} color={AppTheme.colors.primary} />
           </TouchableOpacity>
 
-          <View style={styles.dateBlock}>
+          <TouchableOpacity
+            onPress={toggleCalendarPanel}
+            style={styles.dateBlock}
+            activeOpacity={0.6}
+            accessibilityLabel={panelOpen ? 'Hide the calendar' : 'Pick a date'}
+          >
             <Text style={styles.headerWeekday}>{headingDay}</Text>
             <Text style={styles.headerDate} numberOfLines={1}>{headingDate}</Text>
-          </View>
+          </TouchableOpacity>
 
           <TouchableOpacity onPress={() => turnPage(1)} style={styles.arrowBtn} accessibilityLabel="Next day">
             <Ionicons name="chevron-forward" size={20} color={AppTheme.colors.primary} />
@@ -643,24 +658,21 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
 
         <View style={[styles.headerControls, isTightHeader && styles.headerControlsStacked]}>
         <TouchableOpacity
-          onPress={() => {
-            if (!panelOpen) {
-              // Open on the month being read, not wherever it was left last time
-              const d = fromDateKey(currentDate);
-              setCalendarMonth(d.getMonth());
-              setCalendarYear(d.getFullYear());
-              setPanelMode('days');
-            }
-            setPanelOpen(!panelOpen);
-          }}
-          style={[styles.headerBtn, panelOpen && styles.headerBtnActive]}
-          accessibilityLabel={panelOpen ? 'Hide month panel' : 'Show month panel'}
+          onPress={history.undo}
+          disabled={!history.canUndo}
+          style={[styles.headerBtn, { opacity: history.canUndo ? 1 : 0.3 }]}
+          accessibilityLabel="Undo the last change"
         >
-          <Ionicons
-            name={panelOpen ? 'calendar' : 'calendar-outline'}
-            size={18}
-            color={panelOpen ? '#ffffff' : AppTheme.colors.primary}
-          />
+          <Ionicons name="arrow-undo-outline" size={17} color={AppTheme.colors.primary} />
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={history.redo}
+          disabled={!history.canRedo}
+          style={[styles.headerBtn, { opacity: history.canRedo ? 1 : 0.3 }]}
+          accessibilityLabel="Redo the change that was undone"
+        >
+          <Ionicons name="arrow-redo-outline" size={17} color={AppTheme.colors.primary} />
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -722,7 +734,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
               placeholder={isLoadingPage ? '' : 'Write about your day\u2026'}
               placeholderTextColor="#b6b0a0"
               value={pageText}
-              onChangeText={setPageText}
+              onChangeText={text => { history.record(text); setPageText(text); }}
               onBlur={persistCurrent}
               multiline
               editable={!isFlipping}
@@ -1111,8 +1123,10 @@ const createStyles = () => StyleSheet.create({
   headerStacked: { flexDirection: 'column', alignItems: 'stretch', paddingTop: 10, paddingBottom: 8 },
   headerControls: { flexDirection: 'row', alignItems: 'center' },
   headerControlsStacked: { justifyContent: 'flex-end', marginTop: 8 },
-  // In a column the date must not stretch to fill the height
-  dateGroupStacked: { flex: 0 },
+  // In a column the date must not stretch to fill the height. Written out
+  // rather than `flex: 0`, which resolves to a zero basis here and left the
+  // weekday drawn above the top of its own row.
+  dateGroupStacked: { flexGrow: 0, flexShrink: 0, flexBasis: 'auto', justifyContent: 'flex-start' },
   dateGroup: {
     // A flex child rather than an absolute box with room reserved for the
     // buttons: with four of them beside it, a fixed reservation was either too
@@ -1169,15 +1183,6 @@ const createStyles = () => StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 6,
   },
-  panelCount: { flex: 1, fontSize: 10.5, color: AppTheme.colors.textSecondary },
-  panelFooter: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderTopWidth: 1,
-    borderTopColor: '#e2e8f0',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
   todayBtn: {
     paddingHorizontal: 16,
     paddingVertical: 7,
@@ -1199,17 +1204,6 @@ const createStyles = () => StyleSheet.create({
     color: AppTheme.colors.textSecondary,
     marginHorizontal: 6,
   },
-  pinBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: AppTheme.colors.primaryBorder,
-    backgroundColor: AppTheme.colors.primaryLight,
-  },
-  pinBtnActive: { backgroundColor: AppTheme.colors.primary, borderColor: AppTheme.colors.primary },
 
   calendarOverlay: {
     flex: 1,
@@ -1284,16 +1278,6 @@ const createStyles = () => StyleSheet.create({
   dayText: { fontSize: 12.5, fontWeight: '600', color: AppTheme.colors.text },
   dayTextWritten: { fontWeight: '800', color: AppTheme.colors.primary },
   dayTextSelected: { color: '#ffffff', fontWeight: '800' },
-
-  legendRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingBottom: 10,
-    paddingTop: 2,
-  },
-  legendDot: { width: 11, height: 11, borderRadius: 3, borderWidth: 1, marginRight: 6 },
-  legendText: { fontSize: 10.5, color: AppTheme.colors.textSecondary },
 
   monthCell: { width: '25%', padding: 4 },
   monthInner: {

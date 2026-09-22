@@ -18,6 +18,12 @@ import { Note } from '../models';
 import { AppTheme, getPageColor, PAGE_COLORS, CUSTOM_KEY, DEFAULT_PAGE_COLOR_KEY } from '../theme/AppTheme';
 import ColorPickerModal from './ColorPickerModal';
 import DraggableFAB from './DraggableFAB';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
+import { withoutAutoLock } from '../services/AutoLockService';
+import { ensureDecryptedCacheDir } from '../services/FileCacheService';
+import { buildTextPdf } from '../services/PdfBuilder';
+import { useTextHistory } from '../hooks/useTextHistory';
 
 interface NotesViewProps {
   isMobile: boolean;
@@ -49,11 +55,15 @@ export default function NotesView({ isMobile }: NotesViewProps) {
   // Step 2 — writing the note itself
   const [paperVisible, setPaperVisible] = useState(false);
   const [paperPickerVisible, setPaperPickerVisible] = useState(false);
+  const [shareChoiceVisible, setShareChoiceVisible] = useState(false);
   const [writerNote, setWriterNote] = useState<Note | null>(null);
   const [writerBody, setWriterBody] = useState('');
   // Read by the close handler, which must not depend on a stale render
   const writerBodyRef = useRef(writerBody);
   useEffect(() => { writerBodyRef.current = writerBody; }, [writerBody]);
+  // A note saves itself, so a deletion is on disk almost at once. This is what
+  // stands in for the Save button the writer deliberately does not have.
+  const history = useTextHistory(setWriterBody);
 
   const [isSaving, setIsSaving] = useState(false);
 
@@ -99,11 +109,57 @@ export default function NotesView({ isMobile }: NotesViewProps) {
    * Leaving a note saves it and re-locks it. There is no Save button; the
    * diary writes the same way, so the two behave alike.
    */
+  /**
+   * Sends the open note out as a PDF or as a plain text file. What is on screen
+   * is written to disk first: the note saves on blur, and sharing does not blur.
+   */
+  const shareWriterNote = async (asPdf: boolean) => {
+    const note = writerNote;
+    if (!note) return;
+    const title = note.title || 'Note';
+    const body = writerBodyRef.current || '';
+    await persistWriter();
+
+    const safeTitle = title.replace(/[^a-z0-9]/gi, '_') || 'note';
+    try {
+      if (Platform.OS === 'web') {
+        const blob = asPdf
+          ? new Blob([Uint8Array.from(atob(buildTextPdf(title, body)), c => c.charCodeAt(0))], { type: 'application/pdf' })
+          : new Blob([`${title}\n\n${body}`], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${safeTitle}.${asPdf ? 'pdf' : 'txt'}`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        return;
+      }
+
+      const target = `${await ensureDecryptedCacheDir()}${safeTitle}.${asPdf ? 'pdf' : 'txt'}`;
+      if (asPdf) {
+        await FileSystem.writeAsStringAsync(target, buildTextPdf(title, body), { encoding: 'base64' });
+      } else {
+        await FileSystem.writeAsStringAsync(target, `${title}\n\n${body}`, { encoding: 'utf8' });
+      }
+      await withoutAutoLock(() => Sharing.shareAsync(target, {
+        mimeType: asPdf ? 'application/pdf' : 'text/plain',
+        dialogTitle: title,
+        UTI: asPdf ? 'com.adobe.pdf' : 'public.plain-text',
+      }));
+    } catch (error) {
+      console.warn('Share note failed:', error);
+      Alert.alert('Could not share', 'The note could not be prepared for sharing.');
+    }
+  };
+
   const closeWriter = async () => {
     const note = writerNote;
     const body = writerBodyRef.current;
     setWriterNote(null);
     setWriterBody('');
+    history.reset('');
     setUnlockedId(null);
     if (note?.id) {
       await updateNote(note.id, note.title, body, note.isSensitive === 1, undefined);
@@ -124,8 +180,10 @@ export default function NotesView({ isMobile }: NotesViewProps) {
   };
 
   const openWriter = (note: Note) => {
+    const body = decryptNote(note);
     setWriterNote(note);
-    setWriterBody(decryptNote(note));
+    setWriterBody(body);
+    history.reset(body);
   };
 
   /** Runs `action` straight away for an open note, or asks for the PIN first. */
@@ -559,6 +617,29 @@ export default function NotesView({ isMobile }: NotesViewProps) {
             >
               {writerNote?.title}
             </Text>
+            <TouchableOpacity
+              onPress={history.undo}
+              disabled={!history.canUndo}
+              style={{ padding: 6, opacity: history.canUndo ? 1 : 0.3 }}
+              accessibilityLabel="Undo the last change"
+            >
+              <Ionicons name="arrow-undo-outline" size={20} color={AppTheme.colors.primary} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={history.redo}
+              disabled={!history.canRedo}
+              style={{ padding: 6, opacity: history.canRedo ? 1 : 0.3 }}
+              accessibilityLabel="Redo the change that was undone"
+            >
+              <Ionicons name="arrow-redo-outline" size={20} color={AppTheme.colors.primary} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setShareChoiceVisible(true)}
+              style={{ padding: 6 }}
+              accessibilityLabel="Share this note"
+            >
+              <Ionicons name="share-social-outline" size={20} color={AppTheme.colors.primary} />
+            </TouchableOpacity>
           </View>
 
           <TextInput
@@ -577,11 +658,89 @@ export default function NotesView({ isMobile }: NotesViewProps) {
             placeholder="Write your note…"
             placeholderTextColor="#94a3b8"
             value={writerBody}
-            onChangeText={setWriterBody}
+            onChangeText={text => { history.record(text); setWriterBody(text); }}
             onBlur={persistWriter}
             multiline
             autoFocus
           />
+        </View>
+      </Modal>
+
+      {/* HOW TO SHARE THE OPEN NOTE */}
+      <Modal
+        visible={shareChoiceVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShareChoiceVisible(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'center', padding: 18 }}>
+          <View style={{ backgroundColor: '#ffffff', borderRadius: 18, padding: 18, maxHeight: '90%', maxWidth: 520, width: '100%', alignSelf: 'center' }}>
+            <ScrollView contentContainerStyle={{ paddingBottom: 2 }} showsVerticalScrollIndicator={false}>
+            <Text style={{ fontSize: 17, fontWeight: '800', color: AppTheme.colors.text, marginBottom: 4 }} numberOfLines={2}>
+              Share note
+            </Text>
+            <Text style={{ fontSize: 12, color: AppTheme.colors.textSecondary, marginBottom: 14 }} numberOfLines={2}>
+              {writerNote?.title}
+            </Text>
+
+            {[
+              {
+                key: 'pdf',
+                icon: 'document-text-outline' as const,
+                title: 'As a PDF',
+                subtitle: 'Reads the same anywhere',
+                asPdf: true,
+              },
+              {
+                key: 'text',
+                icon: 'text-outline' as const,
+                title: 'As plain text',
+                subtitle: 'A .txt file anything can open',
+                asPdf: false,
+              },
+            ].map(option => (
+              <TouchableOpacity
+                key={option.key}
+                onPress={() => { setShareChoiceVisible(false); shareWriterNote(option.asPdf); }}
+                activeOpacity={0.7}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  padding: 13,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: '#e2e8f0',
+                  backgroundColor: '#f8fafc',
+                  marginBottom: 10,
+                }}
+              >
+                <View style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 17,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: AppTheme.colors.primaryLight,
+                  marginRight: 11,
+                }}>
+                  <Ionicons name={option.icon} size={18} color={AppTheme.colors.primary} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 14, fontWeight: '700', color: AppTheme.colors.text }}>{option.title}</Text>
+                  <Text style={{ fontSize: 11.5, color: AppTheme.colors.textSecondary, marginTop: 2 }}>{option.subtitle}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={AppTheme.colors.textMuted} />
+              </TouchableOpacity>
+            ))}
+
+            <TouchableOpacity
+              onPress={() => setShareChoiceVisible(false)}
+              style={{ paddingVertical: 12, alignItems: 'center' }}
+            >
+              <Text style={{ color: AppTheme.colors.primary, fontWeight: '700', fontSize: 13 }}>Cancel</Text>
+            </TouchableOpacity>
+            </ScrollView>
+          </View>
         </View>
       </Modal>
 

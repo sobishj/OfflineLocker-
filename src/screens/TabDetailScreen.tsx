@@ -24,6 +24,7 @@ import { recognizeTextFromImage, extractDatesFromMrz } from '../services/OcrServ
 import PdfRasterizer from '../components/PdfRasterizer';
 import { withoutAutoLock } from '../services/AutoLockService';
 import { ensureDecryptedCacheDir } from '../services/FileCacheService';
+import { buildImagePdf, PdfImage } from '../services/PdfBuilder';
 
 const MONTHS = 'jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec';
 const DATE_PATTERN = new RegExp(
@@ -635,6 +636,9 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
   // Delete confirmation
   const [deleteConfirmDoc, setDeleteConfirmDoc] = useState<any>(null);
+  // A picture can go out as itself or gathered into a PDF, so it asks
+  const [shareChoice, setShareChoice] = useState<{ doc: any; files: string[] } | null>(null);
+  const [isBuildingPdf, setIsBuildingPdf] = useState(false);
 
   // In-memory cache for decrypted document content to prevent duplicate decryptions
   const decryptionCacheRef = useRef<Map<string | number, { plainText: string; array: string[] }>>(new Map());
@@ -1650,6 +1654,75 @@ export default function TabDetailScreen({ route, navigation }: any) {
     }
   };
 
+  /**
+   * Pictures get a choice: the files as they are, or one PDF holding them.
+   * Anything else has only one sensible form, so it goes straight out.
+   */
+  const handleShareItem = async (item: any) => {
+    if (!item) return;
+    try {
+      const payload = parseDecryptedPayload(await loadPlainText(item));
+      const files = payload.files || [];
+      const isPictures = files.length > 0
+        && (item.type === 'image' || files.every(f => f.startsWith('data:image')));
+      if (isPictures) {
+        setShareChoice({ doc: item, files });
+        return;
+      }
+    } catch (e) {
+      // Fall through and share it the ordinary way
+    }
+    handleDownloadItem(item);
+  };
+
+  /** Re-encodes each picture to JPEG, which is the form a PDF can hold directly. */
+  const shareImagesAsPdf = async (doc: any, files: string[]) => {
+    setIsBuildingPdf(true);
+    try {
+      const images: PdfImage[] = [];
+      for (const uri of files) {
+        const shot = await ImageManipulator.manipulateAsync(uri, [], {
+          format: ImageManipulator.SaveFormat.JPEG,
+          base64: true,
+        });
+        if (shot.base64) images.push({ base64: shot.base64, width: shot.width, height: shot.height });
+      }
+      const pdf = buildImagePdf(images);
+      if (!pdf) {
+        Alert.alert('Could not build the PDF', 'The pictures could not be read.');
+        return;
+      }
+      const safeTitle = (doc?.title || 'document').replace(/[^a-z0-9]/gi, '_');
+
+      if (Platform.OS === 'web') {
+        // The browser has no share sheet to hand this to, so it downloads
+        const bytes = Uint8Array.from(atob(pdf), c => c.charCodeAt(0));
+        const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${safeTitle}.pdf`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        return;
+      }
+
+      const target = `${await ensureDecryptedCacheDir()}${safeTitle}.pdf`;
+      await FileSystem.writeAsStringAsync(target, pdf, { encoding: 'base64' });
+      await withoutAutoLock(() => Sharing.shareAsync(target, {
+        mimeType: 'application/pdf',
+        dialogTitle: doc?.title || 'Share as PDF',
+        UTI: 'com.adobe.pdf',
+      }));
+    } catch (error) {
+      console.warn('Share as PDF failed:', error);
+      Alert.alert('Could not share', 'The PDF could not be created.');
+    } finally {
+      setIsBuildingPdf(false);
+    }
+  };
+
   const handleDownloadItem = async (item: any) => {
     if (!item) return;
     const plainText = await loadPlainText(item);
@@ -2137,7 +2210,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                   {[
                     { key: 'open', icon: 'eye-outline' as const, label: 'Open', onPress: () => handleViewDoc(previewDoc), danger: false },
                     // Sharing is what this actually does on the device, so it says so
-                    { key: 'share', icon: 'share-social-outline' as const, label: 'Share', onPress: () => handleDownloadItem(previewDoc), danger: false },
+                    { key: 'share', icon: 'share-social-outline' as const, label: 'Share', onPress: () => handleShareItem(previewDoc), danger: false },
                     { key: 'edit', icon: 'create-outline' as const, label: 'Edit', onPress: () => handleOpenEditDoc(previewDoc), danger: false },
                     { key: 'delete', icon: 'trash-outline' as const, label: 'Delete', onPress: () => handleDeleteClick(previewDoc), danger: true },
                   ].map(action => (
@@ -2585,6 +2658,103 @@ ${payload.notes}`);
 
         </View>
       </View>
+
+      {/* HOW TO SHARE A PICTURE */}
+      <Modal
+        visible={!!shareChoice}
+        transparent
+        animationType="fade"
+        onRequestClose={() => !isBuildingPdf && setShareChoice(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <ScrollView contentContainerStyle={{ paddingBottom: 2 }} showsVerticalScrollIndicator={false}>
+            <Text style={styles.modalTitle} numberOfLines={2}>Share {shareChoice?.doc?.title || 'document'}</Text>
+            <Text style={{ fontSize: 12.5, color: AppTheme.colors.textSecondary, marginTop: 4, marginBottom: 16 }}>
+              {shareChoice && shareChoice.files.length > 1
+                ? `${shareChoice.files.length} pictures. A PDF sends them as one file.`
+                : 'Send the picture as it is, or wrapped in a PDF.'}
+            </Text>
+
+            {[
+              {
+                key: 'image',
+                icon: 'image-outline' as const,
+                title: shareChoice && shareChoice.files.length > 1 ? 'The pictures' : 'The picture',
+                subtitle: 'Shared exactly as stored',
+                onPress: () => {
+                  const doc = shareChoice?.doc;
+                  setShareChoice(null);
+                  if (doc) handleDownloadItem(doc);
+                },
+              },
+              {
+                key: 'pdf',
+                icon: 'document-text-outline' as const,
+                title: 'A PDF',
+                subtitle: 'One page per picture',
+                onPress: () => {
+                  const current = shareChoice;
+                  setShareChoice(null);
+                  if (current) shareImagesAsPdf(current.doc, current.files);
+                },
+              },
+            ].map(option => (
+              <TouchableOpacity
+                key={option.key}
+                onPress={option.onPress}
+                disabled={isBuildingPdf}
+                activeOpacity={0.7}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  padding: 13,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: AppTheme.colors.border,
+                  backgroundColor: AppTheme.colors.surfaceSubtle,
+                  marginBottom: 10,
+                }}
+              >
+                <View style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 17,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: AppTheme.colors.primaryLight,
+                  marginRight: 11,
+                }}>
+                  <Ionicons name={option.icon} size={18} color={AppTheme.colors.primary} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 14, fontWeight: '700', color: AppTheme.colors.text }}>{option.title}</Text>
+                  <Text style={{ fontSize: 11.5, color: AppTheme.colors.textSecondary, marginTop: 2 }}>{option.subtitle}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={AppTheme.colors.textMuted} />
+              </TouchableOpacity>
+            ))}
+
+            <TouchableOpacity onPress={() => setShareChoice(null)} style={{ paddingVertical: 13, borderRadius: 12, alignItems: 'center', backgroundColor: AppTheme.colors.surfaceSubtle, borderWidth: 1, borderColor: AppTheme.colors.border }}>
+              <Text style={{ color: AppTheme.colors.primary, fontWeight: '700', fontSize: 14 }}>Cancel</Text>
+            </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {isBuildingPdf && (
+        <Modal visible transparent animationType="fade">
+          <View style={[styles.modalOverlay, { justifyContent: 'center', alignItems: 'center' }]}>
+            <View style={{ backgroundColor: '#ffffff', borderRadius: 16, padding: 24, alignItems: 'center' }}>
+              <ActivityIndicator size="large" color={AppTheme.colors.primary} />
+              <Text style={{ marginTop: 12, color: AppTheme.colors.textSecondary, fontSize: 13 }}>
+                Building the PDF…
+              </Text>
+            </View>
+          </View>
+        </Modal>
+      )}
 
       <DraggableFAB onPress={() => setModalVisible(true)} />
 
