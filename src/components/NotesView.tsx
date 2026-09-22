@@ -24,6 +24,7 @@ import { withoutAutoLock } from '../services/AutoLockService';
 import { ensureDecryptedCacheDir } from '../services/FileCacheService';
 import { buildTextPdf } from '../services/PdfBuilder';
 import { useTextHistory } from '../hooks/useTextHistory';
+import ModalCloseButton from './ModalCloseButton';
 
 interface NotesViewProps {
   isMobile: boolean;
@@ -76,6 +77,13 @@ export default function NotesView({ isMobile }: NotesViewProps) {
   const [pinAction, setPinAction] = useState<PinAction>('open');
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState('');
+
+  /** Matches the Cancel button: the typed PIN never outlives the window. */
+  const closePinModal = () => {
+    setPinModalNote(null);
+    setPinInput('');
+    setPinError('');
+  };
 
   useEffect(() => {
     loadNotes();
@@ -460,9 +468,12 @@ export default function NotesView({ isMobile }: NotesViewProps) {
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
             >
-              <Text style={{ fontSize: 17, fontWeight: '800', color: AppTheme.colors.text, marginBottom: 4 }}>
-                {detailsNote ? 'Edit Note' : 'New Note'}
-              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+                <Text style={{ fontSize: 17, fontWeight: '800', color: AppTheme.colors.text, marginBottom: 4, flex: 1 }}>
+                  {detailsNote ? 'Edit Note' : 'New Note'}
+                </Text>
+                <ModalCloseButton onPress={closeDetails} />
+              </View>
               <Text style={{ fontSize: 12, color: AppTheme.colors.textSecondary, marginBottom: 14 }}>
                 {detailsNote ? 'Rename it or change its PIN.' : 'Name it now — you write the note itself afterwards.'}
               </Text>
@@ -676,9 +687,12 @@ export default function NotesView({ isMobile }: NotesViewProps) {
         <View style={{ flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'center', padding: 18 }}>
           <View style={{ backgroundColor: '#ffffff', borderRadius: 18, padding: 18, maxHeight: '90%', maxWidth: 520, width: '100%', alignSelf: 'center' }}>
             <ScrollView contentContainerStyle={{ paddingBottom: 2 }} showsVerticalScrollIndicator={false}>
-            <Text style={{ fontSize: 17, fontWeight: '800', color: AppTheme.colors.text, marginBottom: 4 }} numberOfLines={2}>
-              Share note
-            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+              <Text style={{ fontSize: 17, fontWeight: '800', color: AppTheme.colors.text, marginBottom: 4, flex: 1 }} numberOfLines={2}>
+                Share note
+              </Text>
+              <ModalCloseButton onPress={() => setShareChoiceVisible(false)} />
+            </View>
             <Text style={{ fontSize: 12, color: AppTheme.colors.textSecondary, marginBottom: 14 }} numberOfLines={2}>
               {writerNote?.title}
             </Text>
@@ -748,9 +762,12 @@ export default function NotesView({ isMobile }: NotesViewProps) {
       <Modal visible={paperVisible} transparent animationType="fade" onRequestClose={() => setPaperVisible(false)}>
         <View style={{ flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'center', padding: 18 }}>
           <View style={{ backgroundColor: '#ffffff', borderRadius: 18, padding: 18 }}>
-            <Text style={{ fontSize: 17, fontWeight: '800', color: AppTheme.colors.text, marginBottom: 4 }}>
-              Page colour
-            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+              <Text style={{ fontSize: 17, fontWeight: '800', color: AppTheme.colors.text, marginBottom: 4, flex: 1 }}>
+                Page colour
+              </Text>
+              <ModalCloseButton onPress={() => setPaperVisible(false)} />
+            </View>
             <Text style={{ fontSize: 12, color: AppTheme.colors.textSecondary, marginBottom: 14 }}>
               The paper every note is written on.
             </Text>
@@ -861,13 +878,16 @@ export default function NotesView({ isMobile }: NotesViewProps) {
         >
           <View style={{ backgroundColor: '#ffffff', borderRadius: 18, maxHeight: '90%' }}>
             <ScrollView contentContainerStyle={{ padding: 18 }} keyboardShouldPersistTaps="handled">
-              <Text style={{ fontSize: 17, fontWeight: '800', color: AppTheme.colors.text, marginBottom: 12 }}>
-                {pinAction === 'edit'
-                  ? `Verify PIN to Edit ${pinModalNote?.title}`
-                  : pinAction === 'delete'
-                    ? `Verify PIN to Delete ${pinModalNote?.title}`
-                    : `Unlock ${pinModalNote?.title}`}
-              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+                <Text style={{ fontSize: 17, fontWeight: '800', color: AppTheme.colors.text, marginBottom: 12, flex: 1 }}>
+                  {pinAction === 'edit'
+                    ? `Verify PIN to Edit ${pinModalNote?.title}`
+                    : pinAction === 'delete'
+                      ? `Verify PIN to Delete ${pinModalNote?.title}`
+                      : `Unlock ${pinModalNote?.title}`}
+                </Text>
+                <ModalCloseButton onPress={closePinModal} />
+              </View>
               <TextInput
                 style={{
                   backgroundColor: '#f8fafc',

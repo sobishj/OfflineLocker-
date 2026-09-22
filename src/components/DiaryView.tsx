@@ -20,6 +20,7 @@ import { useLockerStore } from '../store/useLockerStore';
 import { AppTheme, getPageColor, PAGE_COLORS, CUSTOM_KEY, DEFAULT_PAGE_COLOR_KEY } from '../theme/AppTheme';
 import { useTextHistory } from '../hooks/useTextHistory';
 import ColorPickerModal from './ColorPickerModal';
+import ModalCloseButton from './ModalCloseButton';
 import { DiaryPinMode } from '../models';
 
 const MONTH_NAMES = [
@@ -622,7 +623,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
       <View style={[styles.header, isTightHeader && styles.headerStacked]}>
         {/* The date and its two arrows share the row with the buttons, so the
             date shortens rather than being drawn underneath them */}
-        <View style={[styles.dateGroup, isTightHeader && styles.dateGroupStacked]} pointerEvents="box-none">
+        <View style={[styles.dateGroup, isTightHeader ? styles.dateGroupStacked : styles.dateGroupRow]} pointerEvents="box-none">
           {/* Mirrors the badge slot on the right so the date stays dead centre
               whether or not the badge is showing. On a narrow screen that
               mirror is space the date needs, so it goes and the row runs
@@ -753,7 +754,10 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
     <Modal visible={paperVisible} transparent animationType="fade" onRequestClose={() => setPaperVisible(false)}>
       <View style={styles.modalOverlay}>
         <View style={styles.modalCard}>
-          <Text style={styles.modalTitle}>Page colour</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+            <Text style={[styles.modalTitle, { flex: 1 }]}>Page colour</Text>
+            <ModalCloseButton onPress={() => setPaperVisible(false)} />
+          </View>
           <Text style={styles.modalHint}>The paper every diary page is written on.</Text>
 
           <View style={styles.swatchGrid}>
@@ -828,9 +832,12 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
       >
         <View style={{ backgroundColor: '#ffffff', borderRadius: 18, maxHeight: '90%' }}>
           <ScrollView contentContainerStyle={{ padding: 18 }} keyboardShouldPersistTaps="handled">
-          <Text style={{ fontSize: 17, fontWeight: '800', color: AppTheme.colors.text, marginBottom: 4 }}>
-            Diary PIN
-          </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+            <Text style={{ fontSize: 17, fontWeight: '800', color: AppTheme.colors.text, marginBottom: 4, flex: 1 }}>
+              Diary PIN
+            </Text>
+            <ModalCloseButton onPress={() => setManageVisible(false)} />
+          </View>
           <Text style={{ fontSize: 12, color: AppTheme.colors.textSecondary, marginBottom: 14 }}>
             {diaryPinMode === 'none'
               ? 'The diary currently opens without a PIN.'
@@ -1123,21 +1130,25 @@ const createStyles = () => StyleSheet.create({
   headerStacked: { flexDirection: 'column', alignItems: 'stretch', paddingTop: 10, paddingBottom: 8 },
   headerControls: { flexDirection: 'row', alignItems: 'center' },
   headerControlsStacked: { justifyContent: 'flex-end', marginTop: 8 },
-  // In a column the date must not stretch to fill the height. Written out
-  // rather than `flex: 0`, which resolves to a zero basis here and left the
-  // weekday drawn above the top of its own row.
-  dateGroupStacked: { flexGrow: 0, flexShrink: 0, flexBasis: 'auto', justifyContent: 'flex-start' },
   dateGroup: {
     // A flex child rather than an absolute box with room reserved for the
     // buttons: with four of them beside it, a fixed reservation was either too
     // small - and the TODAY badge ended up underneath one - or too tight for
     // the date. Sharing the row means the date shortens instead of colliding.
-    flex: 1,
+    //
+    // The flex properties are set by the two variants below rather than here,
+    // and spelled out rather than using the `flex` shorthand. `flex: 1` means
+    // a zero basis, and on Yoga it cannot be overridden by a later flexBasis,
+    // so in a column it collapsed the date to nothing on Android and iOS
+    // while the web build, which splits the shorthand, looked right.
     minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
   },
+  // Sharing the row with the buttons: take the leftover width, shrink first
+  dateGroupRow: { flexGrow: 1, flexShrink: 1, flexBasis: 0, justifyContent: 'center' },
+  // On its own row above them: height and width both come from the content
+  dateGroupStacked: { justifyContent: 'flex-start' },
   // Equal padding on both arrows keeps them the same distance from the date
   arrowBtn: { paddingHorizontal: 6, paddingVertical: 6 },
   dateBlock: { alignItems: 'center', flexShrink: 1 },

@@ -10,10 +10,23 @@ const MONTH_ABBR = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep
 
 const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
 
+/** The one way a date is written down in this app: DD-MM-YYYY. */
 export const formatDate = (date: Date): string =>
-  `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()}`;
+  `${pad(date.getDate())}-${pad(date.getMonth() + 1)}-${date.getFullYear()}`;
 
-/** Accepts DD/MM/YYYY, YYYY-MM-DD and "05 Jan 2026" style values. */
+/**
+ * Rewrites a stored date into DD-MM-YYYY for display. Documents saved before
+ * the format settled still hold slashes, and a scan can return "05 Jan 2026",
+ * so everything is put through here on the way to the screen. Anything that
+ * cannot be read is passed along untouched rather than blanked.
+ */
+export const toDisplayDate = (value: string): string => {
+  if (!value || typeof value !== 'string') return '';
+  const parsed = parseDateString(value);
+  return parsed ? formatDate(parsed) : value.trim();
+};
+
+/** Accepts DD-MM-YYYY, DD/MM/YYYY, YYYY-MM-DD and "05 Jan 2026" style values. */
 export const parseDateString = (value: string): Date | null => {
   if (!value || typeof value !== 'string') return null;
   const text = value.trim();

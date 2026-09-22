@@ -6,6 +6,7 @@ import {
   DEFAULT_ACCENT_KEY, DEFAULT_BACKGROUND_KEY, DEFAULT_BAR_KEY,
   getAccent, getBackground, getBar,
 } from '../theme/AppTheme';
+import ModalCloseButton from '../components/ModalCloseButton';
 import ColorPickerModal from '../components/ColorPickerModal';
 import { HomeTab } from '../models';
 import DiaryView from '../components/DiaryView';
@@ -47,6 +48,42 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   // Settings split in two: credentials behind the current PIN, preferences not
   const [settingsMenuVisible, setSettingsMenuVisible] = useState(false);
   const [appSettingsVisible, setAppSettingsVisible] = useState(false);
+
+  // Dismissing a window has to clear its draft the way its Cancel button does,
+  // or a half-typed PIN would still be sitting there the next time it opens.
+  const closeCreateTab = () => {
+    setModalVisible(false);
+    setTabName('');
+    setTabDesc('');
+    setIsSensitive(false);
+    setTabPin('');
+    setConfirmTabPin('');
+  };
+  const closeEditTab = () => {
+    setEditModalVisible(false);
+    setEditTabId('');
+    setEditTabName('');
+    setEditTabDesc('');
+    setEditIsSensitive(false);
+    setEditTabPin('');
+    setEditConfirmTabPin('');
+  };
+  const closePinModal = () => {
+    setPinModalVisible(false);
+    setUnlockPin('');
+  };
+  const closeExportModal = () => {
+    setExportModalVisible(false);
+    setExportPin('');
+  };
+  const closeImportModal = () => {
+    // A restore in flight must not be abandoned half way through
+    if (isImporting || isReadingFile) return;
+    setImportModalVisible(false);
+    setImportPin('');
+    setPickedFileContent(null);
+    setPickedFileName(null);
+  };
   // Which palette the colour picker is mixing for, if it is open at all
   const [colorPickerFor, setColorPickerFor] = useState<'accent' | 'background' | 'bar' | null>(null);
   const [accountDefaultTab, setAccountDefaultTab] = useState<HomeTab>('files');
@@ -852,7 +889,10 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
           <View style={[styles.modalContent, { maxHeight: '90%' }]}>
             <ScrollView contentContainerStyle={{ paddingBottom: 4 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-            <Text style={styles.modalTitle}>New Vault Tab</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+              <Text style={[styles.modalTitle, { flex: 1 }]}>New Vault Tab</Text>
+              <ModalCloseButton onPress={closeCreateTab} />
+            </View>
             <TextInput style={[styles.input, { letterSpacing: 0 }]} placeholder="Tab Name" placeholderTextColor={AppTheme.colors.textSecondary} value={tabName} onChangeText={setTabName} />
             <TextInput style={[styles.input, { letterSpacing: 0 }]} placeholder="Description" placeholderTextColor={AppTheme.colors.textSecondary} value={tabDesc} onChangeText={setTabDesc} />
             
@@ -932,7 +972,10 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
           <View style={[styles.modalContent, { maxHeight: '90%' }]}>
             <ScrollView contentContainerStyle={{ paddingBottom: 4 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-            <Text style={styles.modalTitle}>Edit Vault Tab</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+              <Text style={[styles.modalTitle, { flex: 1 }]}>Edit Vault Tab</Text>
+              <ModalCloseButton onPress={closeEditTab} />
+            </View>
             <TextInput 
               style={[styles.input, { letterSpacing: 0 }]} 
               placeholder="Tab Name" 
@@ -1024,13 +1067,16 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
           <View style={[styles.modalContent, { maxHeight: '90%' }]}>
             <ScrollView contentContainerStyle={{ paddingBottom: 4 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-            <Text style={styles.modalTitle}>
-              {pinActionTarget === 'edit' 
-                ? `Verify PIN to Edit ${selectedTab?.name}` 
-                : pinActionTarget === 'delete'
-                ? `Verify PIN to Delete ${selectedTab?.name}`
-                : `Unlock ${selectedTab?.name}`}
-            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+              <Text style={[styles.modalTitle, { flex: 1 }]}>
+                {pinActionTarget === 'edit'
+                  ? `Verify PIN to Edit ${selectedTab?.name}`
+                  : pinActionTarget === 'delete'
+                  ? `Verify PIN to Delete ${selectedTab?.name}`
+                  : `Unlock ${selectedTab?.name}`}
+              </Text>
+              <ModalCloseButton onPress={closePinModal} />
+            </View>
             <TextInput 
               style={[styles.input, { letterSpacing: unlockPin ? 6 : 0 }]} 
               placeholder="4-Digit PIN" 
@@ -1782,7 +1828,10 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
           <View style={[styles.modalContent, { maxHeight: '90%' }]}>
             <ScrollView contentContainerStyle={{ paddingBottom: 4 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-            <Text style={styles.modalTitle}>Export Encrypted Backup</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+              <Text style={[styles.modalTitle, { flex: 1 }]}>Export Encrypted Backup</Text>
+              <ModalCloseButton onPress={closeExportModal} />
+            </View>
             <Text style={{ color: AppTheme.colors.textSecondary, marginBottom: AppTheme.spacing.m, fontSize: 13 }}>
               Enter a 4-digit PIN to encrypt your backup. You must enter this exact PIN when restoring your data.
             </Text>
@@ -1830,7 +1879,10 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             pointerEvents={isImporting || isReadingFile ? 'none' : 'auto'}
           >
             <ScrollView contentContainerStyle={{ paddingBottom: 4 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-            <Text style={styles.modalTitle}>Import Encrypted Backup</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+              <Text style={[styles.modalTitle, { flex: 1 }]}>Import Encrypted Backup</Text>
+              <ModalCloseButton onPress={closeImportModal} />
+            </View>
             
             {pickedFileName && (
               <View style={{ backgroundColor: 'rgba(6, 182, 212, 0.1)', padding: 10, borderRadius: 8, marginBottom: 12, flexDirection: 'row', alignItems: 'center' }}>
@@ -1976,7 +2028,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               }}>
                 <Ionicons name="trash-outline" size={20} color="#ef4444" />
               </View>
-              <Text style={{ fontSize: 18, fontWeight: '700', color: AppTheme.colors.text }}>Delete Vault Tab</Text>
+              <Text style={{ fontSize: 18, fontWeight: '700', color: AppTheme.colors.text, flex: 1 }}>Delete Vault Tab</Text>
+              <ModalCloseButton onPress={() => setDeleteConfirmTab(null)} />
             </View>
             <Text style={{ fontSize: 14, color: AppTheme.colors.textSecondary, lineHeight: 20, marginBottom: 20 }}>
               Are you sure you want to delete "{deleteConfirmTab?.name}" and all documents stored inside it? This action cannot be undone.

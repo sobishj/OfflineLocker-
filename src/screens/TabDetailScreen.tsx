@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, ActivityIndicator, Image, Platform, ScrollView, KeyboardAvoidingView, useWindowDimensions } from 'react-native';
 import { useLockerStore } from '../store/useLockerStore';
 import { AppTheme } from '../theme/AppTheme';
+import ModalCloseButton from '../components/ModalCloseButton';
 import { Ionicons } from '@expo/vector-icons';
 import { CryptoService } from '../services/CryptoService';
 import * as ImagePicker from 'expo-image-picker';
@@ -17,7 +18,7 @@ import ZoomableImage from '../components/ZoomableImage';
 import DraggableFAB from '../components/DraggableFAB';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StorageService } from '../utils/storage';
-import DatePickerModal, { parseDateString } from '../components/DatePickerModal';
+import DatePickerModal, { parseDateString, formatDate, toDisplayDate } from '../components/DatePickerModal';
 import * as Clipboard from 'expo-clipboard';
 import { inflate as inflateStream } from 'pako';
 import { recognizeTextFromImage, extractDatesFromMrz } from '../services/OcrService';
@@ -96,7 +97,7 @@ const monthYearToDate = (month: number, twoDigitYear: number, asEnd: boolean): s
   const year = 2000 + twoDigitYear;
   const day = asEnd ? new Date(year, month, 0).getDate() : 1;
   const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
-  return `${pad(day)}/${pad(month)}/${year}`;
+  return `${pad(day)}-${pad(month)}-${year}`;
 };
 
 const findMonthYearAfterLabel = (text: string, labels: string[], asEnd: boolean): string => {
@@ -297,11 +298,16 @@ export const extractDatesFromText = (text: string): { startDate: string; endDate
 
   const parsedStart = parseDateString(startDate);
   const parsedEnd = parseDateString(endDate);
+  // A scan returns the document's own wording; normalise it so what is saved
+  // and what is shown are the same DD-MM-YYYY throughout
   if (parsedStart && parsedEnd && parsedStart.getTime() > parsedEnd.getTime()) {
-    return { startDate: endDate, endDate: startDate };
+    return { startDate: formatDate(parsedEnd), endDate: formatDate(parsedStart) };
   }
 
-  return { startDate, endDate };
+  return {
+    startDate: parsedStart ? formatDate(parsedStart) : startDate,
+    endDate: parsedEnd ? formatDate(parsedEnd) : endDate,
+  };
 };
 
 // Labels are ordered most-specific first so "Passport No" beats a bare "No".
@@ -542,7 +548,7 @@ const validateExpiryDates = (startDate: string, endDate: string): boolean => {
 
   for (const [label, value] of [['Start Date', start], ['End Date', end]] as const) {
     if (value && !parseDateString(value)) {
-      Alert.alert('Invalid Date', `${label} "${value}" is not a valid date. Use DD/MM/YYYY or pick one from the calendar.`);
+      Alert.alert('Invalid Date', `${label} "${value}" is not a valid date. Use DD-MM-YYYY or pick one from the calendar.`);
       return false;
     }
   }
@@ -1079,6 +1085,37 @@ export default function TabDetailScreen({ route, navigation }: any) {
     } finally {
       isPickerBusyRef.current = false;
     }
+  };
+
+  /** Dismissing the add window clears its draft, exactly as Cancel does. */
+  const closeAddDocument = () => {
+    if (isEncrypting) return;
+    setModalVisible(false);
+    setFileUris([]);
+    setFileType(null);
+    setDocTitle('');
+    setDocContent('');
+    setDocNumber('');
+    setDocStartDate('');
+    setDocEndDate('');
+    setDocDatesEdited(false);
+    setDocHasExpiry(false);
+    setDateScanStatus('idle');
+  };
+
+  /** The same for the edit window. */
+  const closeEditDocument = () => {
+    if (isUpdating) return;
+    setEditModalVisible(false);
+    setEditingDoc(null);
+    setEditDocTitle('');
+    setEditDocContent('');
+    setEditDocStartDate('');
+    setEditDocEndDate('');
+    setEditDocDatesEdited(false);
+    setEditDocHasExpiry(false);
+    setEditFileUris([]);
+    setEditFileType(null);
   };
 
   const handleAddDocument = async () => {
@@ -2510,7 +2547,7 @@ ${payload.notes}`);
                             <View style={{ flex: isMobile ? undefined : 1, marginBottom: isMobile ? 8 : 0 }}>
                               <Text style={{ fontSize: 11, color: labelColor, fontWeight: '600' }}>Start Date</Text>
                               <Text style={{ fontSize: 13, fontWeight: '700', color: AppTheme.colors.text, marginTop: 2 }} numberOfLines={1}>
-                                {startDate}
+                                {toDisplayDate(startDate)}
                               </Text>
                             </View>
                             <View style={{ flex: isMobile ? undefined : 1 }}>
@@ -2522,7 +2559,7 @@ ${payload.notes}`);
                                 marginTop: 2,
                                 backgroundColor: expiryStyle?.highlight,
                               }} numberOfLines={1}>
-                                {endDate}
+                                {toDisplayDate(endDate)}
                               </Text>
                             </View>
                           </View>
@@ -2669,7 +2706,10 @@ ${payload.notes}`);
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <ScrollView contentContainerStyle={{ paddingBottom: 2 }} showsVerticalScrollIndicator={false}>
-            <Text style={styles.modalTitle} numberOfLines={2}>Share {shareChoice?.doc?.title || 'document'}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+              <Text style={[styles.modalTitle, { flex: 1 }]} numberOfLines={2}>Share {shareChoice?.doc?.title || 'document'}</Text>
+              <ModalCloseButton onPress={() => !isBuildingPdf && setShareChoice(null)} />
+            </View>
             <Text style={{ fontSize: 12.5, color: AppTheme.colors.textSecondary, marginTop: 4, marginBottom: 16 }}>
               {shareChoice && shareChoice.files.length > 1
                 ? `${shareChoice.files.length} pictures. A PDF sends them as one file.`
@@ -2774,7 +2814,10 @@ ${payload.notes}`);
         >
           <View style={[styles.modalContent, { maxHeight: '90%' }]}>
             <ScrollView contentContainerStyle={{ paddingBottom: 4 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-            <Text style={styles.modalTitle}>Add Secure Document</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+              <Text style={[styles.modalTitle, { flex: 1 }]}>Add Secure Document</Text>
+              <ModalCloseButton onPress={closeAddDocument} />
+            </View>
 
             <TextInput
               style={[styles.input, { letterSpacing: 0 }]}
@@ -2876,7 +2919,7 @@ ${payload.notes}`);
                     <View style={styles.dateInputWrap}>
                       <TextInput
                         style={[styles.input, styles.dateInput]}
-                        placeholder="DD/MM/YYYY"
+                        placeholder="DD-MM-YYYY"
                         placeholderTextColor={AppTheme.colors.textSecondary}
                         value={docStartDate}
                         onChangeText={(text) => { setDocDatesEdited(true); setDocStartDate(text); }}
@@ -2895,7 +2938,7 @@ ${payload.notes}`);
                     <View style={styles.dateInputWrap}>
                       <TextInput
                         style={[styles.input, styles.dateInput]}
-                        placeholder="DD/MM/YYYY"
+                        placeholder="DD-MM-YYYY"
                         placeholderTextColor={AppTheme.colors.textSecondary}
                         value={docEndDate}
                         onChangeText={(text) => { setDocDatesEdited(true); setDocEndDate(text); }}
@@ -3017,12 +3060,12 @@ ${payload.notes}`);
                     onPress={handleAddDocument} 
                     style={[styles.button, { opacity: isAddSaveEnabled ? 1 : 0.4 }]} 
                     disabled={!isAddSaveEnabled}
-                    {...(Platform.OS === 'web' ? { title: isAddSaveEnabled ? 'Encrypt & Save Document' : 'Please enter a title and add notes or attach a file' } : {})}
+                    {...(Platform.OS === 'web' ? { title: isAddSaveEnabled ? 'Save this document' : 'Please enter a title and add notes or attach a file' } : {})}
                   >
                     {isEncrypting ? (
                       <ActivityIndicator color="#fff" size="small" />
                     ) : (
-                      <Text style={styles.buttonText}>Encrypt & Save</Text>
+                      <Text style={styles.buttonText}>Save</Text>
                     )}
                   </TouchableOpacity>
                 </View>
@@ -3075,7 +3118,10 @@ ${payload.notes}`);
         >
           <View style={[styles.modalContent, { maxHeight: '90%' }]}>
             <ScrollView contentContainerStyle={{ paddingBottom: 4 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-            <Text style={styles.modalTitle}>Edit Document</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+              <Text style={[styles.modalTitle, { flex: 1 }]}>Edit Document</Text>
+              <ModalCloseButton onPress={closeEditDocument} />
+            </View>
 
             <TextInput
               style={[styles.input, { letterSpacing: 0 }]}
@@ -3171,7 +3217,7 @@ ${payload.notes}`);
                     <View style={styles.dateInputWrap}>
                       <TextInput
                         style={[styles.input, styles.dateInput]}
-                        placeholder="DD/MM/YYYY"
+                        placeholder="DD-MM-YYYY"
                         placeholderTextColor={AppTheme.colors.textSecondary}
                         value={editDocStartDate}
                         onChangeText={(text) => { setEditDocDatesEdited(true); setEditDocStartDate(text); }}
@@ -3190,7 +3236,7 @@ ${payload.notes}`);
                     <View style={styles.dateInputWrap}>
                       <TextInput
                         style={[styles.input, styles.dateInput]}
-                        placeholder="DD/MM/YYYY"
+                        placeholder="DD-MM-YYYY"
                         placeholderTextColor={AppTheme.colors.textSecondary}
                         value={editDocEndDate}
                         onChangeText={(text) => { setEditDocDatesEdited(true); setEditDocEndDate(text); }}
@@ -3545,6 +3591,7 @@ ${payload.notes}`);
                 <Ionicons name="alert-circle-outline" size={22} color="#d97706" />
               </View>
               <Text style={{ fontSize: 18, fontWeight: '700', color: AppTheme.colors.text, flex: 1 }}>Verify Dates</Text>
+              <ModalCloseButton onPress={() => setDateVerifyMode(null)} />
             </View>
 
             <Text style={{ fontSize: 14, color: AppTheme.colors.textSecondary, lineHeight: 20, marginBottom: 14 }}>
@@ -3555,13 +3602,13 @@ ${payload.notes}`);
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
                 <Text style={{ fontSize: 13, color: AppTheme.colors.textSecondary }}>Start Date</Text>
                 <Text style={{ fontSize: 13, fontWeight: '700', color: AppTheme.colors.text }}>
-                  {(dateVerifyMode === 'edit' ? editDocStartDate.trim() : docStartDate.trim()) || 'NA'}
+                  {toDisplayDate(dateVerifyMode === 'edit' ? editDocStartDate : docStartDate) || 'NA'}
                 </Text>
               </View>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
                 <Text style={{ fontSize: 13, color: AppTheme.colors.textSecondary }}>End Date</Text>
                 <Text style={{ fontSize: 13, fontWeight: '700', color: AppTheme.colors.text }}>
-                  {(dateVerifyMode === 'edit' ? editDocEndDate.trim() : docEndDate.trim()) || 'NA'}
+                  {toDisplayDate(dateVerifyMode === 'edit' ? editDocEndDate : docEndDate) || 'NA'}
                 </Text>
               </View>
             </View>
@@ -3679,7 +3726,8 @@ ${payload.notes}`);
               }}>
                 <Ionicons name="trash-outline" size={20} color="#ef4444" />
               </View>
-              <Text style={{ fontSize: 18, fontWeight: '700', color: AppTheme.colors.text }}>Delete Document</Text>
+              <Text style={{ fontSize: 18, fontWeight: '700', color: AppTheme.colors.text, flex: 1 }}>Delete Document</Text>
+              <ModalCloseButton onPress={() => setDeleteConfirmDoc(null)} />
             </View>
             <Text style={{ fontSize: 14, color: AppTheme.colors.textSecondary, lineHeight: 20, marginBottom: 20 }}>
               Are you sure you want to delete "{deleteConfirmDoc?.title}"? This action cannot be undone.

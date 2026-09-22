@@ -57,7 +57,7 @@ const yymmddToDate = (value: string): string => {
   // Travel documents expire within a few decades, so a low year is 20xx
   const year = yy <= 60 ? 2000 + yy : 1900 + yy;
   const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
-  return `${pad(dd)}/${pad(mm)}/${year}`;
+  return `${pad(dd)}-${pad(mm)}-${year}`;
 };
 
 /**
