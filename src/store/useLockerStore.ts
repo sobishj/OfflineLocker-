@@ -66,6 +66,9 @@ interface LockerState {
   themeVersion: number;
   diaryPinMode: DiaryPinMode;
   diaryPinHash: string | null;
+  /** False until the stored mode has been read. Treating "not yet known" as
+   *  "no lock" is what let the diary show itself for a frame on the way in. */
+  diaryPinLoaded: boolean;
 
   // Actions
   checkExistingUsers: () => Promise<void>;
@@ -144,6 +147,7 @@ export const useLockerStore = create<LockerState>((set, get) => ({
   themeVersion: 0,
   diaryPinMode: 'none',
   diaryPinHash: null,
+  diaryPinLoaded: false,
 
   checkExistingUsers: async () => {
     try {
@@ -209,6 +213,9 @@ export const useLockerStore = create<LockerState>((set, get) => ({
       const cleanLockout = await LockoutService.getLockoutState();
       set({ isAuthenticated: true, activeDocuments: [], lockoutState: cleanLockout, errorMessage: null });
       await get().loadTabs();
+      // Read here as well as on the diary's own mount: by the time the tab can
+      // be tapped the answer is already in, so it never opens and then locks
+      await get().loadDiaryPinMode();
       return true;
     }
 
@@ -248,7 +255,7 @@ export const useLockerStore = create<LockerState>((set, get) => ({
     // Decrypted diary and note content must not survive a lock, and neither do
     // the files written out for the viewer and the share sheet
     clearDecryptedCache();
-    set({ isAuthenticated: false, activeDocuments: [], diaryDates: [], notes: [], diaryPinMode: 'none', diaryPinHash: null });
+    set({ isAuthenticated: false, activeDocuments: [], diaryDates: [], notes: [], diaryPinMode: 'none', diaryPinHash: null, diaryPinLoaded: false });
   },
 
   loadTabs: async () => {
@@ -373,7 +380,10 @@ export const useLockerStore = create<LockerState>((set, get) => ({
       await DatabaseHelper.createDocument(newDoc);
       await get().loadDocumentsForTab(tabId);
     } catch (error) {
+      // Swallowing this closed the window as though the document had been
+      // saved, and it simply was not there afterwards. The screen reports it.
       console.error('Error adding document', error);
+      throw error;
     }
   },
 
@@ -408,6 +418,7 @@ export const useLockerStore = create<LockerState>((set, get) => ({
       await get().loadDocumentsForTab(tabId);
     } catch (error) {
       console.error('Error updating document', error);
+      throw error;
     }
   },
 
@@ -476,16 +487,21 @@ export const useLockerStore = create<LockerState>((set, get) => ({
     const { currentUser, loadNotes } = get();
     if (!currentUser) return;
     const now = new Date().toISOString();
-    await DatabaseHelper.createNote({
-      userId: currentUser.uuid,
-      title,
-      encryptedContent: CryptoService.encryptText(plainContent, currentUser.pinHash),
-      isSensitive: isSensitive ? 1 : 0,
-      // The PIN gates access; the content stays encrypted under the account key
-      notePinHash: isSensitive && notePin ? CryptoService.hashPin(notePin.trim()) : null,
-      createdAt: now,
-      updatedAt: now,
-    });
+    try {
+      await DatabaseHelper.createNote({
+        userId: currentUser.uuid,
+        title,
+        encryptedContent: CryptoService.encryptText(plainContent, currentUser.pinHash),
+        isSensitive: isSensitive ? 1 : 0,
+        // The PIN gates access; the content stays encrypted under the account key
+        notePinHash: isSensitive && notePin ? CryptoService.hashPin(notePin.trim()) : null,
+        createdAt: now,
+        updatedAt: now,
+      });
+    } catch (error) {
+      set({ errorMessage: 'Could not save the note.' });
+      return;
+    }
     await loadNotes();
   },
 
@@ -500,14 +516,19 @@ export const useLockerStore = create<LockerState>((set, get) => ({
         ? CryptoService.hashPin(notePin.trim())
         : existing?.notePinHash || null;
 
-    await DatabaseHelper.updateNote(
-      id,
-      title,
-      CryptoService.encryptText(plainContent, currentUser.pinHash),
-      isSensitive ? 1 : 0,
-      pinHash,
-      new Date().toISOString()
-    );
+    try {
+      await DatabaseHelper.updateNote(
+        id,
+        title,
+        CryptoService.encryptText(plainContent, currentUser.pinHash),
+        isSensitive ? 1 : 0,
+        pinHash,
+        new Date().toISOString()
+      );
+    } catch (error) {
+      set({ errorMessage: 'Could not save the note.' });
+      return;
+    }
     await loadNotes();
   },
 
@@ -705,9 +726,9 @@ export const useLockerStore = create<LockerState>((set, get) => ({
     try {
       const mode = (await DatabaseHelper.getSetting(currentUser.uuid, 'diary_pin_mode')) as DiaryPinMode | null;
       const hash = await DatabaseHelper.getSetting(currentUser.uuid, 'diary_pin_hash');
-      set({ diaryPinMode: mode || 'none', diaryPinHash: hash });
+      set({ diaryPinMode: mode || 'none', diaryPinHash: hash, diaryPinLoaded: true });
     } catch (error) {
-      set({ diaryPinMode: 'none', diaryPinHash: null });
+      set({ diaryPinMode: 'none', diaryPinHash: null, diaryPinLoaded: true });
     }
   },
 
@@ -718,7 +739,7 @@ export const useLockerStore = create<LockerState>((set, get) => ({
     const hash = mode === 'custom' && pin ? CryptoService.hashPin(pin.trim()) : null;
     await DatabaseHelper.setSetting(currentUser.uuid, 'diary_pin_mode', mode === 'none' ? null : mode);
     await DatabaseHelper.setSetting(currentUser.uuid, 'diary_pin_hash', hash);
-    set({ diaryPinMode: mode, diaryPinHash: hash });
+    set({ diaryPinMode: mode, diaryPinHash: hash, diaryPinLoaded: true });
   },
 
   verifyDiaryPin: (candidatePin: string) => {
@@ -791,8 +812,14 @@ export const useLockerStore = create<LockerState>((set, get) => ({
       if (isChangingPin) {
         newPinHash = CryptoService.hashPin(trimmedNewPin);
 
-        // Re-encrypt all existing documents that were encrypted with oldPinHash
+        // Re-encrypt every document that was encrypted with oldPinHash. All of
+        // the work happens first and nothing is written until it has all
+        // succeeded: encrypting as we went meant that a failure part way
+        // through left some documents under the new PIN and the rest under the
+        // old one, with no way back to either.
         const allDocs = await DatabaseHelper.getAllDocuments();
+        const rewrites: { id: number; title: string; content: string; meta: string | null }[] = [];
+
         for (const doc of allDocs) {
           if (doc.encryptedContent && doc.id) {
             const decrypted = CryptoService.decryptText(doc.encryptedContent, oldPinHash);
@@ -805,9 +832,13 @@ export const useLockerStore = create<LockerState>((set, get) => ({
                   reMeta = CryptoService.encryptText(meta, newPinHash);
                 }
               }
-              await DatabaseHelper.updateDocument(doc.id, doc.title, reEncrypted, reMeta);
+              rewrites.push({ id: doc.id, title: doc.title, content: reEncrypted, meta: reMeta });
             }
           }
+        }
+
+        for (const rewrite of rewrites) {
+          await DatabaseHelper.updateDocument(rewrite.id, rewrite.title, rewrite.content, rewrite.meta);
         }
       }
 

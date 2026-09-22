@@ -36,8 +36,23 @@ function ColorSlider({ label, ratio, colorAt, onChange }: SliderProps) {
   const styles = useMemo(() => createStyles(), []);
   const [width, setWidth] = useState(0);
   const widthRef = useRef(0);
+  // Where the strip starts across the screen. iOS reports locationX against
+  // whichever view the touch is currently over rather than the one the gesture
+  // began on, so a drag returned positions from the wrong origin and the
+  // colour never followed the finger. Screen coordinates are the same on every
+  // platform, so the offset is measured once and subtracted here.
+  const pageOffsetRef = useRef(0);
+  const trackRef = useRef<View | null>(null);
   const changeRef = useRef(onChange);
   useEffect(() => { changeRef.current = onChange; });
+
+  const measure = (then?: () => void) => {
+    if (!trackRef.current) { then?.(); return; }
+    trackRef.current.measureInWindow((x) => {
+      if (typeof x === 'number' && !isNaN(x)) pageOffsetRef.current = x;
+      then?.();
+    });
+  };
 
   const bands = useMemo(
     () => Array.from({ length: BANDS }, (_, i) => colorAt(i / (BANDS - 1))),
@@ -49,15 +64,29 @@ function ColorSlider({ label, ratio, colorAt, onChange }: SliderProps) {
       PanResponder.create({
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
-        onPanResponderGrant: e => report(e.nativeEvent.locationX),
-        onPanResponderMove: e => report(e.nativeEvent.locationX),
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: (e, gesture) => {
+          // Re-measured on the way in, in case the window moved since layout
+          const pageX = pageXOf(e, gesture);
+          measure(() => report(pageX));
+        },
+        onPanResponderMove: (e, gesture) => report(pageXOf(e, gesture)),
       }),
     []
   );
 
-  const report = (x: number) => {
+  /** The touch's position across the screen, whichever of the two carries it. */
+  const pageXOf = (e: any, gesture: any): number => {
+    const fromEvent = e?.nativeEvent?.pageX;
+    if (typeof fromEvent === 'number' && !isNaN(fromEvent)) return fromEvent;
+    const fromGesture = gesture?.moveX || gesture?.x0;
+    return typeof fromGesture === 'number' ? fromGesture : 0;
+  };
+
+  const report = (pageX: number) => {
     const w = widthRef.current;
     if (!w) return;
+    const x = pageX - pageOffsetRef.current;
     changeRef.current(Math.min(Math.max(x / w, 0), 1));
   };
 
@@ -65,10 +94,13 @@ function ColorSlider({ label, ratio, colorAt, onChange }: SliderProps) {
     <View style={styles.sliderBlock}>
       <Text style={styles.sliderLabel}>{label}</Text>
       <View
+        ref={trackRef}
+        collapsable={false}
         style={styles.sliderTrack}
         onLayout={e => {
           widthRef.current = e.nativeEvent.layout.width;
           setWidth(e.nativeEvent.layout.width);
+          requestAnimationFrame(() => measure());
         }}
         {...responder.panHandlers}
       >

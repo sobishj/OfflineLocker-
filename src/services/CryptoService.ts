@@ -46,8 +46,11 @@ export class CryptoService {
       
       return `ENC::${ivBase64}:${cipherBase64}`;
     } catch (e) {
+      // Storing the plaintext instead would write an unencrypted document into
+      // the vault and read back as corrupt, which is worse than not saving at
+      // all. The caller reports the failure to the user.
       console.error('Encryption failed (possibly too large)', e);
-      return plainText; // Fallback to raw text if error
+      throw new Error('ENCRYPTION_FAILED');
     }
   }
 
@@ -58,12 +61,16 @@ export class CryptoService {
     try {
       if (!cipherText) return '';
 
-      // Strictly check for the ENC:: or ENC_V2:: prefix. If missing, it's raw text or old format.
+      // Strictly check for the ENC:: or ENC_V2:: prefix. If missing, it's raw
+      // text or the old format, which was a bare "iv:ciphertext" pair. Only
+      // something shaped exactly like that pair is treated as the old format:
+      // a JSON payload is also full of colons, and prefixing one with ENC::
+      // handed the caller back its own text with five characters glued on.
       if (!cipherText.startsWith('ENC::') && !cipherText.startsWith('ENC_V2::')) {
-        if (cipherText.includes(':') && !cipherText.startsWith('data:') && !cipherText.startsWith('[')) {
-           cipherText = 'ENC::' + cipherText; 
+        if (/^[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/.test(cipherText)) {
+          cipherText = 'ENC::' + cipherText;
         } else {
-           return cipherText;
+          return cipherText;
         }
       }
       

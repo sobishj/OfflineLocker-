@@ -1,4 +1,4 @@
-import { Platform } from 'react-native';
+import { NativeModules, Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 
 /**
@@ -7,6 +7,10 @@ import * as FileSystem from 'expo-file-system/legacy';
  */
 const loadRecognizer = (): any | null => {
   if (Platform.OS === 'web') return null;
+  // The package hands back a Proxy that only throws on first use when the
+  // native side is absent, so requiring it successfully proves nothing. The
+  // module registry is what actually answers the question.
+  if (!NativeModules.TextRecognition) return null;
   try {
     const mod = require('@react-native-ml-kit/text-recognition');
     return mod?.default || mod || null;
@@ -18,34 +22,60 @@ const loadRecognizer = (): any | null => {
 export const isOcrAvailable = (): boolean => loadRecognizer() !== null;
 
 /**
- * ML Kit needs a file path, so data URIs are written to the cache first.
+ * ML Kit needs a file path, so data URIs are written to the cache first. The
+ * name is unique per call rather than per millisecond, so two scans started
+ * together cannot be handed each other's picture.
  */
 const ensureFileUri = async (uri: string): Promise<string> => {
   if (!uri.startsWith('data:')) return uri;
   const base64 = uri.includes(',') ? uri.split(',')[1] : uri;
-  const target = `${FileSystem.cacheDirectory}ocr_${Date.now()}.jpg`;
+  const target = `${FileSystem.cacheDirectory}ocr_${Date.now()}_${Math.floor(Math.random() * 1e6)}.jpg`;
   await FileSystem.writeAsStringAsync(target, base64, { encoding: 'base64' });
   return target;
+};
+
+const textOf = (result: any): string => {
+  if (!result) return '';
+  if (typeof result.text === 'string' && result.text.trim()) return result.text;
+  if (Array.isArray(result.blocks)) {
+    return result.blocks.map((b: any) => b?.text || '').filter(Boolean).join('\n');
+  }
+  return '';
 };
 
 /** Returns recognised text, or '' when OCR is unavailable or finds nothing. */
 export const recognizeTextFromImage = async (uri: string): Promise<string> => {
   const recognizer = loadRecognizer();
-  if (!recognizer || !uri) return '';
-
-  try {
-    const fileUri = await ensureFileUri(uri);
-    const result = await recognizer.recognize(fileUri);
-    if (!result) return '';
-    if (typeof result.text === 'string' && result.text.trim()) return result.text;
-    if (Array.isArray(result.blocks)) {
-      return result.blocks.map((b: any) => b?.text || '').filter(Boolean).join('\n');
-    }
-    return '';
-  } catch (e) {
-    console.warn('OCR failed:', e);
+  if (!uri) return '';
+  if (!recognizer) {
+    console.warn('OCR unavailable: text recognition is not linked into this build.');
     return '';
   }
+
+  let fileUri: string;
+  try {
+    fileUri = await ensureFileUri(uri);
+  } catch (e) {
+    console.warn('OCR could not stage the image:', e);
+    return '';
+  }
+
+  // iOS turns the string it is given into an NSURL, which resolves only for a
+  // proper file:// URL, while Android reads a bare path just as happily. Both
+  // forms are tried rather than assuming which one this platform wanted.
+  const candidates = fileUri.startsWith('file://')
+    ? [fileUri, fileUri.replace('file://', '')]
+    : [fileUri, `file://${fileUri}`];
+
+  for (const candidate of candidates) {
+    try {
+      const text = textOf(await recognizer.recognize(candidate));
+      if (text) return text;
+    } catch (e) {
+      console.warn('OCR failed:', e);
+    }
+  }
+  return '';
 };
 
 const yymmddToDate = (value: string): string => {

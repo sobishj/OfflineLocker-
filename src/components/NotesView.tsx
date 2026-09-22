@@ -859,16 +859,19 @@ export default function NotesView({ isMobile }: NotesViewProps) {
             </TouchableOpacity>
           </View>
         </View>
-      </Modal>
 
-      <ColorPickerModal
-        visible={paperPickerVisible}
-        value={customNotePageColor}
-        title="Custom page colour"
-        hint="The paper your notes are written on."
-        onSelect={setCustomNotePageColor}
-        onClose={() => setPaperPickerVisible(false)}
-      />
+        {/* Inside the paper window rather than beside it: iOS presents one
+            modal at a time, so a picker opened as a sibling of an open modal
+            never appeared there. */}
+        <ColorPickerModal
+          visible={paperPickerVisible}
+          value={customNotePageColor}
+          title="Custom page colour"
+          hint="The paper your notes are written on."
+          onSelect={setCustomNotePageColor}
+          onClose={() => setPaperPickerVisible(false)}
+        />
+      </Modal>
 
       {/* NOTE PIN PROMPT */}
       <Modal visible={!!pinModalNote} transparent animationType="fade" onRequestClose={() => setPinModalNote(null)}>

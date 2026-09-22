@@ -34,3 +34,38 @@ export const clearDecryptedCache = async (): Promise<void> => {
   }
   ensured = false;
 };
+
+/**
+ * Writes a data URI (or bare base64) into the decrypted cache and returns the
+ * path it landed on.
+ *
+ * iOS renders a PDF from a file and nothing else: WKWebView will not take a
+ * data URI, and the share sheet needs something on disk too. Reusing a file
+ * that is already there keeps reopening the same document instant.
+ */
+export const writeCachedFile = async (
+  dataUri: string,
+  name: string,
+  ext: string,
+): Promise<string> => {
+  const dir = await ensureDecryptedCacheDir();
+  const safeName = (name || 'file').replace(/[^a-z0-9]/gi, '_').slice(0, 60) || 'file';
+  const target = `${dir}${safeName}.${ext}`;
+
+  const existing = await FileSystem.getInfoAsync(target);
+  if (existing.exists && existing.size && existing.size > 0) return target;
+
+  const base64 = dataUri.includes(',') ? dataUri.split(',')[1] : dataUri;
+  await FileSystem.writeAsStringAsync(target, base64, { encoding: 'base64' });
+  return target;
+};
+
+/** A stable name for a document that has no id of its own to key off. */
+export const cacheKeyForUri = (uri: string): string => {
+  let hash = 0;
+  const sample = uri.length > 4096 ? uri.slice(0, 2048) + uri.slice(-2048) : uri;
+  for (let i = 0; i < sample.length; i++) {
+    hash = (hash * 31 + sample.charCodeAt(i)) | 0;
+  }
+  return `u${(hash >>> 0).toString(36)}_${uri.length}`;
+};

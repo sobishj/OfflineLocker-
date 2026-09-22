@@ -1,6 +1,13 @@
-import React, { useCallback, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Platform, StyleSheet } from 'react-native';
 import { WebView } from 'react-native-webview';
+import {
+  ANDROID_PDFJS_DIR,
+  PDFJS_LIB_NAME,
+  PDFJS_WORKER_NAME,
+  READ_ACCESS_ROOT,
+  writePdfJsPage,
+} from '../services/PdfJsAssetService';
 
 interface PdfRasterizerProps {
   /** Base64 of the PDF, without the `data:` prefix. Only used when the file
@@ -19,21 +26,26 @@ const CHUNK_SIZE = 61440;
 
 /**
  * Renders page 1 of a PDF to an image offscreen so it can be passed to OCR.
- * Android uses the pdf.js copy bundled in assets, so it works with no network.
+ *
+ * Both platforms use a bundled pdf.js and no network: Android reads it out of
+ * `android_asset`, iOS out of a copy unpacked from the JS bundle into the
+ * cache. Pointing iOS at a CDN, as this used to, meant a scanned PDF never
+ * yielded a date or a number there.
  */
 export default function PdfRasterizer({ base64, fileUri, onResult }: PdfRasterizerProps) {
   const webRef = useRef<WebView>(null);
   const doneRef = useRef(false);
+  // iOS cannot load local scripts from an inline page, so the page is written
+  // beside them and opened by path
+  const [pageUri, setPageUri] = useState('');
+  const onResultRef = useRef(onResult);
+  useEffect(() => { onResultRef.current = onResult; });
 
   const html = useMemo(() => {
-    const scriptTags = Platform.OS === 'android'
-      ? '<script src="pdf.min.js"></script>'
-      : '<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>';
-
     return `<!DOCTYPE html>
 <html><head><meta charset="utf-8" /></head>
 <body style="margin:0">
-${scriptTags}
+<script src="${PDFJS_LIB_NAME}"></script>
 <script>
   function post(payload) {
     if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify(payload));
@@ -43,9 +55,7 @@ ${scriptTags}
   window.__PUSH__ = function (part) { window.__PARTS__.push(part); };
 
   function setWorker() {
-    ${Platform.OS === 'android'
-      ? "window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';"
-      : "window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';"}
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = '${PDFJS_WORKER_NAME}';
   }
 
   /** Reads the PDF straight off disk. pdf.js will not do this itself: its own
@@ -114,6 +124,19 @@ ${scriptTags}
 </body></html>`;
   }, []);
 
+  // iOS needs the page on disk next to pdf.js before the WebView can open it
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    let isMounted = true;
+    writePdfJsPage('rasterizer.html', html)
+      .then(uri => { if (isMounted) setPageUri(uri); })
+      .catch(error => {
+        console.warn('pdf.js unpack failed:', error);
+        if (isMounted) onResultRef.current('');
+      });
+    return () => { isMounted = false; };
+  }, [html]);
+
   /** The fallback: streams the base64 across a chunk at a time. */
   const sendChunks = useCallback(() => {
     const web = webRef.current;
@@ -137,12 +160,19 @@ ${scriptTags}
     sendChunks();
   }, [base64, fileUri, sendChunks]);
 
+  if (Platform.OS === 'ios' && !pageUri) return null;
+
   return (
     <View style={styles.offscreen} pointerEvents="none">
       <WebView
         ref={webRef}
         originWhitelist={['*']}
-        source={{ html, baseUrl: Platform.OS === 'android' ? 'file:///android_asset/pdfjs/' : '' }}
+        source={
+          Platform.OS === 'ios'
+            ? { uri: pageUri }
+            : { html, baseUrl: Platform.OS === 'android' ? ANDROID_PDFJS_DIR : '' }
+        }
+        allowingReadAccessToURL={READ_ACCESS_ROOT}
         javaScriptEnabled
         allowFileAccess
         allowFileAccessFromFileURLs

@@ -1564,34 +1564,37 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             </ScrollView>
           </View>
         </View>
-      </Modal>
 
-      <ColorPickerModal
-        visible={colorPickerFor !== null}
-        value={
-          colorPickerFor === 'background' ? customBackground
-            : colorPickerFor === 'bar' ? customBar
-              : customAccent
-        }
-        title={
-          colorPickerFor === 'background' ? 'Custom background'
-            : colorPickerFor === 'bar' ? 'Custom bar colour'
-              : 'Custom theme colour'
-        }
-        hint={
-          colorPickerFor === 'background'
-            ? 'Held pale whatever you pick, so the writing on it stays readable.'
-            : colorPickerFor === 'bar'
-              ? 'Held pale whatever you pick: the bars carry the smallest text in the app.'
-              : 'Used for buttons, icons and highlights across the app.'
-        }
-        onSelect={hex => {
-          if (colorPickerFor === 'background') setCustomBackground(hex);
-          else if (colorPickerFor === 'bar') setCustomBar(hex);
-          else setCustomAccent(hex);
-        }}
-        onClose={() => setColorPickerFor(null)}
-      />
+        {/* Inside the settings window rather than beside it: iOS presents one
+            modal at a time, so a picker opened as a sibling of an open modal
+            simply never appeared there. */}
+        <ColorPickerModal
+          visible={colorPickerFor !== null}
+          value={
+            colorPickerFor === 'background' ? customBackground
+              : colorPickerFor === 'bar' ? customBar
+                : customAccent
+          }
+          title={
+            colorPickerFor === 'background' ? 'Custom background'
+              : colorPickerFor === 'bar' ? 'Custom bar colour'
+                : 'Custom theme colour'
+          }
+          hint={
+            colorPickerFor === 'background'
+              ? 'Held pale whatever you pick, so the writing on it stays readable.'
+              : colorPickerFor === 'bar'
+                ? 'Held pale whatever you pick: the bars carry the smallest text in the app.'
+                : 'Used for buttons, icons and highlights across the app.'
+          }
+          onSelect={hex => {
+            if (colorPickerFor === 'background') setCustomBackground(hex);
+            else if (colorPickerFor === 'bar') setCustomBar(hex);
+            else setCustomAccent(hex);
+          }}
+          onClose={() => setColorPickerFor(null)}
+        />
+      </Modal>
 
       {/* ACCOUNT SETTINGS MODAL (CHANGE USERNAME & PIN) */}
       <Modal visible={accountModalVisible} animationType="slide" transparent>

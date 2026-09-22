@@ -14,6 +14,7 @@ import {
   Alert,
   KeyboardAvoidingView,
   StyleSheet,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useLockerStore } from '../store/useLockerStore';
@@ -70,7 +71,7 @@ interface DiaryViewProps {
 export default function DiaryView({ isMobile }: DiaryViewProps) {
   const {
     diaryDates, loadDiaryDates, getDiaryEntry, saveDiaryEntry,
-    diaryPinMode, loadDiaryPinMode, setDiaryPin, verifyDiaryPin,
+    diaryPinMode, diaryPinLoaded, loadDiaryPinMode, setDiaryPin, verifyDiaryPin,
     diaryLined, loadDiaryLined, setDiaryLined,
     themeVersion, diaryPageColor, customDiaryPageColor, loadPageColors, setDiaryPageColor, setCustomDiaryPageColor,
   } = useLockerStore();
@@ -162,9 +163,12 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
     loadPageColors();
   }, []);
 
+  // Only once the stored mode is actually known. Acting on the default while
+  // it was still being read is what showed the diary for a frame before the
+  // lock screen caught up.
   useEffect(() => {
-    if (diaryPinMode === 'none') setIsUnlocked(true);
-  }, [diaryPinMode]);
+    if (diaryPinLoaded && diaryPinMode === 'none') setIsUnlocked(true);
+  }, [diaryPinLoaded, diaryPinMode]);
 
   /** Persists the page being left before loading another. */
   const persistCurrent = useCallback(async () => {
@@ -821,6 +825,18 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Inside the paper window rather than beside it: iOS presents one
+          modal at a time, so a picker opened as a sibling of an open modal
+          never appeared there. */}
+      <ColorPickerModal
+        visible={paperPickerVisible}
+        value={customDiaryPageColor}
+        title="Custom page colour"
+        hint="The paper your diary pages are written on."
+        onSelect={setCustomDiaryPageColor}
+        onClose={() => setPaperPickerVisible(false)}
+      />
     </Modal>
   );
 
@@ -1008,6 +1024,15 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
     </Modal>
   );
 
+  // Nothing of the diary is drawn until it is known whether there is a lock
+  if (!diaryPinLoaded) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+        <ActivityIndicator size="small" color={AppTheme.colors.primary} />
+      </View>
+    );
+  }
+
   // The whole tab stays covered until the PIN is entered
   if (!isUnlocked) {
     return (
@@ -1102,14 +1127,6 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
       {renderPage()}
       {renderManageModal()}
       {renderPaperModal()}
-      <ColorPickerModal
-        visible={paperPickerVisible}
-        value={customDiaryPageColor}
-        title="Custom page colour"
-        hint="The paper your diary pages are written on."
-        onSelect={setCustomDiaryPageColor}
-        onClose={() => setPaperPickerVisible(false)}
-      />
     </View>
   );
 }

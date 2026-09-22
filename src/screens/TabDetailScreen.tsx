@@ -21,7 +21,7 @@ import { StorageService } from '../utils/storage';
 import DatePickerModal, { parseDateString, formatDate, toDisplayDate } from '../components/DatePickerModal';
 import * as Clipboard from 'expo-clipboard';
 import { inflate as inflateStream } from 'pako';
-import { recognizeTextFromImage, extractDatesFromMrz } from '../services/OcrService';
+import { recognizeTextFromImage, extractDatesFromMrz, isOcrAvailable } from '../services/OcrService';
 import PdfRasterizer from '../components/PdfRasterizer';
 import { withoutAutoLock } from '../services/AutoLockService';
 import { ensureDecryptedCacheDir } from '../services/FileCacheService';
@@ -176,6 +176,19 @@ const decodeBase64 = (input: string): string => {
   }
   if (piece) parts.push(piece);
   return parts.join('');
+};
+
+/**
+ * What to tell the user when a save falls over. Encrypting a very large
+ * attachment is the one failure with an obvious remedy, so it says so rather
+ * than repeating the same flat "could not save" for everything.
+ */
+const saveFailureMessage = (error: any): string => {
+  const reason = String(error?.message || error || '');
+  if (reason.includes('ENCRYPTION_FAILED') || /memory|allocat|size|length/i.test(reason)) {
+    return 'This file is too large for the vault to encrypt on this device. Try a smaller file, or split the document into separate pages.';
+  }
+  return 'The document could not be saved. Please try again.';
 };
 
 /** Latin-1 bytes as a string, in blocks rather than a character at a time. */
@@ -443,7 +456,11 @@ const findNumberAfterLabel = (text: string, labels: string[]): string => {
     let hit: RegExpExecArray | null;
     while ((hit = labelRegex.exec(text)) !== null) {
       const after = hit.index + hit[0].length;
-      const candidate = text.slice(after, after + 30).match(/^[A-Z0-9][A-Z0-9\/-]*(?:[ ][A-Z0-9][A-Z0-9\/-]*)?/i);
+      // The second group exists for numbers printed in spaced groups, such as
+      // a card's "4111 1111". It has to carry a digit of its own, or the word
+      // after the number is swallowed too: a licence reading
+      // "No.: 43/5156/2009 Date: ..." came back as "43/5156/2009 Date".
+      const candidate = text.slice(after, after + 30).match(/^[A-Z0-9][A-Z0-9\/-]*(?:[ ](?=[A-Z0-9\/-]*\d)[A-Z0-9][A-Z0-9\/-]*)?/i);
       if (candidate && isPlausibleNumber(candidate[0])) return candidate[0].trim();
       if (labelRegex.lastIndex <= hit.index) labelRegex.lastIndex = hit.index + 1;
     }
@@ -610,7 +627,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
   const [dateVerifyMode, setDateVerifyMode] = useState<'add' | 'edit' | null>(null);
   const [datePickerTarget, setDatePickerTarget] = useState<'add-start' | 'add-end' | 'edit-start' | 'edit-end' | null>(null);
   const [isScanningDates, setIsScanningDates] = useState(false);
-  const [dateScanStatus, setDateScanStatus] = useState<'idle' | 'found' | 'none'>('idle');
+  const [dateScanStatus, setDateScanStatus] = useState<'idle' | 'found' | 'none' | 'unavailable'>('idle');
   const [rasterTarget, setRasterTarget] = useState<{ base64: string; fileUri: string } | null>(null);
   const rasterResolveRef = useRef<((value: string) => void) | null>(null);
   const [editFileUris, setEditFileUris] = useState<string[]>([]);
@@ -781,8 +798,20 @@ export default function TabDetailScreen({ route, navigation }: any) {
   const rightPaneTapRef = useRef<{ id: string | number; time: number } | null>(null);
   const tapTimeoutRef = useRef<any>(null);
 
+  /**
+   * Turns whatever a picker handed back into a JPEG data URI of a sane size.
+   *
+   * A camera asset arrives as a path, and that is what gets resized: asking
+   * the picker for base64 as well means a full-resolution photo is built into
+   * a string first, which on an iPhone can come back empty or take the app
+   * down with it. Reading the file only after it has been scaled keeps the
+   * whole operation inside a few hundred kilobytes.
+   */
   const optimizeImageUri = async (uri: string): Promise<string> => {
-    if (!uri || !uri.startsWith('data:image')) return uri;
+    if (!uri) return uri;
+    if (Platform.OS !== 'web' && !uri.startsWith('data:') && !uri.startsWith('file:') && !uri.startsWith('content:') && !uri.startsWith('ph://') && !uri.startsWith('assets-library://')) {
+      return uri;
+    }
     try {
       const res = await ImageManipulator.manipulateAsync(
         uri,
@@ -792,8 +821,24 @@ export default function TabDetailScreen({ route, navigation }: any) {
       if (res && res.base64) {
         return `data:image/jpeg;base64,${res.base64}`;
       }
+      // The manipulator wrote a file but withheld the string, which iOS does
+      // for larger images; reading it back is cheap now that it is scaled
+      if (res && res.uri && Platform.OS !== 'web') {
+        const base64 = await FileSystem.readAsStringAsync(res.uri, { encoding: 'base64' });
+        if (base64) return `data:image/jpeg;base64,${base64}`;
+      }
     } catch (e) {
-      // Return original URI if optimization fails or isn't needed
+      console.warn('Image optimization failed:', e);
+    }
+
+    // Last resort: hand back the bytes as they are rather than losing the photo
+    if (!uri.startsWith('data:') && Platform.OS !== 'web') {
+      try {
+        const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+        if (base64) return `data:image/jpeg;base64,${base64}`;
+      } catch (e) {
+        console.warn('Could not read captured image:', e);
+      }
     }
     return uri;
   };
@@ -897,6 +942,14 @@ export default function TabDetailScreen({ route, navigation }: any) {
       return;
     }
 
+    // A scanned page carries no text layer, so reading it needs on-device
+    // recognition. Expo Go and the web build have no ML Kit, and staying quiet
+    // about that looked like the document simply had no dates on it.
+    if (!isOcrAvailable()) {
+      setDateScanStatus(found.startDate || found.endDate || found.number ? 'found' : 'unavailable');
+      return;
+    }
+
     setIsScanningDates(true);
     try {
       const imageUri = isPdf ? await renderPdfFirstPage(sources.dataUri) : sources.dataUri;
@@ -928,15 +981,18 @@ export default function TabDetailScreen({ route, navigation }: any) {
       }
 
       const result = await withoutAutoLock(() => ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.5,
-        base64: true,
+        mediaTypes: ['images'],
+        quality: 0.7,
         allowsEditing: false,
       }));
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
-        let newUri = `data:image/jpeg;base64,${result.assets[0].base64}`;
-        newUri = await optimizeImageUri(newUri);
+        // The asset's own path is the input: see optimizeImageUri
+        const newUri = await optimizeImageUri(result.assets[0].uri);
+        if (!newUri || !newUri.startsWith('data:')) {
+          Alert.alert('Could not save the photo', 'The picture could not be read from the camera. Please try again.');
+          return;
+        }
         if (isEdit) {
           const newIndex = editFileUris.length;
           setEditFileUris(prev => [...prev, newUri]);
@@ -990,15 +1046,17 @@ export default function TabDetailScreen({ route, navigation }: any) {
     isPickerBusyRef.current = true;
     try {
       const result = await withoutAutoLock(() => ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.5,
-        base64: true,
+        mediaTypes: ['images'],
+        quality: 0.7,
         allowsEditing: false,
       }));
       if (!result.canceled && result.assets && result.assets.length > 0) {
-        let newUri = `data:image/jpeg;base64,${result.assets[0].base64}`;
-        newUri = await optimizeImageUri(newUri);
         const firstAsset = result.assets[0];
+        const newUri = await optimizeImageUri(firstAsset.uri);
+        if (!newUri || !newUri.startsWith('data:')) {
+          Alert.alert('Could not add the picture', 'The image could not be read. Please try another one.');
+          return;
+        }
         let pickedName = (firstAsset as any).file?.name || firstAsset.fileName || (firstAsset.uri ? firstAsset.uri.split('/').pop() : '') || '';
         if (pickedName) {
           try { pickedName = decodeURIComponent(pickedName); } catch (e) {}
@@ -1081,7 +1139,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
         autoFetchDetailsFromDocument(isEdit, { fileName, dataUri: newUris[0] });
       }
     } catch (error) {
-      Alert.alert('Error', 'Could not pick PDF document.');
+      console.warn('PDF pick error:', error);
+      Alert.alert('Could not add the PDF', saveFailureMessage(error));
     } finally {
       isPickerBusyRef.current = false;
     }
@@ -1186,7 +1245,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
         setDocTitle(''); setDocContent(''); setDocNumber(''); setDocStartDate(''); setDocEndDate(''); setDocDatesEdited(false); setDocHasExpiry(false); setDateScanStatus('idle'); setFileUris([]); setFileType(null);
       } catch (e) {
         console.error('handleAddDocument error:', e);
-        Alert.alert('Error', 'Could not encrypt and save document.');
+        Alert.alert('Could not save', saveFailureMessage(e));
       } finally {
         setIsEncrypting(false);
       }
@@ -1324,7 +1383,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
         setEditDocTitle(''); setEditDocContent(''); setEditDocStartDate(''); setEditDocEndDate(''); setEditDocDatesEdited(false); setEditDocHasExpiry(false); setEditFileUris([]); setEditFileType(null);
       } catch (e) {
         console.error('handleSaveEditDoc error:', e);
-        Alert.alert('Error', 'Could not update document.');
+        Alert.alert('Could not save', saveFailureMessage(e));
       } finally {
         setIsUpdating(false);
       }
@@ -1662,33 +1721,38 @@ export default function TabDetailScreen({ route, navigation }: any) {
     }
   };
 
+  /**
+   * Hands several files over one after another.
+   *
+   * On the web they are staggered so the browser does not treat the second
+   * download as a blocked pop-up. On a phone each share sheet is waited for
+   * instead: firing the next one while the last is still on screen loses it,
+   * and a caller that needs to know when the sheet is up can now await this.
+   */
+  const shareFilesInTurn = async (uris: string[], title: string, type: string) => {
+    for (let idx = 0; idx < uris.length; idx++) {
+      if (Platform.OS === 'web' && idx > 0) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+      await handleDownloadFile(uris[idx], title, type, idx);
+    }
+  };
+
   const handleDownloadFromCard = async (doc: any) => {
     const plainText = await loadPlainText(doc);
     const arr = parseDecryptedContent(plainText);
-
-    // Add a small delay between downloads on Web to prevent the browser from blocking multiple popups
-    arr.forEach((uri, idx) => {
-      setTimeout(() => {
-        handleDownloadFile(uri, doc.title, doc.type, idx);
-      }, idx * 300);
-    });
+    await shareFilesInTurn(arr, doc.title, doc.type);
   };
 
-  const handleDownloadSelected = () => {
+  const handleDownloadSelected = async () => {
     if (!previewDoc) return;
-    let downloadCount = 0;
-    previewDataArray.forEach((uri, idx) => {
-      if (selectedForDownload[idx]) {
-        setTimeout(() => {
-          handleDownloadFile(uri, previewDoc.title, previewDoc.type, idx);
-        }, downloadCount * 300);
-        downloadCount++;
-      }
-    });
+    const chosen = previewDataArray.filter((_, idx) => selectedForDownload[idx]);
 
-    if (downloadCount === 0) {
+    if (chosen.length === 0) {
       Alert.alert('No files selected', 'Please select at least one file to download.');
+      return;
     }
+    await shareFilesInTurn(chosen, previewDoc.title, previewDoc.type);
   };
 
   /**
@@ -1765,14 +1829,10 @@ export default function TabDetailScreen({ route, navigation }: any) {
     const plainText = await loadPlainText(item);
     const payload = parseDecryptedPayload(plainText);
     if (payload.files && payload.files.length > 0) {
-      payload.files.forEach((uri: string, idx: number) => {
-        setTimeout(() => {
-          handleDownloadFile(uri, item.title, item.type, idx);
-        }, idx * 300);
-      });
+      await shareFilesInTurn(payload.files, item.title, item.type);
     } else if (payload.notes && payload.notes.trim()) {
       const dataUri = `data:text/plain;charset=utf-8,${encodeURIComponent(payload.notes)}`;
-      handleDownloadFile(dataUri, item.title, 'text', 0);
+      await handleDownloadFile(dataUri, item.title, 'text', 0);
     } else {
       Alert.alert('Download', 'No file attachments or text content to download.');
     }
@@ -1785,6 +1845,110 @@ export default function TabDetailScreen({ route, navigation }: any) {
       </View>
     );
   }
+
+  /**
+   * The "check these dates" step, drawn over whichever editor asked for it
+   * rather than in a window of its own. It is raised from inside an open
+   * modal, and iOS presents one modal at a time - as a sibling it never
+   * appeared there, so Save simply did nothing whenever a scan had filled in
+   * a date.
+   */
+  const renderDateVerifyOverlay = (target: 'add' | 'edit') => {
+    if (dateVerifyMode !== target) return null;
+    return (
+      <View style={[StyleSheet.absoluteFill, { zIndex: 999998, elevation: 999998 }]}>
+        <View style={{
+          flex: 1,
+          backgroundColor: 'rgba(15, 23, 42, 0.5)',
+          justifyContent: 'center',
+          alignItems: 'center',
+          padding: 20,
+        }}>
+          <View style={{
+            backgroundColor: '#ffffff',
+            borderRadius: 16,
+            padding: 24,
+            maxWidth: 380,
+            width: '100%',
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 12 },
+            shadowOpacity: 0.15,
+            shadowRadius: 24,
+            elevation: 8,
+          }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 14 }}>
+              <View style={{
+                width: 40,
+                height: 40,
+                borderRadius: 20,
+                backgroundColor: '#fef3c7',
+                justifyContent: 'center',
+                alignItems: 'center',
+                marginRight: 12,
+              }}>
+                <Ionicons name="alert-circle-outline" size={22} color="#d97706" />
+              </View>
+              <Text style={{ fontSize: 18, fontWeight: '700', color: AppTheme.colors.text, flex: 1 }}>Verify Dates</Text>
+              <ModalCloseButton onPress={() => setDateVerifyMode(null)} />
+            </View>
+
+            <Text style={{ fontSize: 14, color: AppTheme.colors.textSecondary, lineHeight: 20, marginBottom: 14 }}>
+              Please check the file and confirm these dates are correct. You can still edit them later — open the document and tap Edit at any time, even after saving.
+            </Text>
+
+            <View style={{ backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 12, padding: 14, marginBottom: 20 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
+                <Text style={{ fontSize: 13, color: AppTheme.colors.textSecondary }}>Start Date</Text>
+                <Text style={{ fontSize: 13, fontWeight: '700', color: AppTheme.colors.text }}>
+                  {toDisplayDate(dateVerifyMode === 'edit' ? editDocStartDate : docStartDate) || 'NA'}
+                </Text>
+              </View>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                <Text style={{ fontSize: 13, color: AppTheme.colors.textSecondary }}>End Date</Text>
+                <Text style={{ fontSize: 13, fontWeight: '700', color: AppTheme.colors.text }}>
+                  {toDisplayDate(dateVerifyMode === 'edit' ? editDocEndDate : docEndDate) || 'NA'}
+                </Text>
+              </View>
+            </View>
+
+            <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
+              <TouchableOpacity
+                onPress={() => setDateVerifyMode(null)}
+                style={{
+                  paddingVertical: 10,
+                  paddingHorizontal: 18,
+                  borderRadius: 8,
+                  backgroundColor: '#f1f5f9',
+                  marginRight: 10,
+                }}
+              >
+                <Text style={{ color: AppTheme.colors.text, fontWeight: '600', fontSize: 14 }}>Review</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => {
+                  const mode = dateVerifyMode;
+                  setDateVerifyMode(null);
+                  if (mode === 'edit') {
+                    performSaveEditDoc();
+                  } else {
+                    performAddDocument();
+                  }
+                }}
+                style={{
+                  paddingVertical: 10,
+                  paddingHorizontal: 18,
+                  borderRadius: 8,
+                  backgroundColor: AppTheme.colors.primary,
+                }}
+              >
+                <Text style={{ color: '#ffffff', fontWeight: '600', fontSize: 14 }}>Confirm & Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </View>
+    );
+  };
 
   const getIconForType = (type: string) => {
     if (type === 'image') return 'image';
@@ -2154,8 +2318,6 @@ export default function TabDetailScreen({ route, navigation }: any) {
                           fontWeight: '700',
                           color: '#0f172a',
                           lineHeight: isMobile ? 15.5 : 17,
-                          // Only the about-to-expire state highlights the name itself
-                          backgroundColor: expiryStyle?.highlight,
                         }}
                         numberOfLines={isMobile ? 3 : 2}
                       >
@@ -2546,7 +2708,17 @@ ${payload.notes}`);
                           <View style={{ flexDirection: isMobile ? 'column' : 'row' }}>
                             <View style={{ flex: isMobile ? undefined : 1, marginBottom: isMobile ? 8 : 0 }}>
                               <Text style={{ fontSize: 11, color: labelColor, fontWeight: '600' }}>Start Date</Text>
-                              <Text style={{ fontSize: 13, fontWeight: '700', color: AppTheme.colors.text, marginTop: 2 }} numberOfLines={1}>
+                              {/* The about-to-expire highlight belongs to the
+                                  validity dates alone - on the file name it
+                                  drew the eye to the wrong thing */}
+                              <Text style={{
+                                fontSize: 13,
+                                fontWeight: '700',
+                                color: AppTheme.colors.text,
+                                marginTop: 2,
+                                backgroundColor: expiryStyle?.highlight,
+                                alignSelf: 'flex-start',
+                              }} numberOfLines={1}>
                                 {toDisplayDate(startDate)}
                               </Text>
                             </View>
@@ -2558,6 +2730,7 @@ ${payload.notes}`);
                                 color: AppTheme.colors.text,
                                 marginTop: 2,
                                 backgroundColor: expiryStyle?.highlight,
+                                alignSelf: 'flex-start',
                               }} numberOfLines={1}>
                                 {toDisplayDate(endDate)}
                               </Text>
@@ -2722,10 +2895,13 @@ ${payload.notes}`);
                 icon: 'image-outline' as const,
                 title: shareChoice && shareChoice.files.length > 1 ? 'The pictures' : 'The picture',
                 subtitle: 'Shared exactly as stored',
-                onPress: () => {
+                // The window stays up until the share sheet has been handed
+                // over: on iOS, presenting one while a modal is still
+                // animating away is how a share silently does nothing
+                onPress: async () => {
                   const doc = shareChoice?.doc;
+                  if (doc) await handleDownloadItem(doc);
                   setShareChoice(null);
-                  if (doc) handleDownloadItem(doc);
                 },
               },
               {
@@ -2733,10 +2909,10 @@ ${payload.notes}`);
                 icon: 'document-text-outline' as const,
                 title: 'A PDF',
                 subtitle: 'One page per picture',
-                onPress: () => {
+                onPress: async () => {
                   const current = shareChoice;
+                  if (current) await shareImagesAsPdf(current.doc, current.files);
                   setShareChoice(null);
-                  if (current) shareImagesAsPdf(current.doc, current.files);
                 },
               },
             ].map(option => (
@@ -2781,11 +2957,11 @@ ${payload.notes}`);
             </ScrollView>
           </View>
         </View>
-      </Modal>
 
-      {isBuildingPdf && (
-        <Modal visible transparent animationType="fade">
-          <View style={[styles.modalOverlay, { justifyContent: 'center', alignItems: 'center' }]}>
+        {/* Drawn over this window rather than in one of its own, for the same
+            reason: iOS presents a single modal at a time */}
+        {isBuildingPdf && (
+          <View style={[StyleSheet.absoluteFill, styles.modalOverlay, { justifyContent: 'center', alignItems: 'center' }]}>
             <View style={{ backgroundColor: '#ffffff', borderRadius: 16, padding: 24, alignItems: 'center' }}>
               <ActivityIndicator size="large" color={AppTheme.colors.primary} />
               <Text style={{ marginTop: 12, color: AppTheme.colors.textSecondary, fontSize: 13 }}>
@@ -2793,8 +2969,8 @@ ${payload.notes}`);
               </Text>
             </View>
           </View>
-        </Modal>
-      )}
+        )}
+      </Modal>
 
       <DraggableFAB onPress={() => setModalVisible(true)} />
 
@@ -2908,6 +3084,13 @@ ${payload.notes}`);
             {!isScanningDates && dateScanStatus === 'none' && !docHasExpiry && (
               <Text style={styles.dateHint}>
                 No dates could be read from this document — tick "Has expiry?" to enter them yourself.
+              </Text>
+            )}
+
+            {!isScanningDates && dateScanStatus === 'unavailable' && !docHasExpiry && (
+              <Text style={styles.dateHint}>
+                This build cannot read text from a scan or a photo, so the dates have to be
+                typed in — tick "Has expiry?" to enter them.
               </Text>
             )}
 
@@ -3089,6 +3272,8 @@ ${payload.notes}`);
           }}
           onClose={() => setDatePickerTarget(null)}
         />
+
+        {renderDateVerifyOverlay('add')}
 
         {Platform.OS === 'ios' && cropTarget === 'add' && cropIndex !== null && cropIndex >= 0 && !!fileUris[cropIndex] && (
           <View style={[StyleSheet.absoluteFill, { width: '100%', height: '100%', zIndex: 999999, elevation: 999999, backgroundColor: '#000' }]}>
@@ -3403,6 +3588,8 @@ ${payload.notes}`);
           onClose={() => setDatePickerTarget(null)}
         />
 
+        {renderDateVerifyOverlay('edit')}
+
         {Platform.OS === 'ios' && cropTarget === 'edit' && cropIndex !== null && cropIndex >= 0 && !!editFileUris[cropIndex] && (
           <View style={[StyleSheet.absoluteFill, { width: '100%', height: '100%', zIndex: 999999, elevation: 999999, backgroundColor: '#000' }]}>
             <CustomImageCropper
@@ -3553,99 +3740,6 @@ ${payload.notes}`);
                 </ScrollView>
               );
             })()}
-          </View>
-        </View>
-      </Modal>
-
-      {/* DATE VERIFICATION WARNING MODAL */}
-      <Modal visible={!!dateVerifyMode} animationType="fade" transparent>
-        <View style={{
-          flex: 1,
-          backgroundColor: 'rgba(15, 23, 42, 0.5)',
-          justifyContent: 'center',
-          alignItems: 'center',
-          padding: 20,
-        }}>
-          <View style={{
-            backgroundColor: '#ffffff',
-            borderRadius: 16,
-            padding: 24,
-            maxWidth: 380,
-            width: '100%',
-            shadowColor: '#000',
-            shadowOffset: { width: 0, height: 12 },
-            shadowOpacity: 0.15,
-            shadowRadius: 24,
-            elevation: 8,
-          }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 14 }}>
-              <View style={{
-                width: 40,
-                height: 40,
-                borderRadius: 20,
-                backgroundColor: '#fef3c7',
-                justifyContent: 'center',
-                alignItems: 'center',
-                marginRight: 12,
-              }}>
-                <Ionicons name="alert-circle-outline" size={22} color="#d97706" />
-              </View>
-              <Text style={{ fontSize: 18, fontWeight: '700', color: AppTheme.colors.text, flex: 1 }}>Verify Dates</Text>
-              <ModalCloseButton onPress={() => setDateVerifyMode(null)} />
-            </View>
-
-            <Text style={{ fontSize: 14, color: AppTheme.colors.textSecondary, lineHeight: 20, marginBottom: 14 }}>
-              Please check the file and confirm these dates are correct. You can still edit them later — open the document and tap Edit at any time, even after saving.
-            </Text>
-
-            <View style={{ backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 12, padding: 14, marginBottom: 20 }}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
-                <Text style={{ fontSize: 13, color: AppTheme.colors.textSecondary }}>Start Date</Text>
-                <Text style={{ fontSize: 13, fontWeight: '700', color: AppTheme.colors.text }}>
-                  {toDisplayDate(dateVerifyMode === 'edit' ? editDocStartDate : docStartDate) || 'NA'}
-                </Text>
-              </View>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                <Text style={{ fontSize: 13, color: AppTheme.colors.textSecondary }}>End Date</Text>
-                <Text style={{ fontSize: 13, fontWeight: '700', color: AppTheme.colors.text }}>
-                  {toDisplayDate(dateVerifyMode === 'edit' ? editDocEndDate : docEndDate) || 'NA'}
-                </Text>
-              </View>
-            </View>
-
-            <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
-              <TouchableOpacity
-                onPress={() => setDateVerifyMode(null)}
-                style={{
-                  paddingVertical: 10,
-                  paddingHorizontal: 18,
-                  borderRadius: 8,
-                  backgroundColor: '#f1f5f9',
-                  marginRight: 10,
-                }}
-              >
-                <Text style={{ color: AppTheme.colors.text, fontWeight: '600', fontSize: 14 }}>Review</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => {
-                  const mode = dateVerifyMode;
-                  setDateVerifyMode(null);
-                  if (mode === 'edit') {
-                    performSaveEditDoc();
-                  } else {
-                    performAddDocument();
-                  }
-                }}
-                style={{
-                  paddingVertical: 10,
-                  paddingHorizontal: 18,
-                  borderRadius: 8,
-                  backgroundColor: AppTheme.colors.primary,
-                }}
-              >
-                <Text style={{ color: '#ffffff', fontWeight: '600', fontSize: 14 }}>Confirm & Save</Text>
-              </TouchableOpacity>
-            </View>
           </View>
         </View>
       </Modal>
