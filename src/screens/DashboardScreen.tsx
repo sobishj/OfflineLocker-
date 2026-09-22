@@ -1,7 +1,11 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, KeyboardAvoidingView, Platform, ActivityIndicator, ScrollView, useWindowDimensions } from 'react-native';
 import { useLockerStore } from '../store/useLockerStore';
-import { AppTheme, ACCENTS, BACKGROUNDS, BAR_COLORS, CUSTOM_KEY, getAccent, getBackground, getBar } from '../theme/AppTheme';
+import {
+  AppTheme, ACCENTS, BACKGROUNDS, BAR_COLORS, CUSTOM_KEY,
+  DEFAULT_ACCENT_KEY, DEFAULT_BACKGROUND_KEY, DEFAULT_BAR_KEY,
+  getAccent, getBackground, getBar,
+} from '../theme/AppTheme';
 import ColorPickerModal from '../components/ColorPickerModal';
 import { HomeTab } from '../models';
 import DiaryView from '../components/DiaryView';
@@ -620,21 +624,33 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   };
 
   React.useLayoutEffect(() => {
+    // On a 320dp phone the title and these buttons do not both fit at full
+    // size, and the title was ending up underneath them
+    const isNarrow = screenWidth < 360;
+
     navigation.setOptions({
       headerTitle: () => (
-        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        // Capped here rather than through headerTitleContainerStyle, which the
+        // native stack does not take: without a bound the title keeps its
+        // natural width and slides under the buttons instead of shortening
+        <View style={{ flexDirection: 'row', alignItems: 'center', maxWidth: screenWidth - (isNarrow ? 150 : 200) }}>
           <View style={{
-            width: 32,
-            height: 32,
+            width: isNarrow ? 28 : 32,
+            height: isNarrow ? 28 : 32,
             borderRadius: 10,
             backgroundColor: AppTheme.colors.primary,
             justifyContent: 'center',
             alignItems: 'center',
-            marginRight: 10,
+            marginRight: isNarrow ? 8 : 10,
           }}>
-            <Ionicons name="lock-closed" size={18} color="#ffffff" />
+            <Ionicons name="lock-closed" size={isNarrow ? 16 : 18} color="#ffffff" />
           </View>
-          <Text style={{ fontSize: 20, fontWeight: '700', color: AppTheme.colors.text }}>OfflineLocker</Text>
+          <Text
+            numberOfLines={1}
+            style={{ fontSize: isNarrow ? 16 : 20, fontWeight: '700', color: AppTheme.colors.text, flexShrink: 1 }}
+          >
+            OfflineLocker
+          </Text>
         </View>
       ),
       headerRight: () => (
@@ -645,16 +661,17 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               alignItems: 'center', 
               justifyContent: 'center',
               backgroundColor: AppTheme.colors.cardBackground, 
-              width: 36,
-              height: 36,
+              width: isNarrow ? 32 : 36,
+              height: isNarrow ? 32 : 36,
               borderRadius: 18, 
               borderWidth: 1, 
               borderColor: AppTheme.colors.border, 
-              marginRight: 8 
+              marginRight: isNarrow ? 6 : 8
             }}
+            accessibilityLabel="Settings"
             {...(Platform.OS === 'web' ? { title: 'Settings' } : {})}
           >
-            <Ionicons name="person-circle-outline" size={22} color={AppTheme.colors.primary} />
+            <Ionicons name="person-circle-outline" size={isNarrow ? 19 : 22} color={AppTheme.colors.primary} />
           </TouchableOpacity>
           <TouchableOpacity 
             onPress={() => setBackupModalVisible(true)} 
@@ -662,20 +679,27 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               alignItems: 'center', 
               justifyContent: 'center',
               backgroundColor: AppTheme.colors.primaryLight, 
-              paddingHorizontal: 14, 
-              paddingVertical: 7, 
+              paddingHorizontal: isNarrow ? 8 : 14,
+              paddingVertical: isNarrow ? 6 : 7,
               borderRadius: 20, 
               borderWidth: 1, 
               borderColor: AppTheme.colors.primaryBorder, 
-              marginRight: 10 
+              marginRight: isNarrow ? 6 : 10
             }}
             {...(Platform.OS === 'web' ? { title: 'Backup & Restore Vault Data' } : {})}
           >
-            <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Backup</Text>
+            {/* The word does not fit on the narrowest phones, and losing it
+                there is better than losing the app's own name */}
+            {isNarrow ? (
+              <Ionicons name="save-outline" size={17} color={AppTheme.colors.primary} />
+            ) : (
+              <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: 13 }}>Backup</Text>
+            )}
           </TouchableOpacity>
           <TouchableOpacity 
             onPress={handleSignOut} 
             style={{ padding: 4, marginRight: 6 }}
+            accessibilityLabel="Sign out"
             {...(Platform.OS === 'web' ? { title: 'Sign Out' } : {})}
           >
             <Ionicons name="power-outline" size={17} color={AppTheme.colors.primary} />
@@ -683,7 +707,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         </View>
       )
     });
-  }, [navigation, currentUser]);
+    // screenWidth matters: the header lays out differently on a narrow phone
+  }, [navigation, currentUser, screenWidth]);
 
   const renderWithTooltip = (element: React.ReactElement, tooltipText: string, display: 'inline-flex' | 'flex' | 'block' = 'inline-flex') => {
     if (Platform.OS === 'web' && tooltipText) {
@@ -725,6 +750,10 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         style={{ flex: 1 }}
         data={sortedTabs}
         keyExtractor={item => item.uuid}
+        initialNumToRender={12}
+        maxToRenderPerBatch={10}
+        updateCellsBatchingPeriod={50}
+        windowSize={7}
         contentContainerStyle={{ padding: AppTheme.spacing.m, paddingBottom: 100 }}
         ListHeaderComponent={
           <View style={styles.sectionHeaderContainer}>
@@ -1234,28 +1263,28 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                     <TouchableOpacity
                       key={option.key}
                       onPress={() => setAccent(option.key)}
-                      style={{ width: '25%', alignItems: 'center', marginBottom: 14 }}
+                      style={{ width: '20%', alignItems: 'center', marginBottom: 10 }}
                       accessibilityLabel={option.label}
                       activeOpacity={0.7}
                     >
                       <View
                         style={{
-                          width: 46,
-                          height: 46,
-                          borderRadius: 23,
+                          width: 34,
+                          height: 34,
+                          borderRadius: 17,
                           alignItems: 'center',
                           justifyContent: 'center',
                           backgroundColor: option.primary,
-                          borderWidth: selected ? 3 : 1,
+                          borderWidth: selected ? 2 : 1,
                           borderColor: selected ? option.primaryBorder : 'rgba(15,23,42,0.08)',
                         }}
                       >
-                        {selected && <Ionicons name="checkmark" size={20} color="#ffffff" />}
+                        {selected && <Ionicons name="checkmark" size={15} color="#ffffff" />}
                       </View>
                       <Text
                         style={{
-                          fontSize: 11,
-                          marginTop: 5,
+                          fontSize: 10,
+                          marginTop: 4,
                           fontWeight: selected ? '700' : '500',
                           color: selected ? AppTheme.colors.text : AppTheme.colors.textSecondary,
                         }}
@@ -1263,6 +1292,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                       >
                         {option.label}
                       </Text>
+                      {option.key === DEFAULT_ACCENT_KEY && <Text style={styles.defaultTag}>Default</Text>}
                     </TouchableOpacity>
                   );
                 })}
@@ -1274,19 +1304,19 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                     if (accentKey !== CUSTOM_KEY) setAccent(CUSTOM_KEY);
                     setColorPickerFor('accent');
                   }}
-                  style={{ width: '25%', alignItems: 'center', marginBottom: 14 }}
+                  style={{ width: '20%', alignItems: 'center', marginBottom: 10 }}
                   accessibilityLabel="Custom theme colour"
                   activeOpacity={0.7}
                 >
                   <View
                     style={{
-                      width: 46,
-                      height: 46,
-                      borderRadius: 23,
+                      width: 34,
+                      height: 34,
+                      borderRadius: 17,
                       alignItems: 'center',
                       justifyContent: 'center',
                       backgroundColor: getAccent(CUSTOM_KEY, customAccent).primary,
-                      borderWidth: accentKey === CUSTOM_KEY ? 3 : 1,
+                      borderWidth: accentKey === CUSTOM_KEY ? 2 : 1,
                       borderColor: accentKey === CUSTOM_KEY
                         ? getAccent(CUSTOM_KEY, customAccent).primaryBorder
                         : 'rgba(15,23,42,0.08)',
@@ -1294,14 +1324,14 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                   >
                     <Ionicons
                       name={accentKey === CUSTOM_KEY ? 'brush' : 'color-palette-outline'}
-                      size={19}
+                      size={14}
                       color="#ffffff"
                     />
                   </View>
                   <Text
                     style={{
-                      fontSize: 11,
-                      marginTop: 5,
+                      fontSize: 10,
+                      marginTop: 4,
                       fontWeight: accentKey === CUSTOM_KEY ? '700' : '500',
                       color: accentKey === CUSTOM_KEY ? AppTheme.colors.text : AppTheme.colors.textSecondary,
                     }}
@@ -1322,15 +1352,15 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                     <TouchableOpacity
                       key={option.key}
                       onPress={() => setBackground(option.key)}
-                      style={{ width: '25%', alignItems: 'center', marginBottom: 14 }}
+                      style={{ width: '20%', alignItems: 'center', marginBottom: 10 }}
                       accessibilityLabel={option.label}
                       activeOpacity={0.7}
                     >
                       <View
                         style={{
-                          width: 46,
-                          height: 46,
-                          borderRadius: 14,
+                          width: 34,
+                          height: 34,
+                          borderRadius: 11,
                           alignItems: 'center',
                           justifyContent: 'center',
                           backgroundColor: option.color,
@@ -1338,12 +1368,12 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                           borderColor: selected ? AppTheme.colors.primary : 'rgba(15,23,42,0.12)',
                         }}
                       >
-                        {selected && <Ionicons name="checkmark" size={18} color={AppTheme.colors.primary} />}
+                        {selected && <Ionicons name="checkmark" size={14} color={AppTheme.colors.primary} />}
                       </View>
                       <Text
                         style={{
-                          fontSize: 11,
-                          marginTop: 5,
+                          fontSize: 10,
+                          marginTop: 4,
                           fontWeight: selected ? '700' : '500',
                           color: selected ? AppTheme.colors.text : AppTheme.colors.textSecondary,
                         }}
@@ -1351,6 +1381,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                       >
                         {option.label}
                       </Text>
+                      {option.key === DEFAULT_BACKGROUND_KEY && <Text style={styles.defaultTag}>Default</Text>}
                     </TouchableOpacity>
                   );
                 })}
@@ -1360,15 +1391,15 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                     if (backgroundKey !== CUSTOM_KEY) setBackground(CUSTOM_KEY);
                     setColorPickerFor('background');
                   }}
-                  style={{ width: '25%', alignItems: 'center', marginBottom: 14 }}
+                  style={{ width: '20%', alignItems: 'center', marginBottom: 10 }}
                   accessibilityLabel="Custom background colour"
                   activeOpacity={0.7}
                 >
                   <View
                     style={{
-                      width: 46,
-                      height: 46,
-                      borderRadius: 14,
+                      width: 34,
+                      height: 34,
+                      borderRadius: 11,
                       alignItems: 'center',
                       justifyContent: 'center',
                       backgroundColor: getBackground(CUSTOM_KEY, customBackground).color,
@@ -1378,14 +1409,14 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                   >
                     <Ionicons
                       name={backgroundKey === CUSTOM_KEY ? 'brush' : 'color-palette-outline'}
-                      size={18}
+                      size={14}
                       color={AppTheme.colors.primary}
                     />
                   </View>
                   <Text
                     style={{
-                      fontSize: 11,
-                      marginTop: 5,
+                      fontSize: 10,
+                      marginTop: 4,
                       fontWeight: backgroundKey === CUSTOM_KEY ? '700' : '500',
                       color: backgroundKey === CUSTOM_KEY ? AppTheme.colors.text : AppTheme.colors.textSecondary,
                     }}
@@ -1406,15 +1437,15 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                     <TouchableOpacity
                       key={option.key}
                       onPress={() => setBar(option.key)}
-                      style={{ width: '25%', alignItems: 'center', marginBottom: 14 }}
+                      style={{ width: '20%', alignItems: 'center', marginBottom: 10 }}
                       accessibilityLabel={option.label}
                       activeOpacity={0.7}
                     >
                       <View
                         style={{
-                          width: 46,
-                          height: 46,
-                          borderRadius: 14,
+                          width: 34,
+                          height: 34,
+                          borderRadius: 11,
                           alignItems: 'center',
                           justifyContent: 'center',
                           backgroundColor: option.color,
@@ -1422,12 +1453,12 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                           borderColor: selected ? AppTheme.colors.primary : 'rgba(15,23,42,0.12)',
                         }}
                       >
-                        {selected && <Ionicons name="checkmark" size={18} color={AppTheme.colors.primary} />}
+                        {selected && <Ionicons name="checkmark" size={14} color={AppTheme.colors.primary} />}
                       </View>
                       <Text
                         style={{
-                          fontSize: 11,
-                          marginTop: 5,
+                          fontSize: 10,
+                          marginTop: 4,
                           fontWeight: selected ? '700' : '500',
                           color: selected ? AppTheme.colors.text : AppTheme.colors.textSecondary,
                         }}
@@ -1435,6 +1466,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                       >
                         {option.label}
                       </Text>
+                      {option.key === DEFAULT_BAR_KEY && <Text style={styles.defaultTag}>Default</Text>}
                     </TouchableOpacity>
                   );
                 })}
@@ -1444,15 +1476,15 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                     if (barKey !== CUSTOM_KEY) setBar(CUSTOM_KEY);
                     setColorPickerFor('bar');
                   }}
-                  style={{ width: '25%', alignItems: 'center', marginBottom: 14 }}
+                  style={{ width: '20%', alignItems: 'center', marginBottom: 10 }}
                   accessibilityLabel="Custom bar colour"
                   activeOpacity={0.7}
                 >
                   <View
                     style={{
-                      width: 46,
-                      height: 46,
-                      borderRadius: 14,
+                      width: 34,
+                      height: 34,
+                      borderRadius: 11,
                       alignItems: 'center',
                       justifyContent: 'center',
                       backgroundColor: getBar(CUSTOM_KEY, customBar).color,
@@ -1462,14 +1494,14 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                   >
                     <Ionicons
                       name={barKey === CUSTOM_KEY ? 'brush' : 'color-palette-outline'}
-                      size={18}
+                      size={14}
                       color={AppTheme.colors.primary}
                     />
                   </View>
                   <Text
                     style={{
-                      fontSize: 11,
-                      marginTop: 5,
+                      fontSize: 10,
+                      marginTop: 4,
                       fontWeight: barKey === CUSTOM_KEY ? '700' : '500',
                       color: barKey === CUSTOM_KEY ? AppTheme.colors.text : AppTheme.colors.textSecondary,
                     }}
@@ -2099,6 +2131,8 @@ const createStyles = () => StyleSheet.create({
   },
   settingsRowTitle: { fontSize: 14, fontWeight: '700', color: AppTheme.colors.text },
   settingsRowSubtitle: { fontSize: 11.5, color: AppTheme.colors.textSecondary, marginTop: 2 },
+  /** Marks the option the app ships with, under its name. */
+  defaultTag: { fontSize: 8.5, fontWeight: '600', color: AppTheme.colors.textMuted, marginTop: 1 },
   tabPickerBtn: {
     flexDirection: 'row',
     alignItems: 'center',

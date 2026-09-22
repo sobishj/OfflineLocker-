@@ -17,7 +17,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useLockerStore } from '../store/useLockerStore';
-import { AppTheme, getPageColor, PAGE_COLORS, CUSTOM_KEY } from '../theme/AppTheme';
+import { AppTheme, getPageColor, PAGE_COLORS, CUSTOM_KEY, DEFAULT_PAGE_COLOR_KEY } from '../theme/AppTheme';
 import ColorPickerModal from './ColorPickerModal';
 import { DiaryPinMode } from '../models';
 
@@ -50,8 +50,13 @@ const daysInMonth = (year: number, monthIndex: number) => new Date(year, monthIn
 const PAGE_LINE_HEIGHT = 24;
 const PAGE_PADDING = 16;
 
-/** Rings in the spiral binding down the left edge. */
-const SPIRAL_COUNT = 16;
+/**
+ * Spacing of the rings in the spiral binding down the left edge. The count is
+ * worked out from the height of the page rather than fixed, so a short screen
+ * gets fewer rings instead of the same sixteen squeezed together.
+ */
+const SPIRAL_SPACING = 26;
+const SPIRAL_MIN = 6;
 
 /** How far a drag must travel before it counts as a page turn. */
 const SWIPE_THRESHOLD = 60;
@@ -68,6 +73,12 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
     themeVersion, diaryPageColor, customDiaryPageColor, loadPageColors, setDiaryPageColor, setCustomDiaryPageColor,
   } = useLockerStore();
   const styles = useMemo(() => createStyles(), [themeVersion]);
+  const { width: viewportWidth } = useWindowDimensions();
+  /**
+   * Below this the date and four buttons cannot share a line: the date was
+   * being squeezed down to one letter per row. They go on two lines instead.
+   */
+  const isTightHeader = viewportWidth < 380;
   const paper = getPageColor(diaryPageColor, customDiaryPageColor);
   const { width: screenWidth } = useWindowDimensions();
 
@@ -276,6 +287,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
   const paperStyle = { backgroundColor: paper.paper, borderColor: paper.rule, borderLeftColor: paper.rule };
 
   const ruleCount = Math.max(0, Math.floor((pageHeight - PAGE_PADDING * 2) / PAGE_LINE_HEIGHT));
+  const spiralCount = Math.max(SPIRAL_MIN, Math.round((pageHeight - 28) / SPIRAL_SPACING));
 
   const renderRules = () =>
     diaryLined && ruleCount > 0 ? (
@@ -599,10 +611,10 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
   const renderPage = () => (
     <View style={{ flex: 1 }}>
       {/* HEADER — the date, with the pickers and the lock on the right */}
-      <View style={styles.header}>
-        {/* The date and its two arrows are laid over the whole row so the
-            buttons on the right cannot pull them off centre */}
-        <View style={styles.dateGroup} pointerEvents="box-none">
+      <View style={[styles.header, isTightHeader && styles.headerStacked]}>
+        {/* The date and its two arrows share the row with the buttons, so the
+            date shortens rather than being drawn underneath them */}
+        <View style={[styles.dateGroup, isTightHeader && styles.dateGroupStacked]} pointerEvents="box-none">
           {/* Mirrors the badge slot on the right so the date stays dead centre
               whether or not the badge is showing */}
           <View style={styles.todaySlot} />
@@ -629,6 +641,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
           </View>
         </View>
 
+        <View style={[styles.headerControls, isTightHeader && styles.headerControlsStacked]}>
         <TouchableOpacity
           onPress={() => {
             if (!panelOpen) {
@@ -677,6 +690,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
             color={diaryPinMode === 'none' ? '#94a3b8' : '#f59e0b'}
           />
         </TouchableOpacity>
+        </View>
       </View>
 
       {renderSlidePanel()}
@@ -686,7 +700,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
         <View style={{ flex: 1 }}>
           {/* The binding stays put while the sheets turn through it */}
           <View style={styles.spiralColumn} pointerEvents="none">
-            {Array.from({ length: SPIRAL_COUNT }, (_, i) => (
+            {Array.from({ length: spiralCount }, (_, i) => (
               <View key={i} style={styles.spiralRing} />
             ))}
           </View>
@@ -747,9 +761,10 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
                       isChosen && styles.swatchChosen,
                     ]}
                   >
-                    {isChosen && <Ionicons name="checkmark" size={16} color={AppTheme.colors.primary} />}
+                    {isChosen && <Ionicons name="checkmark" size={13} color={AppTheme.colors.primary} />}
                   </View>
                   <Text style={styles.swatchLabel} numberOfLines={1}>{option.label}</Text>
+                  {option.key === DEFAULT_PAGE_COLOR_KEY && <Text style={styles.swatchDefault}>Default</Text>}
                 </TouchableOpacity>
               );
             })}
@@ -777,7 +792,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
               >
                 <Ionicons
                   name={diaryPageColor === CUSTOM_KEY ? 'brush' : 'color-palette-outline'}
-                  size={17}
+                  size={13}
                   color={AppTheme.colors.primary}
                 />
               </View>
@@ -1093,6 +1108,11 @@ const createStyles = () => StyleSheet.create({
     paddingBottom: 10,
     position: 'relative',
   },
+  headerStacked: { flexDirection: 'column', alignItems: 'stretch', paddingTop: 10, paddingBottom: 8 },
+  headerControls: { flexDirection: 'row', alignItems: 'center' },
+  headerControlsStacked: { justifyContent: 'flex-end', marginTop: 8 },
+  // In a column the date must not stretch to fill the height
+  dateGroupStacked: { flex: 0 },
   dateGroup: {
     // A flex child rather than an absolute box with room reserved for the
     // buttons: with four of them beside it, a fixed reservation was either too
@@ -1306,17 +1326,19 @@ const createStyles = () => StyleSheet.create({
   modalTitle: { fontSize: 17, fontWeight: '800', color: AppTheme.colors.text, marginBottom: 4 },
   modalHint: { fontSize: 12, color: AppTheme.colors.textSecondary, marginBottom: 14 },
   swatchGrid: { flexDirection: 'row', flexWrap: 'wrap' },
-  swatchCell: { width: '25%', alignItems: 'center', marginBottom: 14 },
+  swatchCell: { width: '20%', alignItems: 'center', marginBottom: 10 },
   swatch: {
-    width: 46,
-    height: 46,
-    borderRadius: 12,
+    width: 34,
+    height: 34,
+    borderRadius: 10,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
   swatchChosen: { borderWidth: 2 },
-  swatchLabel: { fontSize: 10.5, color: AppTheme.colors.textSecondary, marginTop: 5 },
+  swatchLabel: { fontSize: 10, color: AppTheme.colors.textSecondary, marginTop: 4 },
+  /** Marks the paper the diary starts out on. */
+  swatchDefault: { fontSize: 8.5, fontWeight: '600', color: AppTheme.colors.textMuted, marginTop: 1 },
   modalDone: {
     alignSelf: 'flex-end',
     paddingHorizontal: 18,

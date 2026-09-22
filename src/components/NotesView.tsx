@@ -15,7 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLockerStore } from '../store/useLockerStore';
 import { Note } from '../models';
-import { AppTheme, getPageColor, PAGE_COLORS, CUSTOM_KEY } from '../theme/AppTheme';
+import { AppTheme, getPageColor, PAGE_COLORS, CUSTOM_KEY, DEFAULT_PAGE_COLOR_KEY } from '../theme/AppTheme';
 import ColorPickerModal from './ColorPickerModal';
 import DraggableFAB from './DraggableFAB';
 
@@ -278,6 +278,10 @@ export default function NotesView({ isMobile }: NotesViewProps) {
         style={{ flex: 1 }}
         data={visibleNotes}
         keyExtractor={item => String(item.id)}
+        initialNumToRender={12}
+        maxToRenderPerBatch={10}
+        updateCellsBatchingPeriod={50}
+        windowSize={7}
         contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 90 }}
         renderItem={({ item }) => {
           const locked = !isUnlocked(item);
@@ -599,14 +603,14 @@ export default function NotesView({ isMobile }: NotesViewProps) {
                   <TouchableOpacity
                     key={option.key}
                     onPress={() => setNotePageColor(option.key)}
-                    style={{ width: '25%', alignItems: 'center', marginBottom: 14 }}
+                    style={{ width: '20%', alignItems: 'center', marginBottom: 10 }}
                     accessibilityLabel={option.label}
                   >
                     <View
                       style={{
-                        width: 46,
-                        height: 46,
-                        borderRadius: 12,
+                        width: 34,
+                        height: 34,
+                        borderRadius: 10,
                         alignItems: 'center',
                         justifyContent: 'center',
                         backgroundColor: option.paper,
@@ -614,11 +618,16 @@ export default function NotesView({ isMobile }: NotesViewProps) {
                         borderColor: isChosen ? AppTheme.colors.primary : option.rule,
                       }}
                     >
-                      {isChosen && <Ionicons name="checkmark" size={16} color={AppTheme.colors.primary} />}
+                      {isChosen && <Ionicons name="checkmark" size={13} color={AppTheme.colors.primary} />}
                     </View>
-                    <Text style={{ fontSize: 10.5, color: AppTheme.colors.textSecondary, marginTop: 5 }} numberOfLines={1}>
+                    <Text style={{ fontSize: 10, color: AppTheme.colors.textSecondary, marginTop: 4 }} numberOfLines={1}>
                       {option.label}
                     </Text>
+                    {option.key === DEFAULT_PAGE_COLOR_KEY && (
+                      <Text style={{ fontSize: 8.5, fontWeight: '600', color: AppTheme.colors.textMuted, marginTop: 1 }}>
+                        Default
+                      </Text>
+                    )}
                   </TouchableOpacity>
                 );
               })}
@@ -629,14 +638,14 @@ export default function NotesView({ isMobile }: NotesViewProps) {
                   if (notePageColor !== CUSTOM_KEY) setNotePageColor(CUSTOM_KEY);
                   setPaperPickerVisible(true);
                 }}
-                style={{ width: '25%', alignItems: 'center', marginBottom: 14 }}
+                style={{ width: '20%', alignItems: 'center', marginBottom: 10 }}
                 accessibilityLabel="Custom page colour"
               >
                 <View
                   style={{
-                    width: 46,
-                    height: 46,
-                    borderRadius: 12,
+                    width: 34,
+                    height: 34,
+                    borderRadius: 10,
                     alignItems: 'center',
                     justifyContent: 'center',
                     backgroundColor: getPageColor(CUSTOM_KEY, customNotePageColor).paper,
@@ -648,11 +657,11 @@ export default function NotesView({ isMobile }: NotesViewProps) {
                 >
                   <Ionicons
                     name={notePageColor === CUSTOM_KEY ? 'brush' : 'color-palette-outline'}
-                    size={17}
+                    size={13}
                     color={AppTheme.colors.primary}
                   />
                 </View>
-                <Text style={{ fontSize: 10.5, color: AppTheme.colors.textSecondary, marginTop: 5 }} numberOfLines={1}>
+                <Text style={{ fontSize: 10, color: AppTheme.colors.textSecondary, marginTop: 4 }} numberOfLines={1}>
                   Custom
                 </Text>
               </TouchableOpacity>

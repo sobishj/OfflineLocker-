@@ -1931,6 +1931,12 @@ export default function TabDetailScreen({ route, navigation }: any) {
             <FlatList
               data={sortedDocuments}
               keyExtractor={item => item.id!.toString()}
+              // Windowing: without these a vault of a few hundred documents
+              // builds every row up front, on the thread drawing the screen
+              initialNumToRender={12}
+              maxToRenderPerBatch={10}
+              updateCellsBatchingPeriod={50}
+              windowSize={7}
               contentContainerStyle={{ padding: isMobile ? 9 : 8 }}
               renderItem={({ item }) => {
                 const isSelected = previewDoc?.id === item.id;

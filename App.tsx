@@ -33,7 +33,10 @@ export default function App() {
     // behind us and the PIN is needed again. Reading the store at the moment
     // of the event keeps this listener out of the render cycle.
     const subscription = AppState.addEventListener('change', next => {
-      if (next !== 'background' && next !== 'inactive') return;
+      // 'background' only. iOS also reports 'inactive' for the control centre,
+      // the app switcher and system permission sheets, none of which mean the
+      // user has left; locking on those would throw away what they were doing.
+      if (next !== 'background') return;
       if (isAutoLockSuppressed()) return;
       const state = useLockerStore.getState();
       if (state.isAuthenticated) state.logout();
