@@ -1,7 +1,8 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, KeyboardAvoidingView, Platform, ActivityIndicator, ScrollView, useWindowDimensions } from 'react-native';
 import { useLockerStore } from '../store/useLockerStore';
-import { AppTheme } from '../theme/AppTheme';
+import { AppTheme, ACCENTS, BACKGROUNDS, BAR_COLORS, CUSTOM_KEY, getAccent, getBackground, getBar } from '../theme/AppTheme';
+import ColorPickerModal from '../components/ColorPickerModal';
 import { HomeTab } from '../models';
 import DiaryView from '../components/DiaryView';
 import NotesView from '../components/NotesView';
@@ -28,7 +29,8 @@ const HOME_TAB_OPTIONS: { key: HomeTab; label: string; icon: 'folder' | 'book' |
 ];
 
 export default function DashboardScreen({ navigation }: DashboardProps) {
-  const { tabs, tabDocCounts, logout, createTab, updateTab, deleteTab, verifyTabPin, exportBackup, importBackup, currentUser, updateUserProfile } = useLockerStore();
+  const { tabs, tabDocCounts, logout, createTab, updateTab, deleteTab, verifyTabPin, exportBackup, importBackup, currentUser, updateUserProfile, accentKey, setAccent, customAccent, setCustomAccent, backgroundKey, setBackground, customBackground, setCustomBackground, barKey, setBar, customBar, setCustomBar, themeVersion } = useLockerStore();
+  const styles = useMemo(() => createStyles(), [themeVersion]);
   const { width: screenWidth } = useWindowDimensions();
   const isMobile = screenWidth < 768;
   const insets = useSafeAreaInsets();
@@ -38,7 +40,11 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   // Only the first arrival should follow the preference; later tab taps stand
   const appliedDefaultRef = useRef(false);
   const [tabPickerOpen, setTabPickerOpen] = useState(false);
-  // Held as a draft so Save Changes commits it, like the other fields here
+  // Settings split in two: credentials behind the current PIN, preferences not
+  const [settingsMenuVisible, setSettingsMenuVisible] = useState(false);
+  const [appSettingsVisible, setAppSettingsVisible] = useState(false);
+  // Which palette the colour picker is mixing for, if it is open at all
+  const [colorPickerFor, setColorPickerFor] = useState<'accent' | 'background' | 'bar' | null>(null);
   const [accountDefaultTab, setAccountDefaultTab] = useState<HomeTab>('files');
 
   // The preference is read from the database, so the tab can only be applied
@@ -400,7 +406,10 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         setImportPin('');
         setPickedFileContent(null);
         setPickedFileName(null);
-        Alert.alert('Backup Restored', `Successfully restored ${res.tabsCount} tabs and ${res.docsCount} documents!`);
+        Alert.alert(
+          'Backup Restored',
+          `Restored ${res.tabsCount} tabs, ${res.docsCount} documents, ${res.diaryCount} diary pages and ${res.notesCount} notes.`
+        );
       } catch (e: any) {
         Alert.alert('Import Error', e?.message || 'Failed to import backup. Incorrect PIN or invalid file.');
       } finally {
@@ -437,19 +446,6 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   const handleUpdateAccount = async () => {
     setAccountError(null);
 
-    const isTabChanged = accountDefaultTab !== defaultHomeTab;
-    const wantsCredentialChange =
-      (isEditingUsername && accountUsername.trim() !== (currentUser?.username || '')) || isEditingNewPin;
-
-    // A launch preference is not a credential, so on its own it saves without
-    // asking for the current PIN
-    if (isTabChanged && !wantsCredentialChange) {
-      await setDefaultHomeTab(accountDefaultTab);
-      setAccountModalVisible(false);
-      showAccountFeedback('Saved', 'Your default tab has been updated.');
-      return;
-    }
-
     // 1. Check if user clicked save without entering old pin
     if (!accountCurrentPin.trim()) {
       showAccountFeedback('Current PIN Required', 'Please enter your current PIN to save changes.');
@@ -471,13 +467,9 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     const isPinChanged = isEditingNewPin;
 
     // 3. Check if any fields were actually changed
-    if (!isUsernameChanged && !isPinChanged && !isTabChanged) {
-      showAccountFeedback('No Changes', 'Please click Edit on Username or New PIN, or pick a different default tab.');
+    if (!isUsernameChanged && !isPinChanged) {
+      showAccountFeedback('No Changes', 'Please click Edit on Username or New PIN before saving.');
       return;
-    }
-
-    if (isTabChanged) {
-      await setDefaultHomeTab(accountDefaultTab);
     }
 
     if (isEditingUsername && !accountUsername.trim()) {
@@ -648,7 +640,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       headerRight: () => (
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           <TouchableOpacity 
-            onPress={handleOpenAccountModal}
+            onPress={() => setSettingsMenuVisible(true)}
             style={{ 
               alignItems: 'center', 
               justifyContent: 'center',
@@ -660,7 +652,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               borderColor: AppTheme.colors.border, 
               marginRight: 8 
             }}
-            {...(Platform.OS === 'web' ? { title: 'Account Settings' } : {})}
+            {...(Platform.OS === 'web' ? { title: 'Settings' } : {})}
           >
             <Ionicons name="person-circle-outline" size={22} color={AppTheme.colors.primary} />
           </TouchableOpacity>
@@ -1109,6 +1101,420 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* SETTINGS CHOOSER: who you are, and how the app behaves */}
+      <Modal visible={settingsMenuVisible} animationType="fade" transparent onRequestClose={() => setSettingsMenuVisible(false)}>
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setSettingsMenuVisible(false)}
+        >
+          <TouchableOpacity activeOpacity={1} style={[styles.modalContent, { paddingBottom: 8 }]}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: AppTheme.spacing.m }}>
+              <Text style={styles.modalTitle}>Settings</Text>
+              <TouchableOpacity onPress={() => setSettingsMenuVisible(false)}>
+                <Ionicons name="close-circle-outline" size={24} color={AppTheme.colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            {[
+              {
+                key: 'profile',
+                icon: 'person-outline' as const,
+                title: 'Profile settings',
+                subtitle: 'Your username and unlock PIN',
+                onPress: () => { setSettingsMenuVisible(false); handleOpenAccountModal(); },
+              },
+              {
+                key: 'app',
+                icon: 'options-outline' as const,
+                title: 'App settings',
+                subtitle: 'Launch page and theme',
+                onPress: () => {
+                  setSettingsMenuVisible(false);
+                  setAccountDefaultTab(defaultHomeTab);
+                  setTabPickerOpen(false);
+                  setAppSettingsVisible(true);
+                },
+              },
+            ].map(item => (
+              <TouchableOpacity key={item.key} onPress={item.onPress} style={styles.settingsRow} activeOpacity={0.7}>
+                <View style={styles.settingsRowIcon}>
+                  <Ionicons name={item.icon} size={19} color={AppTheme.colors.primary} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.settingsRowTitle}>{item.title}</Text>
+                  <Text style={styles.settingsRowSubtitle}>{item.subtitle}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={AppTheme.colors.textMuted} />
+              </TouchableOpacity>
+            ))}
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* APP SETTINGS: preferences, so each one saves as it is chosen */}
+      <Modal visible={appSettingsVisible} animationType="slide" transparent onRequestClose={() => setAppSettingsVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '90%' }]}>
+            <ScrollView contentContainerStyle={{ paddingBottom: 4 }} showsVerticalScrollIndicator={false}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: AppTheme.spacing.m }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: AppTheme.colors.primaryLight, justifyContent: 'center', alignItems: 'center', marginRight: 10 }}>
+                    <Ionicons name="options-outline" size={20} color={AppTheme.colors.primary} />
+                  </View>
+                  <Text style={styles.modalTitle}>App settings</Text>
+                </View>
+                <TouchableOpacity onPress={() => setAppSettingsVisible(false)}>
+                  <Ionicons name="close-circle-outline" size={24} color={AppTheme.colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+
+              {/* Which tab the app opens on */}
+              <Text style={styles.label}>Launch page</Text>
+              <TouchableOpacity
+                onPress={() => setTabPickerOpen(!tabPickerOpen)}
+                style={[styles.tabPickerBtn, { marginTop: 6 }]}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={HOME_TAB_OPTIONS.find(o => o.key === accountDefaultTab)?.icon || 'folder'}
+                  size={17}
+                  color={AppTheme.colors.primary}
+                  style={{ marginRight: 9 }}
+                />
+                <Text style={styles.tabPickerText}>
+                  {HOME_TAB_OPTIONS.find(o => o.key === accountDefaultTab)?.label || 'Files'}
+                </Text>
+                <Ionicons
+                  name={tabPickerOpen ? 'chevron-up' : 'chevron-down'}
+                  size={15}
+                  color={AppTheme.colors.textSecondary}
+                />
+              </TouchableOpacity>
+
+              {tabPickerOpen && (
+                <View style={styles.tabPickerList}>
+                  {HOME_TAB_OPTIONS.map(option => {
+                    const selected = option.key === accountDefaultTab;
+                    return (
+                      <TouchableOpacity
+                        key={option.key}
+                        onPress={() => {
+                          // A preference, not a credential: it saves on the spot
+                          setAccountDefaultTab(option.key);
+                          setTabPickerOpen(false);
+                          setDefaultHomeTab(option.key);
+                        }}
+                        style={[styles.tabPickerItem, selected && styles.tabPickerItemActive]}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons
+                          name={option.icon}
+                          size={16}
+                          color={selected ? AppTheme.colors.primary : AppTheme.colors.textSecondary}
+                          style={{ marginRight: 9 }}
+                        />
+                        <Text style={[styles.tabPickerItemText, selected && styles.tabPickerItemTextActive]}>
+                          {option.label}
+                        </Text>
+                        {selected && <Ionicons name="checkmark" size={16} color={AppTheme.colors.primary} />}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+
+              {/* Accent */}
+              <Text style={[styles.label, { marginTop: 18 }]}>Theme</Text>
+              <Text style={styles.settingsRowSubtitle}>The colour the whole app is drawn in.</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 10 }}>
+                {ACCENTS.map(option => {
+                  const selected = option.key === accentKey;
+                  return (
+                    <TouchableOpacity
+                      key={option.key}
+                      onPress={() => setAccent(option.key)}
+                      style={{ width: '25%', alignItems: 'center', marginBottom: 14 }}
+                      accessibilityLabel={option.label}
+                      activeOpacity={0.7}
+                    >
+                      <View
+                        style={{
+                          width: 46,
+                          height: 46,
+                          borderRadius: 23,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          backgroundColor: option.primary,
+                          borderWidth: selected ? 3 : 1,
+                          borderColor: selected ? option.primaryBorder : 'rgba(15,23,42,0.08)',
+                        }}
+                      >
+                        {selected && <Ionicons name="checkmark" size={20} color="#ffffff" />}
+                      </View>
+                      <Text
+                        style={{
+                          fontSize: 11,
+                          marginTop: 5,
+                          fontWeight: selected ? '700' : '500',
+                          color: selected ? AppTheme.colors.text : AppTheme.colors.textSecondary,
+                        }}
+                        numberOfLines={1}
+                      >
+                        {option.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+
+                {/* Whatever the user mixed. Tapping it again reopens the mixer,
+                    so the colour can be adjusted rather than only replaced. */}
+                <TouchableOpacity
+                  onPress={() => {
+                    if (accentKey !== CUSTOM_KEY) setAccent(CUSTOM_KEY);
+                    setColorPickerFor('accent');
+                  }}
+                  style={{ width: '25%', alignItems: 'center', marginBottom: 14 }}
+                  accessibilityLabel="Custom theme colour"
+                  activeOpacity={0.7}
+                >
+                  <View
+                    style={{
+                      width: 46,
+                      height: 46,
+                      borderRadius: 23,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      backgroundColor: getAccent(CUSTOM_KEY, customAccent).primary,
+                      borderWidth: accentKey === CUSTOM_KEY ? 3 : 1,
+                      borderColor: accentKey === CUSTOM_KEY
+                        ? getAccent(CUSTOM_KEY, customAccent).primaryBorder
+                        : 'rgba(15,23,42,0.08)',
+                    }}
+                  >
+                    <Ionicons
+                      name={accentKey === CUSTOM_KEY ? 'brush' : 'color-palette-outline'}
+                      size={19}
+                      color="#ffffff"
+                    />
+                  </View>
+                  <Text
+                    style={{
+                      fontSize: 11,
+                      marginTop: 5,
+                      fontWeight: accentKey === CUSTOM_KEY ? '700' : '500',
+                      color: accentKey === CUSTOM_KEY ? AppTheme.colors.text : AppTheme.colors.textSecondary,
+                    }}
+                    numberOfLines={1}
+                  >
+                    Custom
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Background */}
+              <Text style={[styles.label, { marginTop: 6 }]}>Background</Text>
+              <Text style={styles.settingsRowSubtitle}>What the app is laid out on, behind the cards.</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 10 }}>
+                {BACKGROUNDS.map(option => {
+                  const selected = option.key === backgroundKey;
+                  return (
+                    <TouchableOpacity
+                      key={option.key}
+                      onPress={() => setBackground(option.key)}
+                      style={{ width: '25%', alignItems: 'center', marginBottom: 14 }}
+                      accessibilityLabel={option.label}
+                      activeOpacity={0.7}
+                    >
+                      <View
+                        style={{
+                          width: 46,
+                          height: 46,
+                          borderRadius: 14,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          backgroundColor: option.color,
+                          borderWidth: selected ? 2 : 1,
+                          borderColor: selected ? AppTheme.colors.primary : 'rgba(15,23,42,0.12)',
+                        }}
+                      >
+                        {selected && <Ionicons name="checkmark" size={18} color={AppTheme.colors.primary} />}
+                      </View>
+                      <Text
+                        style={{
+                          fontSize: 11,
+                          marginTop: 5,
+                          fontWeight: selected ? '700' : '500',
+                          color: selected ? AppTheme.colors.text : AppTheme.colors.textSecondary,
+                        }}
+                        numberOfLines={1}
+                      >
+                        {option.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+
+                <TouchableOpacity
+                  onPress={() => {
+                    if (backgroundKey !== CUSTOM_KEY) setBackground(CUSTOM_KEY);
+                    setColorPickerFor('background');
+                  }}
+                  style={{ width: '25%', alignItems: 'center', marginBottom: 14 }}
+                  accessibilityLabel="Custom background colour"
+                  activeOpacity={0.7}
+                >
+                  <View
+                    style={{
+                      width: 46,
+                      height: 46,
+                      borderRadius: 14,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      backgroundColor: getBackground(CUSTOM_KEY, customBackground).color,
+                      borderWidth: backgroundKey === CUSTOM_KEY ? 2 : 1,
+                      borderColor: backgroundKey === CUSTOM_KEY ? AppTheme.colors.primary : 'rgba(15,23,42,0.12)',
+                    }}
+                  >
+                    <Ionicons
+                      name={backgroundKey === CUSTOM_KEY ? 'brush' : 'color-palette-outline'}
+                      size={18}
+                      color={AppTheme.colors.primary}
+                    />
+                  </View>
+                  <Text
+                    style={{
+                      fontSize: 11,
+                      marginTop: 5,
+                      fontWeight: backgroundKey === CUSTOM_KEY ? '700' : '500',
+                      color: backgroundKey === CUSTOM_KEY ? AppTheme.colors.text : AppTheme.colors.textSecondary,
+                    }}
+                    numberOfLines={1}
+                  >
+                    Custom
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Top and bottom bars */}
+              <Text style={[styles.label, { marginTop: 6 }]}>Bars</Text>
+              <Text style={styles.settingsRowSubtitle}>The strip along the top and the tab bar at the bottom.</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 10 }}>
+                {BAR_COLORS.map(option => {
+                  const selected = option.key === barKey;
+                  return (
+                    <TouchableOpacity
+                      key={option.key}
+                      onPress={() => setBar(option.key)}
+                      style={{ width: '25%', alignItems: 'center', marginBottom: 14 }}
+                      accessibilityLabel={option.label}
+                      activeOpacity={0.7}
+                    >
+                      <View
+                        style={{
+                          width: 46,
+                          height: 46,
+                          borderRadius: 14,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          backgroundColor: option.color,
+                          borderWidth: selected ? 2 : 1,
+                          borderColor: selected ? AppTheme.colors.primary : 'rgba(15,23,42,0.12)',
+                        }}
+                      >
+                        {selected && <Ionicons name="checkmark" size={18} color={AppTheme.colors.primary} />}
+                      </View>
+                      <Text
+                        style={{
+                          fontSize: 11,
+                          marginTop: 5,
+                          fontWeight: selected ? '700' : '500',
+                          color: selected ? AppTheme.colors.text : AppTheme.colors.textSecondary,
+                        }}
+                        numberOfLines={1}
+                      >
+                        {option.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+
+                <TouchableOpacity
+                  onPress={() => {
+                    if (barKey !== CUSTOM_KEY) setBar(CUSTOM_KEY);
+                    setColorPickerFor('bar');
+                  }}
+                  style={{ width: '25%', alignItems: 'center', marginBottom: 14 }}
+                  accessibilityLabel="Custom bar colour"
+                  activeOpacity={0.7}
+                >
+                  <View
+                    style={{
+                      width: 46,
+                      height: 46,
+                      borderRadius: 14,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      backgroundColor: getBar(CUSTOM_KEY, customBar).color,
+                      borderWidth: barKey === CUSTOM_KEY ? 2 : 1,
+                      borderColor: barKey === CUSTOM_KEY ? AppTheme.colors.primary : 'rgba(15,23,42,0.12)',
+                    }}
+                  >
+                    <Ionicons
+                      name={barKey === CUSTOM_KEY ? 'brush' : 'color-palette-outline'}
+                      size={18}
+                      color={AppTheme.colors.primary}
+                    />
+                  </View>
+                  <Text
+                    style={{
+                      fontSize: 11,
+                      marginTop: 5,
+                      fontWeight: barKey === CUSTOM_KEY ? '700' : '500',
+                      color: barKey === CUSTOM_KEY ? AppTheme.colors.text : AppTheme.colors.textSecondary,
+                    }}
+                    numberOfLines={1}
+                  >
+                    Custom
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <TouchableOpacity onPress={() => setAppSettingsVisible(false)} style={styles.button}>
+                <Text style={styles.buttonText}>Done</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      <ColorPickerModal
+        visible={colorPickerFor !== null}
+        value={
+          colorPickerFor === 'background' ? customBackground
+            : colorPickerFor === 'bar' ? customBar
+              : customAccent
+        }
+        title={
+          colorPickerFor === 'background' ? 'Custom background'
+            : colorPickerFor === 'bar' ? 'Custom bar colour'
+              : 'Custom theme colour'
+        }
+        hint={
+          colorPickerFor === 'background'
+            ? 'Held pale whatever you pick, so the writing on it stays readable.'
+            : colorPickerFor === 'bar'
+              ? 'Held pale whatever you pick: the bars carry the smallest text in the app.'
+              : 'Used for buttons, icons and highlights across the app.'
+        }
+        onSelect={hex => {
+          if (colorPickerFor === 'background') setCustomBackground(hex);
+          else if (colorPickerFor === 'bar') setCustomBar(hex);
+          else setCustomAccent(hex);
+        }}
+        onClose={() => setColorPickerFor(null)}
+      />
+
       {/* ACCOUNT SETTINGS MODAL (CHANGE USERNAME & PIN) */}
       <Modal visible={accountModalVisible} animationType="slide" transparent>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
@@ -1119,7 +1525,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: AppTheme.colors.primaryLight, justifyContent: 'center', alignItems: 'center', marginRight: 10 }}>
                   <Ionicons name="person" size={20} color={AppTheme.colors.primary} />
                 </View>
-                <Text style={styles.modalTitle}>Account Settings</Text>
+                <Text style={styles.modalTitle}>Profile settings</Text>
               </View>
               <TouchableOpacity onPress={() => setAccountModalVisible(false)}>
                 <Ionicons name="close-circle-outline" size={24} color={AppTheme.colors.textSecondary} />
@@ -1194,62 +1600,6 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                   </Text>
                 </TouchableOpacity>
               </View>
-
-              {/* Which tab the app opens on */}
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, marginBottom: 6 }}>
-                <Text style={styles.label}>Default tab on launch</Text>
-              </View>
-              <TouchableOpacity
-                onPress={() => setTabPickerOpen(!tabPickerOpen)}
-                style={styles.tabPickerBtn}
-                activeOpacity={0.7}
-              >
-                <Ionicons
-                  name={HOME_TAB_OPTIONS.find(o => o.key === accountDefaultTab)?.icon || 'folder'}
-                  size={17}
-                  color={AppTheme.colors.primary}
-                  style={{ marginRight: 9 }}
-                />
-                <Text style={styles.tabPickerText}>
-                  {HOME_TAB_OPTIONS.find(o => o.key === accountDefaultTab)?.label || 'Files'}
-                </Text>
-                <Ionicons
-                  name={tabPickerOpen ? 'chevron-up' : 'chevron-down'}
-                  size={15}
-                  color={AppTheme.colors.textSecondary}
-                />
-              </TouchableOpacity>
-
-              {tabPickerOpen && (
-                <View style={styles.tabPickerList}>
-                  {HOME_TAB_OPTIONS.map(option => {
-                    const selected = option.key === accountDefaultTab;
-                    return (
-                      <TouchableOpacity
-                        key={option.key}
-                        onPress={() => {
-                          setAccountDefaultTab(option.key);
-                          setTabPickerOpen(false);
-                          setAccountError(null);
-                        }}
-                        style={[styles.tabPickerItem, selected && styles.tabPickerItemActive]}
-                        activeOpacity={0.7}
-                      >
-                        <Ionicons
-                          name={option.icon}
-                          size={16}
-                          color={selected ? AppTheme.colors.primary : AppTheme.colors.textSecondary}
-                          style={{ marginRight: 9 }}
-                        />
-                        <Text style={[styles.tabPickerItemText, selected && styles.tabPickerItemTextActive]}>
-                          {option.label}
-                        </Text>
-                        {selected && <Ionicons name="checkmark" size={16} color={AppTheme.colors.primary} />}
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              )}
 
               {/* New PIN field */}
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, marginBottom: 6 }}>
@@ -1721,8 +2071,34 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   );
 }
 
-const styles = StyleSheet.create({
+/**
+ * Built per accent rather than once at import: StyleSheet.create captures the
+ * colours it is given, so a theme change has to rebuild these to take effect.
+ */
+const createStyles = () => StyleSheet.create({
   container: { flex: 1, backgroundColor: AppTheme.colors.background },
+  settingsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: AppTheme.colors.border,
+    backgroundColor: AppTheme.colors.surfaceSubtle,
+    marginBottom: 10,
+  },
+  settingsRowIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: AppTheme.colors.primaryLight,
+    marginRight: 11,
+  },
+  settingsRowTitle: { fontSize: 14, fontWeight: '700', color: AppTheme.colors.text },
+  settingsRowSubtitle: { fontSize: 11.5, color: AppTheme.colors.textSecondary, marginTop: 2 },
   tabPickerBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1753,7 +2129,7 @@ const styles = StyleSheet.create({
   tabPickerItemTextActive: { color: AppTheme.colors.primary, fontWeight: '700' },
   homeTabBar: {
     flexDirection: 'row',
-    backgroundColor: AppTheme.colors.surface,
+    backgroundColor: AppTheme.colors.bar,
     borderTopWidth: 1,
     borderTopColor: '#e2e8f0',
     paddingHorizontal: 8,

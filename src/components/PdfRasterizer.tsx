@@ -3,12 +3,13 @@ import { View, Platform, StyleSheet } from 'react-native';
 import { WebView } from 'react-native-webview';
 
 interface PdfRasterizerProps {
-  /** Base64 of the PDF, without the `data:` prefix. It is streamed to the
-   *  WebView in chunks: a whole scan injected as one JS string overflows the
-   *  evaluateJavascript limit, and handing pdf.js a file:// path instead does
-   *  not work either, because its XHR transport only accepts status 200/206
-   *  and a local file read reports status 0. */
+  /** Base64 of the PDF, without the `data:` prefix. Only used when the file
+   *  cannot be read from disk: it has to be streamed in chunks, because a whole
+   *  scan injected as one JS string overflows the evaluateJavascript limit. */
   base64: string;
+  /** The same PDF on disk. When it can be read from there the base64 is never
+   *  sent at all, which for a large scan saves hundreds of round trips. */
+  fileUri?: string;
   /** Receives a JPEG data URI of page 1, or '' when rendering failed. */
   onResult: (imageDataUri: string) => void;
 }
@@ -20,7 +21,7 @@ const CHUNK_SIZE = 61440;
  * Renders page 1 of a PDF to an image offscreen so it can be passed to OCR.
  * Android uses the pdf.js copy bundled in assets, so it works with no network.
  */
-export default function PdfRasterizer({ base64, onResult }: PdfRasterizerProps) {
+export default function PdfRasterizer({ base64, fileUri, onResult }: PdfRasterizerProps) {
   const webRef = useRef<WebView>(null);
   const doneRef = useRef(false);
 
@@ -41,12 +42,39 @@ ${scriptTags}
   window.__PARTS__ = [];
   window.__PUSH__ = function (part) { window.__PARTS__.push(part); };
 
+  function setWorker() {
+    ${Platform.OS === 'android'
+      ? "window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';"
+      : "window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';"}
+  }
+
+  /** Reads the PDF straight off disk. pdf.js will not do this itself: its own
+   *  transport only accepts status 200/206, and a local file read reports 0. */
+  window.__LOAD_FILE__ = function (url) {
+    try {
+      if (!window.pdfjsLib) { post({ ok: false, error: 'pdfjs missing' }); return; }
+      setWorker();
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', url, true);
+      xhr.responseType = 'arraybuffer';
+      xhr.onload = function () {
+        if (xhr.response && xhr.response.byteLength > 0) {
+          render(new Uint8Array(xhr.response));
+        } else {
+          post({ ok: false, error: 'empty file read', needsChunks: true });
+        }
+      };
+      xhr.onerror = function () { post({ ok: false, error: 'file read failed', needsChunks: true }); };
+      xhr.send();
+    } catch (err) {
+      post({ ok: false, error: String(err), needsChunks: true });
+    }
+  };
+
   window.__RUN__ = function () {
     try {
       if (!window.pdfjsLib) { post({ ok: false, error: 'pdfjs missing' }); return; }
-      ${Platform.OS === 'android'
-        ? "window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';"
-        : "window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';"}
+      setWorker();
 
       var b64 = window.__PARTS__.join('');
       window.__PARTS__ = [];
@@ -55,7 +83,14 @@ ${scriptTags}
       var binary = atob(b64);
       var bytes = new Uint8Array(binary.length);
       for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      render(bytes);
+    } catch (err) {
+      post({ ok: false, error: String(err) });
+    }
+  };
 
+  function render(bytes) {
+    try {
       window.pdfjsLib.getDocument({ data: bytes }).promise.then(function (pdf) {
         return pdf.getPage(1);
       }).then(function (page) {
@@ -74,22 +109,33 @@ ${scriptTags}
     } catch (err) {
       post({ ok: false, error: String(err) });
     }
-  };
+  }
 </script>
 </body></html>`;
   }, []);
 
-  /** Streams the base64 across once the page (and pdf.js) has loaded. */
-  const sendPdf = useCallback(() => {
+  /** The fallback: streams the base64 across a chunk at a time. */
+  const sendChunks = useCallback(() => {
     const web = webRef.current;
-    if (!web || doneRef.current) return;
-    doneRef.current = true;
-
+    if (!web) return;
     for (let i = 0; i < base64.length; i += CHUNK_SIZE) {
       web.injectJavaScript(`window.__PUSH__(${JSON.stringify(base64.slice(i, i + CHUNK_SIZE))}); true;`);
     }
     web.injectJavaScript('window.__RUN__(); true;');
   }, [base64]);
+
+  /** Points the page at the file once it (and pdf.js) has loaded. */
+  const sendPdf = useCallback(() => {
+    const web = webRef.current;
+    if (!web || doneRef.current) return;
+    doneRef.current = true;
+
+    if (fileUri) {
+      web.injectJavaScript(`window.__LOAD_FILE__(${JSON.stringify(fileUri)}); true;`);
+      return;
+    }
+    sendChunks();
+  }, [base64, fileUri, sendChunks]);
 
   return (
     <View style={styles.offscreen} pointerEvents="none">
@@ -105,6 +151,12 @@ ${scriptTags}
         onMessage={(event) => {
           try {
             const payload = JSON.parse(event.nativeEvent.data);
+            if (payload?.needsChunks) {
+              // The file could not be read from the page, so fall back to
+              // handing the bytes over the way this always used to
+              sendChunks();
+              return;
+            }
             if (!payload?.ok) console.warn('PDF rasterize failed:', payload?.error);
             onResult(payload?.ok && payload.image ? payload.image : '');
           } catch (e) {

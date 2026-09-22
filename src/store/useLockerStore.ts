@@ -5,6 +5,30 @@ import { User, Tab, Document, Note, DiaryPinMode, HomeTab } from '../models';
 import { DatabaseHelper } from '../services/DatabaseHelper';
 import { CryptoService } from '../services/CryptoService';
 import { BackupService } from '../services/BackupService';
+import { clearDecryptedCache } from '../services/FileCacheService';
+import {
+  applyAccent,
+  applyBackground,
+  applyBars,
+  DEFAULT_ACCENT_KEY,
+  DEFAULT_BAR_KEY,
+  DEFAULT_CUSTOM_BAR,
+  DEFAULT_BACKGROUND_KEY,
+  DEFAULT_CUSTOM_ACCENT,
+  DEFAULT_CUSTOM_BACKGROUND,
+  DEFAULT_CUSTOM_PAPER,
+  DEFAULT_PAGE_COLOR_KEY,
+  CUSTOM_KEY,
+} from '../theme/AppTheme';
+import { StorageService } from '../utils/storage';
+
+/** Appearance is a device preference: it has to be right on the lock screen too. */
+const ACCENT_STORAGE_KEY = '@offline_locker_accent';
+const ACCENT_CUSTOM_STORAGE_KEY = '@offline_locker_accent_custom';
+const BACKGROUND_STORAGE_KEY = '@offline_locker_background';
+const BACKGROUND_CUSTOM_STORAGE_KEY = '@offline_locker_background_custom';
+const BAR_STORAGE_KEY = '@offline_locker_bar';
+const BAR_CUSTOM_STORAGE_KEY = '@offline_locker_bar_custom';
 import { LockoutService, LockoutState } from '../services/LockoutService';
 
 interface LockerState {
@@ -20,6 +44,26 @@ interface LockerState {
   notes: Note[];
   defaultHomeTab: HomeTab;
   diaryLined: boolean;
+  /** Which accent the whole app is painted with. */
+  accentKey: string;
+  /** The colour behind 'custom', remembered even while a preset is in use. */
+  customAccent: string;
+  /** What the app is laid out on, behind the cards. */
+  backgroundKey: string;
+  customBackground: string;
+  /** The header strip and the tab bar, themed as one. */
+  barKey: string;
+  customBar: string;
+  /** The paper the diary and the note writer are drawn on. */
+  diaryPageColor: string;
+  customDiaryPageColor: string;
+  notePageColor: string;
+  customNotePageColor: string;
+  /**
+   * Bumped whenever the theme is repainted. Styles built by StyleSheet.create
+   * hold the colours they were given, so this is what tells them to rebuild.
+   */
+  themeVersion: number;
   diaryPinMode: DiaryPinMode;
   diaryPinHash: string | null;
 
@@ -34,9 +78,11 @@ interface LockerState {
   deleteTab: (tabId: string) => Promise<void>;
   verifyTabPin: (tab: Tab, candidatePin: string) => boolean;
   loadDocumentsForTab: (tabId: string) => Promise<void>;
-  addDocument: (tabId: string, title: string, type: string, plainContent: string, encryptionPin: string) => Promise<void>;
-  updateDocument: (id: number, tabId: string, title: string, plainContent: string, encryptionPin: string) => Promise<void>;
+  addDocument: (tabId: string, title: string, type: string, plainContent: string, encryptionPin: string, plainMeta?: string) => Promise<void>;
+  updateDocument: (id: number, tabId: string, title: string, plainContent: string, encryptionPin: string, plainMeta?: string) => Promise<void>;
   deleteDocument: (id: number, tabId: string) => Promise<void>;
+  getDocumentContent: (id: number) => Promise<string>;
+  setDocumentMeta: (id: number, plainMeta: string, encryptionPin: string) => Promise<void>;
   loadDiaryDates: () => Promise<void>;
   getDiaryEntry: (entryDate: string) => Promise<string>;
   saveDiaryEntry: (entryDate: string, plainContent: string) => Promise<void>;
@@ -50,11 +96,23 @@ interface LockerState {
   setDefaultHomeTab: (tab: HomeTab) => Promise<void>;
   loadDiaryLined: () => Promise<void>;
   setDiaryLined: (lined: boolean) => Promise<void>;
+  loadAccent: () => Promise<void>;
+  setAccent: (key: string) => Promise<void>;
+  setCustomAccent: (hex: string) => Promise<void>;
+  setBackground: (key: string) => Promise<void>;
+  setCustomBackground: (hex: string) => Promise<void>;
+  setBar: (key: string) => Promise<void>;
+  setCustomBar: (hex: string) => Promise<void>;
+  loadPageColors: () => Promise<void>;
+  setDiaryPageColor: (key: string) => Promise<void>;
+  setCustomDiaryPageColor: (hex: string) => Promise<void>;
+  setNotePageColor: (key: string) => Promise<void>;
+  setCustomNotePageColor: (hex: string) => Promise<void>;
   loadDiaryPinMode: () => Promise<void>;
   setDiaryPin: (mode: DiaryPinMode, pin?: string) => Promise<void>;
   verifyDiaryPin: (candidatePin: string) => boolean;
   exportBackup: (exportPin: string) => Promise<boolean>;
-  importBackup: (encryptedContent: string, importPin: string) => Promise<{ success: boolean; tabsCount: number; docsCount: number }>;
+  importBackup: (encryptedContent: string, importPin: string) => Promise<{ success: boolean; tabsCount: number; docsCount: number; diaryCount: number; notesCount: number }>;
   updateUserProfile: (currentPin: string, newUsername?: string, newPin?: string) => Promise<{ success: boolean; message: string }>;
   refreshLockoutState: () => Promise<LockoutState>;
   clearError: () => void;
@@ -73,6 +131,17 @@ export const useLockerStore = create<LockerState>((set, get) => ({
   notes: [],
   defaultHomeTab: 'files',
   diaryLined: true,
+  accentKey: DEFAULT_ACCENT_KEY,
+  customAccent: DEFAULT_CUSTOM_ACCENT,
+  backgroundKey: DEFAULT_BACKGROUND_KEY,
+  customBackground: DEFAULT_CUSTOM_BACKGROUND,
+  barKey: DEFAULT_BAR_KEY,
+  customBar: DEFAULT_CUSTOM_BAR,
+  diaryPageColor: DEFAULT_PAGE_COLOR_KEY,
+  customDiaryPageColor: DEFAULT_CUSTOM_PAPER,
+  notePageColor: DEFAULT_PAGE_COLOR_KEY,
+  customNotePageColor: DEFAULT_CUSTOM_PAPER,
+  themeVersion: 0,
   diaryPinMode: 'none',
   diaryPinHash: null,
 
@@ -176,7 +245,9 @@ export const useLockerStore = create<LockerState>((set, get) => ({
   },
 
   logout: () => {
-    // Decrypted diary and note content must not survive a lock
+    // Decrypted diary and note content must not survive a lock, and neither do
+    // the files written out for the viewer and the share sheet
+    clearDecryptedCache();
     set({ isAuthenticated: false, activeDocuments: [], diaryDates: [], notes: [], diaryPinMode: 'none', diaryPinHash: null });
   },
 
@@ -288,7 +359,7 @@ export const useLockerStore = create<LockerState>((set, get) => ({
     }
   },
 
-  addDocument: async (tabId: string, title: string, type: string, plainContent: string, encryptionPin: string) => {
+  addDocument: async (tabId: string, title: string, type: string, plainContent: string, encryptionPin: string, plainMeta?: string) => {
     try {
       const encrypted = CryptoService.encryptText(plainContent, encryptionPin);
       const newDoc: Document = {
@@ -296,6 +367,7 @@ export const useLockerStore = create<LockerState>((set, get) => ({
         title: title.trim(),
         type,
         encryptedContent: encrypted,
+        encryptedMeta: plainMeta ? CryptoService.encryptText(plainMeta, encryptionPin) : null,
         createdAt: new Date().toISOString(),
       };
       await DatabaseHelper.createDocument(newDoc);
@@ -310,10 +382,29 @@ export const useLockerStore = create<LockerState>((set, get) => ({
     await get().loadDocumentsForTab(tabId);
   },
 
-  updateDocument: async (id: number, tabId: string, title: string, plainContent: string, encryptionPin: string) => {
+  getDocumentContent: async (id: number) => {
+    try {
+      return await DatabaseHelper.getDocumentContent(id);
+    } catch (error) {
+      console.error('Error reading document content', error);
+      return '';
+    }
+  },
+
+  /** Backfills the list summary for a document that predates it. */
+  setDocumentMeta: async (id: number, plainMeta: string, encryptionPin: string) => {
+    try {
+      await DatabaseHelper.setDocumentMeta(id, CryptoService.encryptText(plainMeta, encryptionPin));
+    } catch (error) {
+      // A summary that cannot be stored is recomputed next time; nothing breaks
+    }
+  },
+
+  updateDocument: async (id: number, tabId: string, title: string, plainContent: string, encryptionPin: string, plainMeta?: string) => {
     try {
       const encrypted = CryptoService.encryptText(plainContent, encryptionPin);
-      await DatabaseHelper.updateDocument(id, title.trim(), encrypted);
+      const meta = plainMeta ? CryptoService.encryptText(plainMeta, encryptionPin) : null;
+      await DatabaseHelper.updateDocument(id, title.trim(), encrypted, meta);
       await get().loadDocumentsForTab(tabId);
     } catch (error) {
       console.error('Error updating document', error);
@@ -475,6 +566,138 @@ export const useLockerStore = create<LockerState>((set, get) => ({
     await DatabaseHelper.setSetting(currentUser.uuid, 'diary_lined', lined ? '1' : '0');
   },
 
+  // --- APPEARANCE ---
+  /**
+   * Read before the first screen paints, so the app never shows the wrong
+   * accent for a frame and then correct itself.
+   */
+  loadAccent: async () => {
+    try {
+      const [accent, accentCustom, background, backgroundCustom, bar, barCustom] = await Promise.all([
+        StorageService.getItem(ACCENT_STORAGE_KEY),
+        StorageService.getItem(ACCENT_CUSTOM_STORAGE_KEY),
+        StorageService.getItem(BACKGROUND_STORAGE_KEY),
+        StorageService.getItem(BACKGROUND_CUSTOM_STORAGE_KEY),
+        StorageService.getItem(BAR_STORAGE_KEY),
+        StorageService.getItem(BAR_CUSTOM_STORAGE_KEY),
+      ]);
+      const accentKey = accent || DEFAULT_ACCENT_KEY;
+      const customAccent = accentCustom || DEFAULT_CUSTOM_ACCENT;
+      const backgroundKey = background || DEFAULT_BACKGROUND_KEY;
+      const customBackground = backgroundCustom || DEFAULT_CUSTOM_BACKGROUND;
+      const barKey = bar || DEFAULT_BAR_KEY;
+      const customBar = barCustom || DEFAULT_CUSTOM_BAR;
+      applyAccent(accentKey, customAccent);
+      applyBackground(backgroundKey, customBackground);
+      applyBars(barKey, customBar);
+      set(state => ({
+        accentKey,
+        customAccent,
+        backgroundKey,
+        customBackground,
+        barKey,
+        customBar,
+        themeVersion: state.themeVersion + 1,
+      }));
+    } catch (error) {
+      applyAccent(DEFAULT_ACCENT_KEY);
+      applyBackground(DEFAULT_BACKGROUND_KEY);
+      applyBars(DEFAULT_BAR_KEY);
+    }
+  },
+
+  setAccent: async (key: string) => {
+    const { customAccent } = get();
+    applyAccent(key, customAccent);
+    set(state => ({ accentKey: key, themeVersion: state.themeVersion + 1 }));
+    await StorageService.setItem(ACCENT_STORAGE_KEY, key);
+  },
+
+  /** Mixing a colour also selects it, which is what makes the swatch feel live. */
+  setCustomAccent: async (hex: string) => {
+    applyAccent(CUSTOM_KEY, hex);
+    set(state => ({ accentKey: CUSTOM_KEY, customAccent: hex, themeVersion: state.themeVersion + 1 }));
+    await StorageService.setItem(ACCENT_CUSTOM_STORAGE_KEY, hex);
+    await StorageService.setItem(ACCENT_STORAGE_KEY, CUSTOM_KEY);
+  },
+
+  setBackground: async (key: string) => {
+    const { customBackground } = get();
+    applyBackground(key, customBackground);
+    set(state => ({ backgroundKey: key, themeVersion: state.themeVersion + 1 }));
+    await StorageService.setItem(BACKGROUND_STORAGE_KEY, key);
+  },
+
+  setCustomBackground: async (hex: string) => {
+    applyBackground(CUSTOM_KEY, hex);
+    set(state => ({ backgroundKey: CUSTOM_KEY, customBackground: hex, themeVersion: state.themeVersion + 1 }));
+    await StorageService.setItem(BACKGROUND_CUSTOM_STORAGE_KEY, hex);
+    await StorageService.setItem(BACKGROUND_STORAGE_KEY, CUSTOM_KEY);
+  },
+
+  setBar: async (key: string) => {
+    const { customBar } = get();
+    applyBars(key, customBar);
+    set(state => ({ barKey: key, themeVersion: state.themeVersion + 1 }));
+    await StorageService.setItem(BAR_STORAGE_KEY, key);
+  },
+
+  setCustomBar: async (hex: string) => {
+    applyBars(CUSTOM_KEY, hex);
+    set(state => ({ barKey: CUSTOM_KEY, customBar: hex, themeVersion: state.themeVersion + 1 }));
+    await StorageService.setItem(BAR_CUSTOM_STORAGE_KEY, hex);
+    await StorageService.setItem(BAR_STORAGE_KEY, CUSTOM_KEY);
+  },
+
+  loadPageColors: async () => {
+    const { currentUser } = get();
+    if (!currentUser) return;
+    try {
+      const diary = await DatabaseHelper.getSetting(currentUser.uuid, 'diary_page_color');
+      const diaryCustom = await DatabaseHelper.getSetting(currentUser.uuid, 'diary_page_color_custom');
+      const note = await DatabaseHelper.getSetting(currentUser.uuid, 'note_page_color');
+      const noteCustom = await DatabaseHelper.getSetting(currentUser.uuid, 'note_page_color_custom');
+      set({
+        diaryPageColor: diary || DEFAULT_PAGE_COLOR_KEY,
+        customDiaryPageColor: diaryCustom || DEFAULT_CUSTOM_PAPER,
+        notePageColor: note || DEFAULT_PAGE_COLOR_KEY,
+        customNotePageColor: noteCustom || DEFAULT_CUSTOM_PAPER,
+      });
+    } catch (error) {
+      // Absent means never set, and the defaults are already in place
+    }
+  },
+
+  setDiaryPageColor: async (key: string) => {
+    const { currentUser } = get();
+    set({ diaryPageColor: key });
+    if (!currentUser) return;
+    await DatabaseHelper.setSetting(currentUser.uuid, 'diary_page_color', key);
+  },
+
+  setCustomDiaryPageColor: async (hex: string) => {
+    const { currentUser } = get();
+    set({ diaryPageColor: CUSTOM_KEY, customDiaryPageColor: hex });
+    if (!currentUser) return;
+    await DatabaseHelper.setSetting(currentUser.uuid, 'diary_page_color_custom', hex);
+    await DatabaseHelper.setSetting(currentUser.uuid, 'diary_page_color', CUSTOM_KEY);
+  },
+
+  setNotePageColor: async (key: string) => {
+    const { currentUser } = get();
+    set({ notePageColor: key });
+    if (!currentUser) return;
+    await DatabaseHelper.setSetting(currentUser.uuid, 'note_page_color', key);
+  },
+
+  setCustomNotePageColor: async (hex: string) => {
+    const { currentUser } = get();
+    set({ notePageColor: CUSTOM_KEY, customNotePageColor: hex });
+    if (!currentUser) return;
+    await DatabaseHelper.setSetting(currentUser.uuid, 'note_page_color_custom', hex);
+    await DatabaseHelper.setSetting(currentUser.uuid, 'note_page_color', CUSTOM_KEY);
+  },
+
   // --- DIARY PIN ---
   loadDiaryPinMode: async () => {
     const { currentUser } = get();
@@ -517,10 +740,24 @@ export const useLockerStore = create<LockerState>((set, get) => ({
   importBackup: async (encryptedContent: string, importPin: string) => {
     const result = await BackupService.importBackup(encryptedContent, importPin);
     if (result.success && result.user) {
-      set({ currentUser: result.user, isAuthenticated: true, activeDocuments: [] });
+      set({ currentUser: result.user, isAuthenticated: true, activeDocuments: [], diaryDates: [], notes: [] });
       await get().loadTabs();
+      // The diary and notes were restored too, so their state has to come back
+      // from the database rather than from whatever was in memory
+      await get().loadNotes();
+      await get().loadDiaryDates();
+      await get().loadDiaryPinMode();
+      await get().loadDiaryLined();
+      await get().loadPageColors();
+      await get().loadDefaultHomeTab();
     }
-    return { success: result.success, tabsCount: result.tabsCount, docsCount: result.docsCount };
+    return {
+      success: result.success,
+      tabsCount: result.tabsCount,
+      docsCount: result.docsCount,
+      diaryCount: result.diaryCount,
+      notesCount: result.notesCount,
+    };
   },
 
   updateUserProfile: async (currentPin: string, newUsername?: string, newPin?: string) => {
@@ -561,7 +798,14 @@ export const useLockerStore = create<LockerState>((set, get) => ({
             const decrypted = CryptoService.decryptText(doc.encryptedContent, oldPinHash);
             if (decrypted && !decrypted.startsWith('⚠️ Decryption Failed')) {
               const reEncrypted = CryptoService.encryptText(decrypted, newPinHash);
-              await DatabaseHelper.updateDocument(doc.id, doc.title, reEncrypted);
+              let reMeta: string | null = null;
+              if (doc.encryptedMeta) {
+                const meta = CryptoService.decryptText(doc.encryptedMeta, oldPinHash);
+                if (meta && !meta.startsWith('⚠️ Decryption Failed')) {
+                  reMeta = CryptoService.encryptText(meta, newPinHash);
+                }
+              }
+              await DatabaseHelper.updateDocument(doc.id, doc.title, reEncrypted, reMeta);
             }
           }
         }

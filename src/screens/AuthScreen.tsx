@@ -1,11 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, Alert } from 'react-native';
 import { useLockerStore } from '../store/useLockerStore';
 import { AppTheme } from '../theme/AppTheme';
 import { Feather } from '@expo/vector-icons';
 
 export default function AuthScreen() {
-  const { currentUser, registerUser, loginUser, errorMessage, clearError, lockoutState, refreshLockoutState } = useLockerStore();
+  const { currentUser, registerUser, loginUser, errorMessage, clearError, lockoutState, refreshLockoutState, themeVersion } = useLockerStore();
+  const styles = useMemo(() => createStyles(), [themeVersion]);
   const [username, setUsername] = useState('');
   const [pin, setPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
@@ -245,7 +246,11 @@ export default function AuthScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+/**
+ * Built per accent rather than once at import: StyleSheet.create captures the
+ * colours it is given, so a theme change has to rebuild these to take effect.
+ */
+const createStyles = () => StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: AppTheme.colors.background,

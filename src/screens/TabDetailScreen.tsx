@@ -23,6 +23,7 @@ import { inflate as inflateStream } from 'pako';
 import { recognizeTextFromImage, extractDatesFromMrz } from '../services/OcrService';
 import PdfRasterizer from '../components/PdfRasterizer';
 import { withoutAutoLock } from '../services/AutoLockService';
+import { ensureDecryptedCacheDir } from '../services/FileCacheService';
 
 const MONTHS = 'jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec';
 const DATE_PATTERN = new RegExp(
@@ -157,18 +158,43 @@ const decodeBase64 = (input: string): string => {
   if (typeof atob === 'function') {
     try { return atob(clean); } catch (e) { /* fall through */ }
   }
-  let output = '';
+  // Appending to one string a character at a time is what made a large file
+  // take minutes here; the pieces are collected and joined once instead.
+  const parts: string[] = [];
+  let piece = '';
   for (let i = 0; i < clean.length; i += 4) {
     const c1 = B64_CHARS.indexOf(clean[i]);
     const c2 = B64_CHARS.indexOf(clean[i + 1]);
     const c3 = B64_CHARS.indexOf(clean[i + 2]);
     const c4 = B64_CHARS.indexOf(clean[i + 3]);
-    output += String.fromCharCode((c1 << 2) | (c2 >> 4));
-    if (c3 >= 0) output += String.fromCharCode(((c2 & 15) << 4) | (c3 >> 2));
-    if (c4 >= 0) output += String.fromCharCode(((c3 & 3) << 6) | c4);
+    piece += String.fromCharCode((c1 << 2) | (c2 >> 4));
+    if (c3 >= 0) piece += String.fromCharCode(((c2 & 15) << 4) | (c3 >> 2));
+    if (c4 >= 0) piece += String.fromCharCode(((c3 & 3) << 6) | c4);
+    if (piece.length >= 8192) { parts.push(piece); piece = ''; }
   }
-  return output;
+  if (piece) parts.push(piece);
+  return parts.join('');
 };
+
+/** Latin-1 bytes as a string, in blocks rather than a character at a time. */
+const bytesToBinaryString = (bytes: Uint8Array): string => {
+  const parts: string[] = [];
+  const BLOCK = 8192;
+  for (let i = 0; i < bytes.length; i += BLOCK) {
+    parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + BLOCK) as any));
+  }
+  return parts.join('');
+};
+
+/**
+ * Past this much base64 a PDF is a scan rather than a text document: reading
+ * its operators costs seconds and finds nothing, because the pages are images.
+ * Those go straight to OCR of the first page instead.
+ */
+const PDF_TEXT_SCAN_MAX_BASE64 = 3 * 1024 * 1024;
+
+/** A stream this large holds a picture, and inflating it only wastes time. */
+const PDF_STREAM_MAX_BYTES = 512 * 1024;
 
 /**
  * Image bytes inside a PDF happen to contain plenty of "(...)" sequences, so
@@ -190,6 +216,7 @@ export const extractTextFromPdfDataUri = (dataUri: string): string => {
   if (!dataUri || !dataUri.includes('application/pdf')) return '';
   try {
     const base64 = dataUri.includes(',') ? dataUri.split(',')[1] : dataUri;
+    if (base64.length > PDF_TEXT_SCAN_MAX_BASE64) return '';
     const binary = decodeBase64(base64);
 
     let collected = readTextOperators(binary);
@@ -202,14 +229,14 @@ export const extractTextFromPdfDataUri = (dataUri: string): string => {
       const end = binary.indexOf('endstream', start);
       if (end === -1) continue;
 
+      if (end - start > PDF_STREAM_MAX_BYTES) continue;
+
       const slice = binary.slice(start, end);
       const bytes = new Uint8Array(slice.length);
       for (let i = 0; i < slice.length; i++) bytes[i] = slice.charCodeAt(i) & 0xff;
 
       try {
-        const inflated = inflateStream(bytes);
-        let text = '';
-        for (let i = 0; i < inflated.length; i++) text += String.fromCharCode(inflated[i]);
+        const text = bytesToBinaryString(inflateStream(bytes));
         if (text) collected += ' ' + readTextOperators(text);
       } catch (e) {
         // Not a Flate stream (images, fonts) — nothing to read here
@@ -432,6 +459,33 @@ export const extractDocumentNumber = (text: string): string => {
   return findNumberAfterLabel(text, NUMBER_LABELS);
 };
 
+/**
+ * What the list needs to know about a document: its dates and its number. It is
+ * stored encrypted beside the payload so a tab full of scanned PDFs can be
+ * listed without decrypting a single file.
+ */
+export type DocMeta = { startDate: string; endDate: string; number: string };
+
+export const summariseDocument = (
+  title: string,
+  payload: { notes: string; startDate: string; endDate: string; number: string },
+): DocMeta => {
+  const text = `${title || ''}\n${payload.notes || ''}`;
+  const detected = extractDatesFromText(text);
+  return {
+    startDate: payload.startDate || detected.startDate,
+    endDate: payload.endDate || detected.endDate,
+    number: payload.number || extractDocumentNumber(text),
+  };
+};
+
+/**
+ * Ciphertext above this size is left out of the background summary pass. A
+ * scanned PDF can be tens of megabytes and decrypting one costs seconds; its
+ * summary is written the first time the user opens it instead.
+ */
+const META_BACKFILL_MAX_BYTES = 512 * 1024;
+
 /** How long before the end date a document starts showing the amber warning. */
 const EXPIRY_WARNING_DAYS = 7;
 
@@ -506,7 +560,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
   const insets = useSafeAreaInsets();
   const tabId = route?.params?.tabId;
   const unlockPin = route?.params?.unlockPin;
-  const { tabs, activeDocuments, loadDocumentsForTab, addDocument, updateDocument, deleteDocument, logout, currentUser } = useLockerStore();
+  const { tabs, activeDocuments, loadDocumentsForTab, addDocument, updateDocument, deleteDocument, getDocumentContent, setDocumentMeta, logout, currentUser, themeVersion } = useLockerStore();
+  const styles = useMemo(() => createStyles(), [themeVersion]);
   const { width: screenWidth } = useWindowDimensions();
   const isMobile = screenWidth < 768;
 
@@ -549,7 +604,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
   const [datePickerTarget, setDatePickerTarget] = useState<'add-start' | 'add-end' | 'edit-start' | 'edit-end' | null>(null);
   const [isScanningDates, setIsScanningDates] = useState(false);
   const [dateScanStatus, setDateScanStatus] = useState<'idle' | 'found' | 'none'>('idle');
-  const [rasterTarget, setRasterTarget] = useState<string | null>(null);
+  const [rasterTarget, setRasterTarget] = useState<{ base64: string; fileUri: string } | null>(null);
   const rasterResolveRef = useRef<((value: string) => void) | null>(null);
   const [editFileUris, setEditFileUris] = useState<string[]>([]);
   const [editFileType, setEditFileType] = useState<'image' | 'pdf' | 'text' | null>(null);
@@ -566,6 +621,9 @@ export default function TabDetailScreen({ route, navigation }: any) {
   const [selectedDoc, setSelectedDoc] = useState<any>(null);
   const [decryptedText, setDecryptedText] = useState('');
   const [decryptedArray, setDecryptedArray] = useState<string[]>([]);
+  // A large file takes a moment to decrypt, and "nothing here" is the wrong
+  // thing to show while it is still being read
+  const [isOpeningDoc, setIsOpeningDoc] = useState(false);
 
   // Right-pane preview
   const [previewDoc, setPreviewDoc] = useState<any>(null);
@@ -580,6 +638,39 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
   // In-memory cache for decrypted document content to prevent duplicate decryptions
   const decryptionCacheRef = useRef<Map<string | number, { plainText: string; array: string[] }>>(new Map());
+
+  // Summaries recovered for documents saved before the column existed. The ref
+  // is what the background pass reads; the state is what re-renders the list.
+  const [legacyMeta, setLegacyMeta] = useState<Map<number, DocMeta>>(new Map());
+  const legacyMetaRef = useRef<Map<number, DocMeta>>(new Map());
+
+  /**
+   * The decrypted payload for one document. List rows no longer carry the file
+   * bytes, so the ciphertext is read from the database the first time something
+   * opens the document, and the result is kept.
+   */
+  const loadPlainText = async (doc: any): Promise<string> => {
+    if (!doc) return '';
+    if (doc.id != null) {
+      const cached = decryptionCacheRef.current.get(doc.id);
+      if (cached) return cached.plainText;
+    }
+    const cipher = doc.encryptedContent || (doc.id != null ? await getDocumentContent(doc.id) : '');
+    return decryptDoc(cipher || '');
+  };
+
+  /**
+   * Writes a document's summary the first time it is opened, so that the list
+   * can show its expiry from then on without touching the payload again.
+   */
+  const rememberMeta = (doc: any, payload: { notes: string; startDate: string; endDate: string; number: string }) => {
+    if (!doc || doc.id == null || doc.encryptedMeta) return;
+    if (legacyMetaRef.current.has(doc.id)) return;
+    const meta = summariseDocument(doc.title || '', payload);
+    legacyMetaRef.current.set(doc.id, meta);
+    setLegacyMeta(prev => new Map(prev).set(doc.id, meta));
+    setDocumentMeta(doc.id, JSON.stringify(meta), currentUser?.pinHash || 'default_fallback');
+  };
 
   // Document Sort state
   type DocSortOption = 'newest' | 'oldest' | 'name_asc' | 'name_desc';
@@ -711,6 +802,18 @@ export default function TabDetailScreen({ route, navigation }: any) {
     const source = dataUri.includes(',') ? dataUri.split(',')[1] : dataUri;
     if (!source) return '';
 
+    // Written out first so the page can read the bytes itself. Streaming a scan
+    // into the WebView 60 KB at a time meant hundreds of round trips before OCR
+    // could even start.
+    let fileUri = '';
+    try {
+      fileUri = `${await ensureDecryptedCacheDir()}ocr_source.pdf`;
+      await FileSystem.deleteAsync(fileUri, { idempotent: true });
+      await FileSystem.writeAsStringAsync(fileUri, source, { encoding: 'base64' });
+    } catch (e) {
+      fileUri = '';
+    }
+
     return new Promise((resolve) => {
       const finish = (value: string) => {
         clearTimeout(timer);
@@ -720,7 +823,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
       };
       const timer = setTimeout(() => finish(''), 30000);
       rasterResolveRef.current = finish;
-      setRasterTarget(source);
+      setRasterTarget({ base64: source, fileUri });
     });
   };
 
@@ -1036,7 +1139,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
           contentToEncrypt = docContent;
         }
 
-        await addDocument(tabId, trimmedTitle, type, contentToEncrypt, encryptionKey);
+        const meta = summariseDocument(trimmedTitle, { notes: docContent.trim(), startDate, endDate, number });
+        await addDocument(tabId, trimmedTitle, type, contentToEncrypt, encryptionKey, JSON.stringify(meta));
         setModalVisible(false);
         setDocTitle(''); setDocContent(''); setDocNumber(''); setDocStartDate(''); setDocEndDate(''); setDocDatesEdited(false); setDocHasExpiry(false); setDateScanStatus('idle'); setFileUris([]); setFileType(null);
       } catch (e) {
@@ -1061,15 +1165,16 @@ export default function TabDetailScreen({ route, navigation }: any) {
     }
   };
 
-  const handleOpenEditDoc = (doc: any) => {
+  const handleOpenEditDoc = async (doc: any) => {
     if (!doc) return;
     setEditingDoc(doc);
     setEditDocTitle(doc.title);
     setEditFileType(doc.type as any);
 
-    const plainText = decryptDoc(doc.encryptedContent || '');
+    const plainText = await loadPlainText(doc);
 
     const payload = parseDecryptedPayload(plainText);
+    rememberMeta(doc, payload);
     setEditDocContent(payload.notes);
     setEditFileUris(payload.files);
 
@@ -1148,13 +1253,21 @@ export default function TabDetailScreen({ route, navigation }: any) {
           contentToEncrypt = editDocContent;
         }
 
-        await updateDocument(editingDoc.id, tabId, editDocTitle, contentToEncrypt, encryptionKey);
+        const meta = summariseDocument(editDocTitle.trim(), { notes: editDocContent.trim(), startDate, endDate, number });
+        await updateDocument(editingDoc.id, tabId, editDocTitle, contentToEncrypt, encryptionKey, JSON.stringify(meta));
 
-        const freshEncrypted = CryptoService.encryptText(contentToEncrypt, encryptionKey);
-        const updatedDoc = { ...editingDoc, title: editDocTitle.trim(), encryptedContent: freshEncrypted };
+        const updatedDoc = { ...editingDoc, title: editDocTitle.trim() };
 
-        if (editingDoc.id) {
-          decryptionCacheRef.current.delete(editingDoc.id);
+        if (editingDoc.id != null) {
+          // Seed the cache with what was just saved. Encrypting a second copy
+          // here only to decrypt it again on the next render doubled the cost
+          // of saving a large file.
+          decryptionCacheRef.current.set(editingDoc.id, {
+            plainText: contentToEncrypt,
+            array: parseDecryptedContent(contentToEncrypt),
+          });
+          legacyMetaRef.current.set(editingDoc.id, meta);
+          setLegacyMeta(prev => new Map(prev).set(editingDoc.id, meta));
         }
 
         if (previewDoc?.id === editingDoc.id) {
@@ -1209,26 +1322,91 @@ export default function TabDetailScreen({ route, navigation }: any) {
     return parseDecryptedPayload(plainText).files;
   };
 
+  /** The stored summary for a document, or null if it has none yet. */
+  const readMeta = (doc: any): DocMeta | null => {
+    if (!doc?.encryptedMeta) return null;
+    try {
+      const parsed = JSON.parse(decryptDoc(doc.encryptedMeta));
+      if (!parsed || typeof parsed !== 'object') return null;
+      return {
+        startDate: typeof parsed.startDate === 'string' ? parsed.startDate : '',
+        endDate: typeof parsed.endDate === 'string' ? parsed.endDate : '',
+        number: typeof parsed.number === 'string' ? parsed.number : '',
+      };
+    } catch (e) {
+      return null;
+    }
+  };
+
+  const metaByDocId = useMemo(() => {
+    const map = new Map<number, DocMeta>();
+    activeDocuments.forEach(doc => {
+      if (doc.id == null) return;
+      const meta = readMeta(doc) || legacyMeta.get(doc.id);
+      if (meta) map.set(doc.id, meta);
+    });
+    return map;
+  }, [activeDocuments, candidateKeys, legacyMeta]);
+
   /**
-   * Expiry state per document. Decrypting is the expensive part, so it happens
-   * once per list change here rather than inside the row renderer.
+   * Expiry state per document, taken from the summary. This used to decrypt
+   * every document in the tab, payload and all, which is what made opening a
+   * tab of large PDFs take so long.
    */
   const expiryByDocId = useMemo(() => {
     const map = new Map<number, { status: ExpiryStatus; days: number }>();
     activeDocuments.forEach(doc => {
       if (doc.id == null) return;
-      try {
-        const payload = parseDecryptedPayload(decryptDoc(doc.encryptedContent || ''));
-        const detected = extractDatesFromText(`${doc.title || ''}
-${payload.notes}`);
-        const state = getExpiryStatus(payload.endDate || detected.endDate || '');
-        if (state) map.set(doc.id, state);
-      } catch (e) {
-        // A document that will not decrypt simply gets no expiry styling
-      }
+      const endDate = metaByDocId.get(doc.id)?.endDate || extractDatesFromText(doc.title || '').endDate;
+      const state = getExpiryStatus(endDate || '');
+      if (state) map.set(doc.id, state);
     });
     return map;
-  }, [activeDocuments, candidateKeys]);
+  }, [activeDocuments, metaByDocId]);
+
+  /**
+   * Documents saved before summaries existed get one here, a document per tick
+   * so the list stays responsive. Large payloads are skipped: they are summarised
+   * when the user opens them, the only time decrypting one is worth it.
+   */
+  useEffect(() => {
+    const pending = activeDocuments.filter(doc => {
+      if (doc.id == null || doc.encryptedMeta) return false;
+      if (legacyMetaRef.current.has(doc.id)) return false;
+      return (doc.contentLength || 0) <= META_BACKFILL_MAX_BYTES;
+    });
+    if (pending.length === 0) return;
+
+    let cancelled = false;
+    const encryptionKey = currentUser?.pinHash || 'default_fallback';
+
+    (async () => {
+      for (const doc of pending) {
+        // Yield first, so the list has painted before any decrypting starts
+        await new Promise(resolve => setTimeout(resolve, 0));
+        if (cancelled) return;
+        try {
+          const plainText = await loadPlainText(doc);
+          if (cancelled) return;
+          if (!plainText || plainText.startsWith('\u26a0\ufe0f')) continue;
+          const payload = parseDecryptedPayload(plainText);
+          const meta = summariseDocument(doc.title || '', payload);
+          legacyMetaRef.current.set(doc.id!, meta);
+          setLegacyMeta(prev => new Map(prev).set(doc.id!, meta));
+          // An image's first file is its thumbnail, and the row renderer reads
+          // it straight from this cache rather than decrypting again
+          if (doc.type === 'image') {
+            decryptionCacheRef.current.set(doc.id!, { plainText, array: payload.files });
+          }
+          await setDocumentMeta(doc.id!, JSON.stringify(meta), encryptionKey);
+        } catch (e) {
+          // A document that will not decrypt simply gets no summary
+        }
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [activeDocuments]);
 
   const getSafeImageUri = (uri: string) => {
     if (!uri) return '';
@@ -1237,33 +1415,34 @@ ${payload.notes}`);
     return ''; // Invalid URI prevents crash
   };
 
+  /**
+   * Cache only. Decrypting here ran on every re-render of every row; the
+   * background pass above fills this in once instead.
+   */
   const getThumbnailForItem = (item: any): string | null => {
-    if (item.type !== 'image' || !item.encryptedContent) return null;
-    if (item.id && decryptionCacheRef.current.has(item.id)) {
-      const cached = decryptionCacheRef.current.get(item.id)!;
-      return cached.array[0] || null;
-    }
-    try {
-      const plainText = decryptDoc(item.encryptedContent || '');
-      const files = parseDecryptedContent(plainText);
-      return files[0] || null;
-    } catch (e) {
-      return null;
-    }
+    if (item.type !== 'image' || item.id == null) return null;
+    return decryptionCacheRef.current.get(item.id)?.array[0] || null;
   };
 
+  /**
+   * Writes the decrypted files to the cache and returns their paths. A PDF goes
+   * to disk rather than staying a data URI: a scan is tens of megabytes, and
+   * handing the viewer a path instead of that string is the difference between
+   * opening at once and locking up for half a minute.
+   */
   const prepareLocalFiles = async (dataUris: string[], docTitle: string, type: string, docId?: any): Promise<string[]> => {
-    if (Platform.OS === 'web' || type === 'image' || type === 'pdf') return dataUris;
+    if (Platform.OS === 'web' || type === 'image') return dataUris;
 
     const safeTitle = (docTitle || 'doc').replace(/[^a-z0-9]/gi, '_');
-    const prefix = docId ? `doc_${docId}` : safeTitle;
+    const prefix = docId ? `${safeTitle}_${docId}` : safeTitle;
+    const dir = await ensureDecryptedCacheDir();
 
     return Promise.all(
       dataUris.map(async (uri, i) => {
         if (uri.startsWith('data:')) {
           try {
             const ext = type === 'pdf' ? 'pdf' : 'jpg';
-            const tempUri = `${FileSystem.cacheDirectory}${prefix}_p_${i}.${ext}`;
+            const tempUri = `${dir}${prefix}_p_${i}.${ext}`;
             
             // Check if file already exists on disk to avoid redundant writes and file locks
             const fileInfo = await FileSystem.getInfoAsync(tempUri);
@@ -1293,15 +1472,19 @@ ${payload.notes}`);
       const cached = decryptionCacheRef.current.get(doc.id)!;
       setDecryptedText(cached.plainText);
       setDecryptedArray(cached.array);
+      setIsOpeningDoc(false);
       return;
     }
 
     setDecryptedArray([]);
+    setDecryptedText('');
+    setIsOpeningDoc(true);
 
     setTimeout(async () => {
       try {
-        const plainText = decryptDoc(doc.encryptedContent || '');
+        const plainText = await loadPlainText(doc);
         setDecryptedText(plainText);
+        rememberMeta(doc, parseDecryptedPayload(plainText));
         let prepared: string[] = [];
         const rawArr = parseDecryptedContent(plainText);
         if (rawArr.length > 0) {
@@ -1314,6 +1497,8 @@ ${payload.notes}`);
         }
       } catch (err) {
         console.warn('handleViewDoc error:', err);
+      } finally {
+        setIsOpeningDoc(false);
       }
     }, 10);
   };
@@ -1345,12 +1530,13 @@ ${payload.notes}`);
     setSelectedForDownload({});
 
     try {
-      const plainText = decryptDoc(doc.encryptedContent || '');
+      const plainText = await loadPlainText(doc);
 
       // Check if user already switched to another document
       if (previewRequestIdRef.current !== currentRequestId) return;
 
       setPreviewData(plainText);
+      rememberMeta(doc, parseDecryptedPayload(plainText));
 
       let arr: string[] = [];
       const rawArr = parseDecryptedContent(plainText);
@@ -1423,7 +1609,7 @@ ${payload.notes}`);
         if (base64DataUri.startsWith('data:')) {
           const base64Data = base64DataUri.includes(',') ? base64DataUri.split(',')[1] : base64DataUri;
           const safeTitle = (title || 'file').replace(/[^a-z0-9]/gi, '_');
-          targetUri = `${FileSystem.cacheDirectory}${safeTitle}${index > 0 ? `_${index + 1}` : ''}.${ext}`;
+          targetUri = `${await ensureDecryptedCacheDir()}${safeTitle}${index > 0 ? `_${index + 1}` : ''}.${ext}`;
           await FileSystem.writeAsStringAsync(targetUri, base64Data, { encoding: 'base64' });
         }
         await withoutAutoLock(() => Sharing.shareAsync(targetUri));
@@ -1435,8 +1621,8 @@ ${payload.notes}`);
     }
   };
 
-  const handleDownloadFromCard = (doc: any) => {
-    const plainText = decryptDoc(doc.encryptedContent || '');
+  const handleDownloadFromCard = async (doc: any) => {
+    const plainText = await loadPlainText(doc);
     const arr = parseDecryptedContent(plainText);
 
     // Add a small delay between downloads on Web to prevent the browser from blocking multiple popups
@@ -1464,10 +1650,9 @@ ${payload.notes}`);
     }
   };
 
-  const handleDownloadItem = (item: any) => {
+  const handleDownloadItem = async (item: any) => {
     if (!item) return;
-    let cached = decryptionCacheRef.current.get(item.id);
-    let plainText = cached ? cached.plainText : decryptDoc(item.encryptedContent || '');
+    const plainText = await loadPlainText(item);
     const payload = parseDecryptedPayload(plainText);
     if (payload.files && payload.files.length > 0) {
       payload.files.forEach((uri: string, idx: number) => {
@@ -1524,9 +1709,15 @@ ${payload.notes}`);
     }
   };
 
-  const formatFileSize = (encryptedContent: string): string => {
-    if (!encryptedContent) return '0 KB';
-    const bytes = Math.round(encryptedContent.length * 0.75);
+  /** Reads the ciphertext length off the row, which no longer carries the bytes. */
+  const contentBytes = (doc: any): number => {
+    const length = typeof doc?.contentLength === 'number' ? doc.contentLength : (doc?.encryptedContent?.length || 0);
+    return Math.round(length * 0.75);
+  };
+
+  const formatFileSize = (doc: any): string => {
+    const bytes = contentBytes(doc);
+    if (!bytes) return '0 KB';
     if (bytes >= 1024 * 1024) {
       return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
     }
@@ -1536,9 +1727,7 @@ ${payload.notes}`);
   const calculateTotalSizeMB = (): string => {
     let totalBytes = 0;
     activeDocuments.forEach(doc => {
-      if (doc.encryptedContent) {
-        totalBytes += Math.round(doc.encryptedContent.length * 0.75);
-      }
+      totalBytes += contentBytes(doc);
     });
     return (totalBytes / (1024 * 1024)).toFixed(1);
   };
@@ -1642,7 +1831,8 @@ ${payload.notes}`);
         paddingHorizontal: isMobile ? 16 : 24, 
         paddingTop: isMobile ? Math.max(insets.top + 8, 16) : 16, 
         paddingBottom: 16,
-        backgroundColor: '#ffffff',
+        // This screen draws its own header, so it takes the bar colour as well
+        backgroundColor: AppTheme.colors.bar,
         borderBottomWidth: 1,
         borderBottomColor: '#e2e8f0',
       }}>
@@ -1865,7 +2055,7 @@ ${payload.notes}`);
                         }}
                         numberOfLines={isMobile ? 2 : 1}
                       >
-                        {typeLabel} • {formatFileSize(item.encryptedContent)} • {formattedDate}
+                        {typeLabel} • {formatFileSize(item)} • {formattedDate}
                       </Text>
                       {expiry && expiryStyle && (
                         <Text
@@ -1895,7 +2085,7 @@ ${payload.notes}`);
 
                 return renderWithTooltip(
                   cardContent,
-                  `${item.title} (${formatFileSize(item.encryptedContent)} • ${formattedDate})`,
+                  `${item.title} (${formatFileSize(item)} • ${formattedDate})`,
                   'block',
                   () => handleViewDoc(item)
                 );
@@ -1935,106 +2125,45 @@ ${payload.notes}`);
             {previewDoc ? (
               <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
                 {/* PREVIEW TOP ACTIONS TOOLBAR (Full Width across Right Pane) */}
+                {/* Icons only: the labels said what the icons already show, and
+                    dropping them leaves room for the icons to be read at a glance */}
                 <View style={{ flexDirection: 'row', width: '100%', alignItems: 'center', gap: isMobile ? 5 : 12, marginBottom: 14 }}>
-                  {/* 1. Open Button */}
-                  {renderWithTooltip(
-                    <TouchableOpacity 
-                      onPress={() => handleViewDoc(previewDoc)}
-                      style={{ 
+                  {[
+                    { key: 'open', icon: 'eye-outline' as const, label: 'Open', onPress: () => handleViewDoc(previewDoc), danger: false },
+                    // Sharing is what this actually does on the device, so it says so
+                    { key: 'share', icon: 'share-social-outline' as const, label: 'Share', onPress: () => handleDownloadItem(previewDoc), danger: false },
+                    { key: 'edit', icon: 'create-outline' as const, label: 'Edit', onPress: () => handleOpenEditDoc(previewDoc), danger: false },
+                    { key: 'delete', icon: 'trash-outline' as const, label: 'Delete', onPress: () => handleDeleteClick(previewDoc), danger: true },
+                  ].map(action => (
+                    // The web tooltip wraps this in a div of its own, so the key
+                    // belongs on a fragment rather than on the button inside it
+                    <React.Fragment key={action.key}>{renderWithTooltip(
+                    <TouchableOpacity
+                      onPress={action.onPress}
+                      accessibilityLabel={`${action.label} ${previewDoc.title}`}
+                      style={{
                         flex: 1,
-                        flexDirection: isMobile ? 'column' : 'row', 
-                        alignItems: 'center', 
+                        alignItems: 'center',
                         justifyContent: 'center',
-                        backgroundColor: AppTheme.colors.primaryLight, 
-                        borderWidth: 1, 
-                        borderColor: AppTheme.colors.primaryBorder, 
+                        backgroundColor: action.danger ? '#fef2f2' : AppTheme.colors.primaryLight,
+                        borderWidth: 1,
+                        borderColor: action.danger ? '#fecaca' : AppTheme.colors.primaryBorder,
                         paddingHorizontal: isMobile ? 2 : 12,
                         paddingVertical: isMobile ? 7 : 10,
                         borderRadius: 10,
-                        minHeight: isMobile ? 48 : 42,
+                        minHeight: isMobile ? 44 : 42,
                       }}
                     >
-                      <Ionicons name="eye-outline" size={isMobile ? 16 : 19} color={AppTheme.colors.primary} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
-                      <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: isMobile ? 9 : 14, textAlign: 'center' }} numberOfLines={1}>Open</Text>
+                      <Ionicons
+                        name={action.icon}
+                        size={isMobile ? 20 : 22}
+                        color={action.danger ? AppTheme.colors.error : AppTheme.colors.primary}
+                      />
                     </TouchableOpacity>,
-                    `Open ${previewDoc.title}`,
+                    `${action.label} ${previewDoc.title}`,
                     'flex'
-                  )}
-
-                  {/* 2. Save Button */}
-                  {renderWithTooltip(
-                    <TouchableOpacity 
-                      onPress={() => handleDownloadItem(previewDoc)}
-                      style={{ 
-                        flex: 1,
-                        flexDirection: isMobile ? 'column' : 'row', 
-                        alignItems: 'center', 
-                        justifyContent: 'center',
-                        backgroundColor: AppTheme.colors.primaryLight, 
-                        borderWidth: 1, 
-                        borderColor: AppTheme.colors.primaryBorder, 
-                        paddingHorizontal: isMobile ? 2 : 12,
-                        paddingVertical: isMobile ? 7 : 10,
-                        borderRadius: 10,
-                        minHeight: isMobile ? 48 : 42,
-                      }}
-                    >
-                      <Ionicons name="download-outline" size={isMobile ? 16 : 19} color={AppTheme.colors.primary} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
-                      <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: isMobile ? 9 : 14, textAlign: 'center' }} numberOfLines={1}>Save</Text>
-                    </TouchableOpacity>,
-                    `Save ${previewDoc.title}`,
-                    'flex'
-                  )}
-
-                  {/* 3. Edit Button */}
-                  {renderWithTooltip(
-                    <TouchableOpacity 
-                      onPress={() => handleOpenEditDoc(previewDoc)}
-                      style={{ 
-                        flex: 1,
-                        flexDirection: isMobile ? 'column' : 'row', 
-                        alignItems: 'center', 
-                        justifyContent: 'center',
-                        backgroundColor: AppTheme.colors.primaryLight, 
-                        borderWidth: 1, 
-                        borderColor: AppTheme.colors.primaryBorder, 
-                        paddingHorizontal: isMobile ? 2 : 12,
-                        paddingVertical: isMobile ? 7 : 10,
-                        borderRadius: 10,
-                        minHeight: isMobile ? 48 : 42,
-                      }}
-                    >
-                      <Ionicons name="create-outline" size={isMobile ? 16 : 19} color={AppTheme.colors.primary} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
-                      <Text style={{ color: AppTheme.colors.primary, fontWeight: '600', fontSize: isMobile ? 9 : 14, textAlign: 'center' }} numberOfLines={1}>Edit</Text>
-                    </TouchableOpacity>,
-                    `Edit ${previewDoc.title}`,
-                    'flex'
-                  )}
-
-                  {/* 4. Delete Button */}
-                  {renderWithTooltip(
-                    <TouchableOpacity 
-                      onPress={() => handleDeleteClick(previewDoc)}
-                      style={{ 
-                        flex: 1,
-                        flexDirection: isMobile ? 'column' : 'row', 
-                        alignItems: 'center', 
-                        justifyContent: 'center',
-                        backgroundColor: '#fef2f2', 
-                        borderWidth: 1, 
-                        borderColor: '#fecaca', 
-                        paddingHorizontal: isMobile ? 2 : 12,
-                        paddingVertical: isMobile ? 7 : 10,
-                        borderRadius: 10,
-                        minHeight: isMobile ? 48 : 42,
-                      }}
-                    >
-                      <Ionicons name="trash-outline" size={isMobile ? 16 : 19} color={AppTheme.colors.error} style={{ marginBottom: isMobile ? 2 : 0, marginRight: isMobile ? 0 : 6 }} />
-                      <Text style={{ color: AppTheme.colors.error, fontWeight: '600', fontSize: isMobile ? 9 : 14, textAlign: 'center' }} numberOfLines={1}>Delete</Text>
-                    </TouchableOpacity>,
-                    `Delete ${previewDoc.title}`,
-                    'flex'
-                  )}
+                  )}</React.Fragment>
+                  ))}
                 </View>
 
                 {/* MAIN PREVIEW CANVAS */}
@@ -2353,7 +2482,7 @@ ${payload.notes}`);
                     <View style={{ width: isMobile ? '100%' : '50%', marginBottom: isMobile ? 12 : 14 }}>
                       <Text style={{ fontSize: 11, color: AppTheme.colors.textSecondary }}>Size</Text>
                       <Text style={{ fontSize: 13, fontWeight: '600', color: AppTheme.colors.text, marginTop: 2 }}>
-                        {formatFileSize(previewDoc.encryptedContent)}
+                        {formatFileSize(previewDoc)}
                       </Text>
                     </View>
 
@@ -2455,7 +2584,8 @@ ${payload.notes}`);
 
       {rasterTarget ? (
         <PdfRasterizer
-          base64={rasterTarget}
+          base64={rasterTarget.base64}
+          fileUri={rasterTarget.fileUri}
           onResult={(image) => rasterResolveRef.current?.(image)}
         />
       ) : null}
@@ -3188,7 +3318,14 @@ ${payload.notes}`);
                     )
                   )}
 
-                  {displayFiles.length === 0 && !notes && (
+                  {displayFiles.length === 0 && !notes && isOpeningDoc && (
+                    <View style={{ alignItems: 'center', marginTop: 40 }}>
+                      <ActivityIndicator size="large" color={AppTheme.colors.primary} />
+                      <Text style={{ color: AppTheme.colors.textSecondary, marginTop: 12 }}>Decrypting…</Text>
+                    </View>
+                  )}
+
+                  {displayFiles.length === 0 && !notes && !isOpeningDoc && (
                     <Text style={{ color: AppTheme.colors.textSecondary, textAlign: 'center', marginTop: 40 }}>No description or file content found.</Text>
                   )}
                 </ScrollView>
@@ -3496,7 +3633,11 @@ ${payload.notes}`);
   );
 }
 
-const styles = StyleSheet.create({
+/**
+ * Built per accent rather than once at import: StyleSheet.create captures the
+ * colours it is given, so a theme change has to rebuild these to take effect.
+ */
+const createStyles = () => StyleSheet.create({
   container: { flex: 1, backgroundColor: AppTheme.colors.background },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: AppTheme.colors.background },
   docCard: { 

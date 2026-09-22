@@ -156,7 +156,9 @@ export default function DraggableFAB({
       <TouchableOpacity
         activeOpacity={0.8}
         onPress={onPress}
-        style={styles.fabButton}
+        // Read here rather than in the stylesheet, which would hold the colour
+        // the app started with rather than the accent in use now
+        style={[styles.fabButton, { backgroundColor: AppTheme.colors.primary, shadowColor: AppTheme.colors.primary }]}
         {...(Platform.OS === 'web' ? { title } : {})}
       >
         <Ionicons name={iconName} size={26} color="#ffffff" />
@@ -175,10 +177,8 @@ const styles = StyleSheet.create({
     width: FAB_SIZE,
     height: FAB_SIZE,
     borderRadius: FAB_SIZE / 2,
-    backgroundColor: AppTheme.colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: AppTheme.colors.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.35,
     shadowRadius: 8,

@@ -17,7 +17,8 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useLockerStore } from '../store/useLockerStore';
-import { AppTheme } from '../theme/AppTheme';
+import { AppTheme, getPageColor, PAGE_COLORS, CUSTOM_KEY } from '../theme/AppTheme';
+import ColorPickerModal from './ColorPickerModal';
 import { DiaryPinMode } from '../models';
 
 const MONTH_NAMES = [
@@ -64,7 +65,10 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
     diaryDates, loadDiaryDates, getDiaryEntry, saveDiaryEntry,
     diaryPinMode, loadDiaryPinMode, setDiaryPin, verifyDiaryPin,
     diaryLined, loadDiaryLined, setDiaryLined,
+    themeVersion, diaryPageColor, customDiaryPageColor, loadPageColors, setDiaryPageColor, setCustomDiaryPageColor,
   } = useLockerStore();
+  const styles = useMemo(() => createStyles(), [themeVersion]);
+  const paper = getPageColor(diaryPageColor, customDiaryPageColor);
   const { width: screenWidth } = useWindowDimensions();
 
   const today = useMemo(() => toDateKey(new Date()), []);
@@ -87,6 +91,8 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState('');
   const [manageVisible, setManageVisible] = useState(false);
+  const [paperVisible, setPaperVisible] = useState(false);
+  const [paperPickerVisible, setPaperPickerVisible] = useState(false);
   const [newPin, setNewPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
   const [manageError, setManageError] = useState('');
@@ -118,6 +124,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
     loadDiaryDates();
     loadDiaryPinMode();
     loadDiaryLined();
+    loadPageColors();
   }, []);
 
   useEffect(() => {
@@ -264,20 +271,27 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
     }),
   };
 
+  // The sheet and its border both follow the chosen paper, so a tinted page
+  // does not sit inside a border left over from the cream one
+  const paperStyle = { backgroundColor: paper.paper, borderColor: paper.rule, borderLeftColor: paper.rule };
+
   const ruleCount = Math.max(0, Math.floor((pageHeight - PAGE_PADDING * 2) / PAGE_LINE_HEIGHT));
 
   const renderRules = () =>
     diaryLined && ruleCount > 0 ? (
       <View style={styles.ruleLayer} pointerEvents="none">
         {Array.from({ length: ruleCount }, (_, i) => (
-          <View key={i} style={styles.rule} />
+          <View key={i} style={[styles.rule, { borderBottomColor: paper.rule }]} />
         ))}
       </View>
     ) : null;
 
   const dateObj = fromDateKey(currentDate);
   const headingDay = `${WEEKDAY_NAMES[dateObj.getDay()]}`;
-  const headingDate = `${dateObj.getDate()} ${MONTH_NAMES[dateObj.getMonth()]} ${dateObj.getFullYear()}`;
+  // Shortened on a phone: the full month name plus four header buttons leaves
+  // the date being cut off mid-word
+  const headingMonth = isMobile ? MONTH_NAMES[dateObj.getMonth()].slice(0, 3) : MONTH_NAMES[dateObj.getMonth()];
+  const headingDate = `${dateObj.getDate()} ${headingMonth} ${dateObj.getFullYear()}`;
   const isToday = currentDate === today;
 
   const openManage = () => {
@@ -615,8 +629,6 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
           </View>
         </View>
 
-        <View style={{ flex: 1 }} />
-
         <TouchableOpacity
           onPress={() => {
             if (!panelOpen) {
@@ -650,6 +662,14 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
           />
         </TouchableOpacity>
 
+        <TouchableOpacity
+          onPress={() => setPaperVisible(true)}
+          style={[styles.headerBtn, { backgroundColor: paper.paper, borderColor: paper.rule }]}
+          accessibilityLabel="Diary page colour"
+        >
+          <Ionicons name="color-palette-outline" size={18} color={AppTheme.colors.primary} />
+        </TouchableOpacity>
+
         <TouchableOpacity onPress={openManage} style={{ padding: 6 }} accessibilityLabel="Diary PIN settings">
           <Ionicons
             name={diaryPinMode === 'none' ? 'lock-open-outline' : 'lock-closed'}
@@ -672,14 +692,14 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
           </View>
           {/* The sheet being uncovered, lying flat under the one that moves */}
           {underText !== null && (
-            <View style={[styles.page, styles.pageFill]} pointerEvents="none">
+            <View style={[styles.page, styles.pageFill, paperStyle]} pointerEvents="none">
               {renderRules()}
               <Text style={styles.pageInput}>{underText}</Text>
             </View>
           )}
 
           <Animated.View
-            style={[styles.page, styles.pageFill, pageStyle]}
+            style={[styles.page, styles.pageFill, paperStyle, pageStyle]}
             onLayout={e => setPageHeight(e.nativeEvent.layout.height)}
           >
             {renderRules()}
@@ -702,6 +722,76 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
     </View>
   );
 
+
+  const renderPaperModal = () => (
+    <Modal visible={paperVisible} transparent animationType="fade" onRequestClose={() => setPaperVisible(false)}>
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalCard}>
+          <Text style={styles.modalTitle}>Page colour</Text>
+          <Text style={styles.modalHint}>The paper every diary page is written on.</Text>
+
+          <View style={styles.swatchGrid}>
+            {PAGE_COLORS.map(option => {
+              const isChosen = option.key === diaryPageColor;
+              return (
+                <TouchableOpacity
+                  key={option.key}
+                  onPress={() => setDiaryPageColor(option.key)}
+                  style={styles.swatchCell}
+                  accessibilityLabel={option.label}
+                >
+                  <View
+                    style={[
+                      styles.swatch,
+                      { backgroundColor: option.paper, borderColor: isChosen ? AppTheme.colors.primary : option.rule },
+                      isChosen && styles.swatchChosen,
+                    ]}
+                  >
+                    {isChosen && <Ionicons name="checkmark" size={16} color={AppTheme.colors.primary} />}
+                  </View>
+                  <Text style={styles.swatchLabel} numberOfLines={1}>{option.label}</Text>
+                </TouchableOpacity>
+              );
+            })}
+
+            {/* Whatever the user mixed; tapping it again reopens the mixer */}
+            <TouchableOpacity
+              onPress={() => {
+                if (diaryPageColor !== CUSTOM_KEY) setDiaryPageColor(CUSTOM_KEY);
+                setPaperPickerVisible(true);
+              }}
+              style={styles.swatchCell}
+              accessibilityLabel="Custom page colour"
+            >
+              <View
+                style={[
+                  styles.swatch,
+                  {
+                    backgroundColor: getPageColor(CUSTOM_KEY, customDiaryPageColor).paper,
+                    borderColor: diaryPageColor === CUSTOM_KEY
+                      ? AppTheme.colors.primary
+                      : getPageColor(CUSTOM_KEY, customDiaryPageColor).rule,
+                  },
+                  diaryPageColor === CUSTOM_KEY && styles.swatchChosen,
+                ]}
+              >
+                <Ionicons
+                  name={diaryPageColor === CUSTOM_KEY ? 'brush' : 'color-palette-outline'}
+                  size={17}
+                  color={AppTheme.colors.primary}
+                />
+              </View>
+              <Text style={styles.swatchLabel} numberOfLines={1}>Custom</Text>
+            </TouchableOpacity>
+          </View>
+
+          <TouchableOpacity onPress={() => setPaperVisible(false)} style={styles.modalDone}>
+            <Text style={styles.modalDoneText}>Done</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
 
   const renderManageModal = () => (
     <Modal visible={manageVisible} transparent animationType="fade" onRequestClose={() => setManageVisible(false)}>
@@ -977,11 +1067,24 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
     <View style={{ flex: 1 }}>
       {renderPage()}
       {renderManageModal()}
+      {renderPaperModal()}
+      <ColorPickerModal
+        visible={paperPickerVisible}
+        value={customDiaryPageColor}
+        title="Custom page colour"
+        hint="The paper your diary pages are written on."
+        onSelect={setCustomDiaryPageColor}
+        onClose={() => setPaperPickerVisible(false)}
+      />
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+/**
+ * Built per accent rather than once at import: StyleSheet.create captures the
+ * colours it is given, so a theme change has to rebuild these to take effect.
+ */
+const createStyles = () => StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -991,24 +1094,23 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   dateGroup: {
-    position: 'absolute',
-    left: 0,
-    // Stop short of the buttons on the right so the TODAY badge is not drawn
-    // underneath them; the date then centres in the space that is left
-    right: 126,
-    top: 0,
-    bottom: 0,
+    // A flex child rather than an absolute box with room reserved for the
+    // buttons: with four of them beside it, a fixed reservation was either too
+    // small - and the TODAY badge ended up underneath one - or too tight for
+    // the date. Sharing the row means the date shortens instead of colliding.
+    flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
   },
   // Equal padding on both arrows keeps them the same distance from the date
   arrowBtn: { paddingHorizontal: 6, paddingVertical: 6 },
-  dateBlock: { alignItems: 'center', maxWidth: '62%' },
+  dateBlock: { alignItems: 'center', flexShrink: 1 },
   headerWeekday: { fontSize: 11, color: AppTheme.colors.textSecondary, fontWeight: '600', textAlign: 'center' },
   // Weight 700 throughout, matching the note name in the Notes tab
   headerDate: { fontSize: 16, fontWeight: '700', color: AppTheme.colors.text, textAlign: 'center' },
-  todaySlot: { width: 56, alignItems: 'flex-start' },
+  todaySlot: { width: 50, alignItems: 'flex-start' },
   todayBadge: {
     marginLeft: 4,
     paddingHorizontal: 7,
@@ -1018,15 +1120,15 @@ const styles = StyleSheet.create({
   },
   todayBadgeText: { fontSize: 9, fontWeight: '800', color: AppTheme.colors.primary },
   headerBtn: {
-    width: 32,
-    height: 32,
+    width: 30,
+    height: 30,
     borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: AppTheme.colors.primaryBorder,
     backgroundColor: AppTheme.colors.primaryLight,
-    marginLeft: 6,
+    marginLeft: 5,
   },
   headerBtnActive: { backgroundColor: AppTheme.colors.primary, borderColor: AppTheme.colors.primary },
 
@@ -1193,6 +1295,38 @@ const styles = StyleSheet.create({
     backgroundColor: AppTheme.colors.primary,
     marginTop: 3,
   },
+
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15,23,42,0.45)',
+    justifyContent: 'center',
+    padding: 18,
+  },
+  modalCard: { backgroundColor: '#ffffff', borderRadius: 18, padding: 18 },
+  modalTitle: { fontSize: 17, fontWeight: '800', color: AppTheme.colors.text, marginBottom: 4 },
+  modalHint: { fontSize: 12, color: AppTheme.colors.textSecondary, marginBottom: 14 },
+  swatchGrid: { flexDirection: 'row', flexWrap: 'wrap' },
+  swatchCell: { width: '25%', alignItems: 'center', marginBottom: 14 },
+  swatch: {
+    width: 46,
+    height: 46,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  swatchChosen: { borderWidth: 2 },
+  swatchLabel: { fontSize: 10.5, color: AppTheme.colors.textSecondary, marginTop: 5 },
+  modalDone: {
+    alignSelf: 'flex-end',
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: AppTheme.colors.primaryLight,
+    borderWidth: 1,
+    borderColor: AppTheme.colors.primaryBorder,
+  },
+  modalDoneText: { color: AppTheme.colors.primary, fontWeight: '700', fontSize: 13 },
 
   pageFill: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 },
   spiralColumn: {

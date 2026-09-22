@@ -2,6 +2,7 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, Modal, StyleSheet, useWindowDimensions, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { AppTheme } from '../theme/AppTheme';
+import { useLockerStore } from '../store/useLockerStore';
 
 const WEEKDAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -68,6 +69,8 @@ interface DatePickerModalProps {
 
 export default function DatePickerModal({ visible, value, title = 'Select Date', onSelect, onClose, inline = false }: DatePickerModalProps) {
   const { width } = useWindowDimensions();
+  const themeVersion = useLockerStore(state => state.themeVersion);
+  const styles = useMemo(() => createStyles(), [themeVersion]);
   const isNarrow = width < 380;
   const selected = useMemo(() => parseDateString(value || ''), [value]);
   const [cursor, setCursor] = useState<Date>(() => selected || new Date());
@@ -190,7 +193,11 @@ export default function DatePickerModal({ visible, value, title = 'Select Date',
   );
 }
 
-const styles = StyleSheet.create({
+/**
+ * Built per accent rather than once at import: StyleSheet.create captures the
+ * colours it is given, so a theme change has to rebuild these to take effect.
+ */
+const createStyles = () => StyleSheet.create({
   overlay: {
     flex: 1,
     backgroundColor: 'rgba(15, 23, 42, 0.5)',

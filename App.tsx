@@ -14,10 +14,18 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 const Stack = createNativeStackNavigator();
 
 export default function App() {
-  const { isLoading, isAuthenticated, checkExistingUsers } = useLockerStore();
+  // themeVersion is read so that repainting the theme re-renders the whole
+  // tree, which is what lets the screens pick up the new colours
+  const { isLoading, isAuthenticated, checkExistingUsers, loadAccent, themeVersion } = useLockerStore();
 
   useEffect(() => {
-    checkExistingUsers();
+    const start = async () => {
+      // Before checkExistingUsers, which is what clears the loading screen: the
+      // lock screen should already be in the right colour rather than flick
+      await loadAccent();
+      await checkExistingUsers();
+    };
+    start();
   }, []);
 
   useEffect(() => {
@@ -44,9 +52,9 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <NavigationContainer>
-        <StatusBar barStyle="dark-content" backgroundColor={AppTheme.colors.background} />
+        <StatusBar barStyle="dark-content" backgroundColor={AppTheme.colors.bar} />
         <Stack.Navigator screenOptions={{ 
-          headerStyle: { backgroundColor: AppTheme.colors.surface },
+          headerStyle: { backgroundColor: AppTheme.colors.bar },
           headerTintColor: AppTheme.colors.text,
           headerTitleStyle: { fontWeight: '700', fontSize: 18, color: AppTheme.colors.text },
           headerShadowVisible: false,

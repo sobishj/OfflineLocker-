@@ -84,6 +84,7 @@ export class DatabaseHelper {
     const additions: { table: string; column: string; definition: string }[] = [
       { table: 'notes', column: 'isSensitive', definition: 'INTEGER NOT NULL DEFAULT 0' },
       { table: 'notes', column: 'notePinHash', definition: 'TEXT' },
+      { table: 'documents', column: 'encryptedMeta', definition: 'TEXT' },
     ];
 
     for (const { table, column, definition } of additions) {
@@ -158,14 +159,51 @@ export class DatabaseHelper {
   static async createDocument(doc: Document): Promise<void> {
     const db = await this.getDatabase();
     await db.runAsync(
-      'INSERT INTO documents (tabId, title, type, encryptedContent, createdAt) VALUES (?, ?, ?, ?, ?)',
-      [doc.tabId, doc.title, doc.type, doc.encryptedContent, doc.createdAt]
+      'INSERT INTO documents (tabId, title, type, encryptedContent, encryptedMeta, createdAt) VALUES (?, ?, ?, ?, ?, ?)',
+      [doc.tabId, doc.title, doc.type, doc.encryptedContent || '', doc.encryptedMeta ?? null, doc.createdAt]
     );
   }
 
+  /**
+   * Summary rows only. Selecting the payload here would pull every file in the
+   * tab into memory just to draw a list of names, which is what made a tab of
+   * large PDFs take so long to open.
+   */
   static async getDocumentsByTab(tabId: string): Promise<Document[]> {
     const db = await this.getDatabase();
-    return await db.getAllAsync<Document>('SELECT * FROM documents WHERE tabId = ? ORDER BY createdAt DESC', [tabId]);
+    return await db.getAllAsync<Document>(
+      `SELECT id, tabId, title, type, createdAt, encryptedMeta,
+              length(encryptedContent) AS contentLength
+         FROM documents WHERE tabId = ? ORDER BY createdAt DESC`,
+      [tabId]
+    );
+  }
+
+  /** Whole rows, payload included. Used by the backup, which needs the files. */
+  static async getDocumentsForBackup(tabIds: string[]): Promise<Document[]> {
+    if (tabIds.length === 0) return [];
+    const db = await this.getDatabase();
+    const placeholders = tabIds.map(() => '?').join(',');
+    return await db.getAllAsync<Document>(
+      `SELECT * FROM documents WHERE tabId IN (${placeholders}) ORDER BY createdAt DESC`,
+      tabIds
+    );
+  }
+
+  /** The payload for one document, read only when something opens it. */
+  static async getDocumentContent(id: number): Promise<string> {
+    const db = await this.getDatabase();
+    const row = await db.getFirstAsync<{ encryptedContent: string }>(
+      'SELECT encryptedContent FROM documents WHERE id = ?',
+      [id]
+    );
+    return row?.encryptedContent || '';
+  }
+
+  /** Fills in the summary for a document saved before there was one. */
+  static async setDocumentMeta(id: number, encryptedMeta: string): Promise<void> {
+    const db = await this.getDatabase();
+    await db.runAsync('UPDATE documents SET encryptedMeta = ? WHERE id = ?', [encryptedMeta, id]);
   }
 
   static async getAllDocuments(): Promise<Document[]> {
@@ -178,9 +216,12 @@ export class DatabaseHelper {
     await db.runAsync('DELETE FROM documents WHERE id = ?', [id]);
   }
 
-  static async updateDocument(id: number, title: string, encryptedContent: string): Promise<void> {
+  static async updateDocument(id: number, title: string, encryptedContent: string, encryptedMeta: string | null = null): Promise<void> {
     const db = await this.getDatabase();
-    await db.runAsync('UPDATE documents SET title = ?, encryptedContent = ? WHERE id = ?', [title, encryptedContent, id]);
+    await db.runAsync(
+      'UPDATE documents SET title = ?, encryptedContent = ?, encryptedMeta = ? WHERE id = ?',
+      [title, encryptedContent, encryptedMeta, id]
+    );
   }
 
   static async getTabDocumentCounts(): Promise<Record<string, number>> {
@@ -226,6 +267,15 @@ export class DatabaseHelper {
       [userId]
     );
     return rows.map(r => r.entryDate);
+  }
+
+  /** Every page, content included, for the backup. */
+  static async getDiaryEntries(userId: string): Promise<DiaryEntry[]> {
+    const db = await this.getDatabase();
+    return await db.getAllAsync<DiaryEntry>(
+      'SELECT * FROM diary_entries WHERE userId = ? ORDER BY entryDate DESC',
+      [userId]
+    );
   }
 
   static async deleteDiaryEntry(userId: string, entryDate: string): Promise<void> {
@@ -275,6 +325,18 @@ export class DatabaseHelper {
       [userId, key]
     );
     return row ? row.value : null;
+  }
+
+  /**
+   * Every setting for a user. The diary's PIN mode and hash live here, so a
+   * backup that left them out would restore a diary with its lock removed.
+   */
+  static async getAllSettings(userId: string): Promise<{ key: string; value: string | null }[]> {
+    const db = await this.getDatabase();
+    return await db.getAllAsync<{ key: string; value: string | null }>(
+      'SELECT key, value FROM app_settings WHERE userId = ?',
+      [userId]
+    );
   }
 
   static async setSetting(userId: string, key: string, value: string | null): Promise<void> {

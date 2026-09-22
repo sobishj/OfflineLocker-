@@ -15,7 +15,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLockerStore } from '../store/useLockerStore';
 import { Note } from '../models';
-import { AppTheme } from '../theme/AppTheme';
+import { AppTheme, getPageColor, PAGE_COLORS, CUSTOM_KEY } from '../theme/AppTheme';
+import ColorPickerModal from './ColorPickerModal';
 import DraggableFAB from './DraggableFAB';
 
 interface NotesViewProps {
@@ -31,7 +32,8 @@ const formatStamp = (iso: string): string => {
 };
 
 export default function NotesView({ isMobile }: NotesViewProps) {
-  const { notes, loadNotes, addNote, updateNote, deleteNote, decryptNote, verifyNotePin } = useLockerStore();
+  const { notes, loadNotes, addNote, updateNote, deleteNote, decryptNote, verifyNotePin, notePageColor, customNotePageColor, loadPageColors, setNotePageColor, setCustomNotePageColor } = useLockerStore();
+  const paper = getPageColor(notePageColor, customNotePageColor);
   const insets = useSafeAreaInsets();
 
   const [search, setSearch] = useState('');
@@ -45,6 +47,8 @@ export default function NotesView({ isMobile }: NotesViewProps) {
   const [draftConfirmPin, setDraftConfirmPin] = useState('');
 
   // Step 2 — writing the note itself
+  const [paperVisible, setPaperVisible] = useState(false);
+  const [paperPickerVisible, setPaperPickerVisible] = useState(false);
   const [writerNote, setWriterNote] = useState<Note | null>(null);
   const [writerBody, setWriterBody] = useState('');
   // Read by the close handler, which must not depend on a stale render
@@ -65,6 +69,7 @@ export default function NotesView({ isMobile }: NotesViewProps) {
 
   useEffect(() => {
     loadNotes();
+    loadPageColors();
   }, []);
 
   const isUnlocked = (note: Note) => !note.isSensitive || (note.id != null && note.id === unlockedId);
@@ -219,30 +224,53 @@ export default function NotesView({ isMobile }: NotesViewProps) {
   const renderList = () => (
     <View style={{ flex: 1 }}>
       <View style={{ padding: 12 }}>
-        <View
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            backgroundColor: '#f8fafc',
-            borderWidth: 1,
-            borderColor: '#e2e8f0',
-            borderRadius: 10,
-            paddingHorizontal: 10,
-          }}
-        >
-          <Ionicons name="search" size={15} color="#94a3b8" />
-          <TextInput
-            style={{ flex: 1, paddingVertical: 9, paddingHorizontal: 8, fontSize: 13, color: AppTheme.colors.text }}
-            placeholder="Search notes"
-            placeholderTextColor="#94a3b8"
-            value={search}
-            onChangeText={setSearch}
-          />
-          {!!search && (
-            <TouchableOpacity onPress={() => setSearch('')} style={{ padding: 4 }}>
-              <Ionicons name="close-circle" size={15} color="#94a3b8" />
-            </TouchableOpacity>
-          )}
+        {/* The page-colour control sits at the end of this row, where the diary
+            keeps its own rather than on a line of its own */}
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <View
+            style={{
+              flex: 1,
+              flexDirection: 'row',
+              alignItems: 'center',
+              backgroundColor: '#f8fafc',
+              borderWidth: 1,
+              borderColor: '#e2e8f0',
+              borderRadius: 10,
+              paddingHorizontal: 10,
+            }}
+          >
+            <Ionicons name="search" size={15} color="#94a3b8" />
+            <TextInput
+              style={{ flex: 1, paddingVertical: 9, paddingHorizontal: 8, fontSize: 13, color: AppTheme.colors.text }}
+              placeholder="Search notes"
+              placeholderTextColor="#94a3b8"
+              value={search}
+              onChangeText={setSearch}
+            />
+            {!!search && (
+              <TouchableOpacity onPress={() => setSearch('')} style={{ padding: 4 }}>
+                <Ionicons name="close-circle" size={15} color="#94a3b8" />
+              </TouchableOpacity>
+            )}
+          </View>
+
+          <TouchableOpacity
+            onPress={() => setPaperVisible(true)}
+            accessibilityLabel="Note page colour"
+            style={{
+              width: 38,
+              height: 38,
+              marginLeft: 8,
+              borderRadius: 10,
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderWidth: 1,
+              borderColor: paper.rule,
+              backgroundColor: paper.paper,
+            }}
+          >
+            <Ionicons name="color-palette-outline" size={18} color={AppTheme.colors.primary} />
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -507,7 +535,7 @@ export default function NotesView({ isMobile }: NotesViewProps) {
 
       {/* STEP 2 — writing. Full screen, with Save in the top bar so the keyboard can never cover it. */}
       <Modal visible={!!writerNote} animationType="slide" onRequestClose={closeWriter}>
-        <View style={{ flex: 1, backgroundColor: '#ffffff', paddingTop: insets.top }}>
+        <View style={{ flex: 1, backgroundColor: paper.paper, paddingTop: insets.top }}>
           <View
             style={{
               flexDirection: 'row',
@@ -515,7 +543,7 @@ export default function NotesView({ isMobile }: NotesViewProps) {
               paddingHorizontal: 12,
               paddingVertical: 10,
               borderBottomWidth: 1,
-              borderBottomColor: '#e2e8f0',
+              borderBottomColor: paper.rule,
             }}
           >
             <TouchableOpacity onPress={closeWriter} style={{ padding: 6 }}>
@@ -552,6 +580,110 @@ export default function NotesView({ isMobile }: NotesViewProps) {
           />
         </View>
       </Modal>
+
+      {/* PAGE COLOUR */}
+      <Modal visible={paperVisible} transparent animationType="fade" onRequestClose={() => setPaperVisible(false)}>
+        <View style={{ flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'center', padding: 18 }}>
+          <View style={{ backgroundColor: '#ffffff', borderRadius: 18, padding: 18 }}>
+            <Text style={{ fontSize: 17, fontWeight: '800', color: AppTheme.colors.text, marginBottom: 4 }}>
+              Page colour
+            </Text>
+            <Text style={{ fontSize: 12, color: AppTheme.colors.textSecondary, marginBottom: 14 }}>
+              The paper every note is written on.
+            </Text>
+
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+              {PAGE_COLORS.map(option => {
+                const isChosen = option.key === notePageColor;
+                return (
+                  <TouchableOpacity
+                    key={option.key}
+                    onPress={() => setNotePageColor(option.key)}
+                    style={{ width: '25%', alignItems: 'center', marginBottom: 14 }}
+                    accessibilityLabel={option.label}
+                  >
+                    <View
+                      style={{
+                        width: 46,
+                        height: 46,
+                        borderRadius: 12,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        backgroundColor: option.paper,
+                        borderWidth: isChosen ? 2 : 1,
+                        borderColor: isChosen ? AppTheme.colors.primary : option.rule,
+                      }}
+                    >
+                      {isChosen && <Ionicons name="checkmark" size={16} color={AppTheme.colors.primary} />}
+                    </View>
+                    <Text style={{ fontSize: 10.5, color: AppTheme.colors.textSecondary, marginTop: 5 }} numberOfLines={1}>
+                      {option.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+
+              {/* Whatever the user mixed; tapping it again reopens the mixer */}
+              <TouchableOpacity
+                onPress={() => {
+                  if (notePageColor !== CUSTOM_KEY) setNotePageColor(CUSTOM_KEY);
+                  setPaperPickerVisible(true);
+                }}
+                style={{ width: '25%', alignItems: 'center', marginBottom: 14 }}
+                accessibilityLabel="Custom page colour"
+              >
+                <View
+                  style={{
+                    width: 46,
+                    height: 46,
+                    borderRadius: 12,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor: getPageColor(CUSTOM_KEY, customNotePageColor).paper,
+                    borderWidth: notePageColor === CUSTOM_KEY ? 2 : 1,
+                    borderColor: notePageColor === CUSTOM_KEY
+                      ? AppTheme.colors.primary
+                      : getPageColor(CUSTOM_KEY, customNotePageColor).rule,
+                  }}
+                >
+                  <Ionicons
+                    name={notePageColor === CUSTOM_KEY ? 'brush' : 'color-palette-outline'}
+                    size={17}
+                    color={AppTheme.colors.primary}
+                  />
+                </View>
+                <Text style={{ fontSize: 10.5, color: AppTheme.colors.textSecondary, marginTop: 5 }} numberOfLines={1}>
+                  Custom
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              onPress={() => setPaperVisible(false)}
+              style={{
+                alignSelf: 'flex-end',
+                paddingHorizontal: 18,
+                paddingVertical: 10,
+                borderRadius: 10,
+                backgroundColor: AppTheme.colors.primaryLight,
+                borderWidth: 1,
+                borderColor: AppTheme.colors.primaryBorder,
+              }}
+            >
+              <Text style={{ color: AppTheme.colors.primary, fontWeight: '700', fontSize: 13 }}>Done</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <ColorPickerModal
+        visible={paperPickerVisible}
+        value={customNotePageColor}
+        title="Custom page colour"
+        hint="The paper your notes are written on."
+        onSelect={setCustomNotePageColor}
+        onClose={() => setPaperPickerVisible(false)}
+      />
 
       {/* NOTE PIN PROMPT */}
       <Modal visible={!!pinModalNote} transparent animationType="fade" onRequestClose={() => setPinModalNote(null)}>

@@ -4,31 +4,47 @@ import { Platform } from 'react-native';
 import { DatabaseHelper } from './DatabaseHelper';
 import { CryptoService } from './CryptoService';
 import { withoutAutoLock } from './AutoLockService';
-import { User, Tab, Document } from '../models';
+import { User, Tab, Document, DiaryEntry, Note } from '../models';
 
+/** A setting as it is carried in a backup, without the user id. */
+export interface BackupSetting {
+  key: string;
+  value: string | null;
+}
+
+/**
+ * The version stays at v1 even though diary pages, notes and settings were
+ * added later: they are separate, optional fields, so a newer backup still
+ * restores in an older build (minus the new parts) and an older backup still
+ * restores here. Bumping it would have broken both directions for no gain.
+ */
 export interface BackupData {
   version: 'ewallet_v1';
   timestamp: string;
   user: User;
   tabs: Tab[];
   documents: Document[];
+  diaryEntries?: DiaryEntry[];
+  notes?: Note[];
+  settings?: BackupSetting[];
 }
 
 export class BackupService {
   /**
-   * Export all user tabs and documents encrypted with a user-provided 4-digit PIN
+   * Everything the vault holds - files, diary pages and notes - encrypted with a
+   * user-provided 4-digit PIN.
    */
   static async exportBackup(user: User, exportPin: string): Promise<boolean> {
     if (!user || exportPin.trim().length !== 4) return false;
 
     try {
       const tabs = await DatabaseHelper.getTabs(user.uuid);
-      const allDocs: Document[] = [];
-
-      for (const tab of tabs) {
-        const docs = await DatabaseHelper.getDocumentsByTab(tab.uuid);
-        allDocs.push(...docs);
-      }
+      // Whole rows: the list query leaves the files out, and a backup without
+      // them would restore every document empty
+      const allDocs = await DatabaseHelper.getDocumentsForBackup(tabs.map(t => t.uuid));
+      const diaryEntries = await DatabaseHelper.getDiaryEntries(user.uuid);
+      const notes = await DatabaseHelper.getNotes(user.uuid);
+      const settings = await DatabaseHelper.getAllSettings(user.uuid);
 
       const backupPayload: BackupData = {
         version: 'ewallet_v1',
@@ -36,6 +52,9 @@ export class BackupService {
         user,
         tabs,
         documents: allDocs,
+        diaryEntries,
+        notes,
+        settings,
       };
 
       const jsonStr = JSON.stringify(backupPayload);
@@ -74,7 +93,7 @@ export class BackupService {
   /**
    * Import and decrypt backup file using the user-provided 4-digit PIN
    */
-  static async importBackup(encryptedContent: string, importPin: string): Promise<{ success: boolean; tabsCount: number; docsCount: number; user: User }> {
+  static async importBackup(encryptedContent: string, importPin: string): Promise<{ success: boolean; tabsCount: number; docsCount: number; diaryCount: number; notesCount: number; user: User }> {
     if (!encryptedContent || importPin.trim().length !== 4) {
       throw new Error('Please enter the 4-digit PIN used to create the backup.');
     }
@@ -132,10 +151,50 @@ export class BackupService {
         }
       }
 
+      // 4. Restore diary pages. One page per day is the rule the table enforces,
+      // and the upsert keeps that true whatever the file contains.
+      let restoredDiaryCount = 0;
+      if (Array.isArray(payload.diaryEntries)) {
+        for (const entry of payload.diaryEntries) {
+          if (!entry?.entryDate || !entry.encryptedContent) continue;
+          await DatabaseHelper.upsertDiaryEntry({ ...entry, userId: payload.user.uuid });
+          restoredDiaryCount++;
+        }
+      }
+
+      // 5. Restore notes, dropping repeats of the same title
+      let restoredNotesCount = 0;
+      if (Array.isArray(payload.notes)) {
+        const seenNoteTitles = new Set<string>();
+        for (const note of payload.notes) {
+          if (!note) continue;
+          const noteKey = (note.title || '').trim().toLowerCase();
+          if (noteKey && seenNoteTitles.has(noteKey)) continue;
+          if (noteKey) seenNoteTitles.add(noteKey);
+          await DatabaseHelper.createNote({
+            ...note,
+            id: undefined,
+            userId: payload.user.uuid,
+            isSensitive: note.isSensitive ? 1 : 0,
+          });
+          restoredNotesCount++;
+        }
+      }
+
+      // 6. Restore settings, which is where the diary's PIN lives
+      if (Array.isArray(payload.settings)) {
+        for (const setting of payload.settings) {
+          if (!setting?.key) continue;
+          await DatabaseHelper.setSetting(payload.user.uuid, setting.key, setting.value ?? null);
+        }
+      }
+
       return {
         success: true,
         tabsCount: seenTabNames.size,
         docsCount: restoredDocsCount,
+        diaryCount: restoredDiaryCount,
+        notesCount: restoredNotesCount,
         user: payload.user,
       };
     } catch (error: any) {

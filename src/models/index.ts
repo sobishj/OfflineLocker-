@@ -20,7 +20,19 @@ export interface Document {
   tabId: string;
   title: string;
   type: string;
-  encryptedContent: string;
+  /**
+   * The encrypted payload, files and all. A vault of scanned PDFs holds tens of
+   * megabytes of it, so list rows leave it out and it is read per document,
+   * when something actually opens one.
+   */
+  encryptedContent?: string;
+  /**
+   * A small encrypted summary - the dates and the document number - so the list
+   * can show expiry without decrypting the files to find it.
+   */
+  encryptedMeta?: string | null;
+  /** Ciphertext length, so a size can be shown without holding the bytes. */
+  contentLength?: number;
   createdAt: string;
 }
 

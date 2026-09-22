@@ -19,6 +19,11 @@ export default function PdfViewer({
   const webViewRef = useRef<WebView>(null);
   const [isViewerReady, setIsViewerReady] = useState(false);
   const [resolvedBase64, setResolvedBase64] = useState<string>('');
+  // A file on disk is handed over as a path; only data URIs become base64 here
+  const [resolvedFileUri, setResolvedFileUri] = useState<string>('');
+  // The load handlers fire several times, and re-sending a large PDF each time
+  // was costing seconds per attempt
+  const deliveredRef = useRef<string>('');
 
   // Resolve uri to pure base64 (handling file:// disk paths, data URIs, or raw base64)
   useEffect(() => {
@@ -31,18 +36,15 @@ export default function PdfViewer({
       }
 
       if (uri.startsWith('file://')) {
-        try {
-          const b64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
-          if (isMounted) setResolvedBase64(b64.replace(/[\r\n\s]/g, '').trim());
-          return;
-        } catch (err) {
-          console.warn('PdfViewer FileSystem read error:', err);
-        }
+        // Reading it back into a base64 string is exactly the work this is
+        // meant to avoid; the page fetches the bytes for itself instead
+        if (isMounted) { setResolvedFileUri(uri); setResolvedBase64(''); }
+        return;
       }
 
       const raw = uri.includes('base64,') ? uri.split('base64,')[1] : uri;
       const clean = raw.replace(/[\r\n\s]/g, '').trim();
-      if (isMounted) setResolvedBase64(clean);
+      if (isMounted) { setResolvedFileUri(''); setResolvedBase64(clean); }
     }
 
     resolveData();
@@ -52,15 +54,20 @@ export default function PdfViewer({
   }, [uri]);
 
   const sendPdfToWebView = useCallback(() => {
-    if (!webViewRef.current || !resolvedBase64) return;
+    const payload = resolvedFileUri || resolvedBase64;
+    if (!webViewRef.current || !payload) return;
+    // Sending the same document twice is pure cost, and the load handlers below
+    // deliberately fire more than once to cover slow WebView start-up
+    if (deliveredRef.current === payload) return;
+    deliveredRef.current = payload;
 
     // 1. Direct JS execution into the WebView (reliable across all Android webview versions)
     const script = `
       (function() {
         if (typeof window.renderPdf === 'function') {
-          window.renderPdf(${JSON.stringify(resolvedBase64)}, ${singlePageOnly});
+          window.renderPdf(${JSON.stringify(payload)}, ${singlePageOnly});
         } else {
-          window.__INITIAL_PDF__ = { base64: ${JSON.stringify(resolvedBase64)}, singlePage: ${singlePageOnly} };
+          window.__INITIAL_PDF__ = { base64: ${JSON.stringify(payload)}, singlePage: ${singlePageOnly} };
         }
       })();
       true;
@@ -69,23 +76,28 @@ export default function PdfViewer({
       webViewRef.current.injectJavaScript(script);
     } catch (e) {}
 
-    // 2. Dual-channel delivery via postMessage as backup
+    // 2. Second channel as a backup, but only for a path: repeating a whole
+    // scan through postMessage doubles the cost of opening it
+    if (!resolvedFileUri) return;
     try {
       webViewRef.current.postMessage(
         JSON.stringify({
           type: 'LOAD_PDF',
-          base64: resolvedBase64,
+          base64: payload,
           singlePage: singlePageOnly,
         })
       );
     } catch (e) {}
-  }, [resolvedBase64, singlePageOnly]);
+  }, [resolvedBase64, resolvedFileUri, singlePageOnly]);
+
+  // A different document has to be allowed through again
+  useEffect(() => { deliveredRef.current = ''; }, [resolvedBase64, resolvedFileUri]);
 
   useEffect(() => {
-    if (isViewerReady && resolvedBase64) {
+    if (isViewerReady && (resolvedBase64 || resolvedFileUri)) {
       sendPdfToWebView();
     }
-  }, [isViewerReady, resolvedBase64, sendPdfToWebView]);
+  }, [isViewerReady, resolvedBase64, resolvedFileUri, sendPdfToWebView]);
 
   const handleMessage = (event: any) => {
     try {
@@ -105,12 +117,13 @@ export default function PdfViewer({
   };
 
   const injectedInitScript = useMemo(() => {
-    if (!resolvedBase64) return undefined;
+    const payload = resolvedFileUri || resolvedBase64;
+    if (!payload) return undefined;
     return `
-      window.__INITIAL_PDF__ = { base64: ${JSON.stringify(resolvedBase64)}, singlePage: ${singlePageOnly} };
+      window.__INITIAL_PDF__ = { base64: ${JSON.stringify(payload)}, singlePage: ${singlePageOnly} };
       true;
     `;
-  }, [resolvedBase64, singlePageOnly]);
+  }, [resolvedBase64, resolvedFileUri, singlePageOnly]);
 
   // Fallback HTML for non-Android platforms (iOS / Web)
   const fallbackHtmlSource = useMemo(() => {
@@ -372,14 +385,37 @@ export default function PdfViewer({
       }
 
       try {
-        var docParam;
-        if (typeof inputData === 'string' && (inputData.startsWith('file://') || inputData.startsWith('http://') || inputData.startsWith('https://'))) {
-          docParam = { url: inputData, disableAutoFetch: true, disableStream: true };
-        } else {
-          var pdfBytes = base64ToUint8Array(inputData);
-          docParam = { data: pdfBytes, disableAutoFetch: true, disableStream: true };
+        if (typeof inputData === 'string' && inputData.indexOf('file://') === 0) {
+          // pdf.js will not read a local file itself: its transport only accepts
+          // status 200/206 and a file read reports 0. Reading it here and
+          // handing over the bytes avoids ferrying megabytes of base64 across.
+          var xhr = new XMLHttpRequest();
+          xhr.open('GET', inputData, true);
+          xhr.responseType = 'arraybuffer';
+          xhr.onload = function() {
+            if (xhr.response && xhr.response.byteLength > 0) {
+              startRender({ data: new Uint8Array(xhr.response), disableAutoFetch: true, disableStream: true }, singlePage);
+            } else {
+              startRender({ url: inputData, disableAutoFetch: true, disableStream: true }, singlePage);
+            }
+          };
+          xhr.onerror = function() {
+            startRender({ url: inputData, disableAutoFetch: true, disableStream: true }, singlePage);
+          };
+          xhr.send();
+          return;
         }
 
+        startRender({ data: base64ToUint8Array(inputData), disableAutoFetch: true, disableStream: true }, singlePage);
+      } catch (err) {
+        showError('Failed to process PDF: ' + (err.message || err));
+      }
+    }
+
+    function startRender(docParam, singlePage) {
+      var loadingEl = document.getElementById('loading-indicator');
+      var container = document.getElementById('viewer-container');
+      try {
         pdfjsLib.getDocument(docParam).promise.then(function(pdf) {
           if (loadingEl) loadingEl.style.display = 'none';
           var totalPages = singlePage ? 1 : pdf.numPages;
