@@ -123,6 +123,10 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
   const [pinError, setPinError] = useState('');
   const [manageVisible, setManageVisible] = useState(false);
   const [paperVisible, setPaperVisible] = useState(false);
+  // The paper picker opens from the editor while it may still hold the keyboard
+  useEffect(() => {
+    if (paperVisible) Keyboard.dismiss();
+  }, [paperVisible]);
   const [paperPickerVisible, setPaperPickerVisible] = useState(false);
   const [newPin, setNewPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');

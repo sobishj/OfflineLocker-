@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, TouchableOpacity, Modal, PanResponder, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, Modal, PanResponder, StyleSheet, Keyboard } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { AppTheme, hexToHsl, hslToHex } from '../theme/AppTheme';
 import { useLockerStore } from '../store/useLockerStore';
@@ -145,6 +145,11 @@ export default function ColorPickerModal({
   useEffect(() => {
     if (visible) setHsl(hexToHsl(value));
   }, [visible, value]);
+
+  // Nothing in here takes typing, so a keyboard left up would only hide it
+  useEffect(() => {
+    if (visible) Keyboard.dismiss();
+  }, [visible]);
 
   const hex = hslToHex(hsl.h, hsl.s, hsl.l);
 

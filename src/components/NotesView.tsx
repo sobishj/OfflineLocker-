@@ -9,6 +9,7 @@ import {
   Alert,
   ScrollView,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -57,6 +58,11 @@ export default function NotesView({ isMobile }: NotesViewProps) {
   const [paperVisible, setPaperVisible] = useState(false);
   const [paperPickerVisible, setPaperPickerVisible] = useState(false);
   const [shareChoiceVisible, setShareChoiceVisible] = useState(false);
+  // Both pickers open from the writer while it may still hold the keyboard,
+  // which would sit over them
+  useEffect(() => {
+    if (paperVisible || shareChoiceVisible) Keyboard.dismiss();
+  }, [paperVisible, shareChoiceVisible]);
   const [writerNote, setWriterNote] = useState<Note | null>(null);
   const [writerBody, setWriterBody] = useState('');
   // Read by the close handler, which must not depend on a stale render

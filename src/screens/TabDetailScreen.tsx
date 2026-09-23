@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, ActivityIndicator, Image, Platform, ScrollView, KeyboardAvoidingView, useWindowDimensions } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, ActivityIndicator, Image, Platform, ScrollView, KeyboardAvoidingView, Keyboard, useWindowDimensions } from 'react-native';
 import { useLockerStore } from '../store/useLockerStore';
 import { AppTheme } from '../theme/AppTheme';
 import ModalCloseButton from '../components/ModalCloseButton';
@@ -625,6 +625,11 @@ export default function TabDetailScreen({ route, navigation }: any) {
   const [editDocEndDate, setEditDocEndDate] = useState('');
   const [editDocDatesEdited, setEditDocDatesEdited] = useState(false);
   const [dateVerifyMode, setDateVerifyMode] = useState<'add' | 'edit' | null>(null);
+  // The check is raised from Save while a field may still be focused, and the
+  // keyboard would cover it - it sits outside the editor's keyboard avoidance
+  useEffect(() => {
+    if (dateVerifyMode) Keyboard.dismiss();
+  }, [dateVerifyMode]);
   const [datePickerTarget, setDatePickerTarget] = useState<'add-start' | 'add-end' | 'edit-start' | 'edit-end' | null>(null);
   const [isScanningDates, setIsScanningDates] = useState(false);
   const [dateScanStatus, setDateScanStatus] = useState<'idle' | 'found' | 'none' | 'unavailable'>('idle');
@@ -2236,9 +2241,10 @@ export default function TabDetailScreen({ route, navigation }: any) {
                     onPress={() => handleItemPress(item)}
                     {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(item) } : {})}
                     style={{
-                      backgroundColor: isSelected
-                        ? AppTheme.colors.primaryLight
-                        : (expiryStyle ? expiryStyle.background : '#ffffff'),
+                      // The expiry tint survives selection, which is shown by the border
+                      backgroundColor: expiryStyle
+                        ? expiryStyle.background
+                        : (isSelected ? AppTheme.colors.primaryLight : '#ffffff'),
                       paddingVertical: isMobile ? 9 : 8,
                       paddingHorizontal: isMobile ? 7 : 8,
                       borderRadius: isMobile ? 12 : 12,
@@ -2246,7 +2252,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                       // Expiry shows through the background tint alone; the border
                       // is reserved for marking the selected row
                       borderWidth: isSelected ? 2 : 1,
-                      borderColor: isSelected ? AppTheme.colors.primaryBorder : '#e2e8f0',
+                      borderColor: isSelected ? AppTheme.colors.primary : '#e2e8f0',
                       flexDirection: 'row',
                       alignItems: 'center',
                       width: '100%',

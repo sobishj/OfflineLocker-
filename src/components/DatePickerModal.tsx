@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, Modal, StyleSheet, useWindowDimensions, Pressable } from 'react-native';
+import { View, Text, TouchableOpacity, Modal, StyleSheet, useWindowDimensions, Pressable, Keyboard } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { AppTheme } from '../theme/AppTheme';
 import { useLockerStore } from '../store/useLockerStore';
@@ -91,6 +91,12 @@ export default function DatePickerModal({ visible, value, title = 'Select Date',
   useEffect(() => {
     if (visible) setCursor(parseDateString(value || '') || new Date());
   }, [visible, value]);
+
+  // Opened from beside a text field, so the keyboard may still be up and
+  // would hide the calendar - nothing in here needs it
+  useEffect(() => {
+    if (visible) Keyboard.dismiss();
+  }, [visible]);
 
   const year = cursor.getFullYear();
   const month = cursor.getMonth();
