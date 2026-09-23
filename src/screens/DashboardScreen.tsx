@@ -19,7 +19,9 @@ import * as FileSystem from 'expo-file-system/legacy';
 import DraggableFAB from '../components/DraggableFAB';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StorageService } from '../utils/storage';
-import { CryptoService } from '../services/CryptoService';
+import { VaultCrypto } from '../services/VaultCrypto';
+import { BACKUP_PASSWORD_MIN } from '../services/BackupService';
+import { NEW_PIN_LENGTH } from '../store/useLockerStore';
 import { withoutAutoLock } from '../services/AutoLockService';
 import BiometricToggle, { BiometricUnlockButton } from '../components/BiometricToggle';
 import { BiometricService, BiometricScopes } from '../services/BiometricService';
@@ -36,7 +38,7 @@ const HOME_TAB_OPTIONS: { key: HomeTab; label: string; icon: 'folder' | 'book' |
 ];
 
 export default function DashboardScreen({ navigation }: DashboardProps) {
-  const { tabs, tabDocCounts, logout, createTab, updateTab, deleteTab, verifyTabPin, exportBackup, importBackup, currentUser, updateUserProfile, accentKey, setAccent, customAccent, setCustomAccent, backgroundKey, setBackground, customBackground, setCustomBackground, barKey, setBar, customBar, setCustomBar, themeVersion } = useLockerStore();
+  const { tabs, tabDocCounts, logout, createTab, updateTab, deleteTab, verifyTabPin, verifyAppPin, exportBackup, importBackup, currentUser, updateUserProfile, accentKey, setAccent, customAccent, setCustomAccent, backgroundKey, setBackground, customBackground, setCustomBackground, barKey, setBar, customBar, setCustomBar, themeVersion } = useLockerStore();
   const styles = useMemo(() => createStyles(), [themeVersion]);
   const { width: screenWidth } = useWindowDimensions();
   const isMobile = screenWidth < 768;
@@ -80,6 +82,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   const closeExportModal = () => {
     setExportModalVisible(false);
     setExportPin('');
+    setExportPinConfirm('');
   };
   const closeImportModal = () => {
     // A restore in flight must not be abandoned half way through
@@ -139,11 +142,15 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   const [pinActionTarget, setPinActionTarget] = useState<'open' | 'edit' | 'delete'>('open');
   // Whether the tab in the PIN window can also be opened with a scan
   const [tabBiometricOn, setTabBiometricOn] = useState(false);
+  // Existing PINs may still be 4 digits; the field waits for as many as the PIN has
+  const unlockPinLength = VaultCrypto.pinLength(selectedTab?.tabPinHash);
+  const currentPinLength = VaultCrypto.pinLength(currentUser?.pinHash);
 
   // Export / Import state
   const [backupModalVisible, setBackupModalVisible] = useState(false);
   const [exportModalVisible, setExportModalVisible] = useState(false);
   const [exportPin, setExportPin] = useState('');
+  const [exportPinConfirm, setExportPinConfirm] = useState('');
   const [isExporting, setIsExporting] = useState(false);
 
   const [importModalVisible, setImportModalVisible] = useState(false);
@@ -309,12 +316,12 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     }
 
     if (editIsSensitive && editTabPin.trim()) {
-      if (editTabPin.trim().length !== 4 || !/^\d{4}$/.test(editTabPin.trim())) {
-        Alert.alert('Invalid PIN', 'Tab PIN must be exactly 4 digits.');
+      if (!new RegExp(`^\\d{${NEW_PIN_LENGTH}}$`).test(editTabPin.trim())) {
+        Alert.alert('Invalid PIN', `Tab PIN must be exactly ${NEW_PIN_LENGTH} digits.`);
         return;
       }
       if (!editConfirmTabPin.trim()) {
-        Alert.alert('Confirm Tab PIN', 'Please re-enter and confirm the new 4-digit Tab PIN.');
+        Alert.alert('Confirm Tab PIN', `Please re-enter and confirm the new ${NEW_PIN_LENGTH}-digit Tab PIN.`);
         return;
       }
       if (editTabPin.trim() !== editConfirmTabPin.trim()) {
@@ -364,12 +371,11 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   };
 
   const handlePerformExport = async () => {
-    if (exportPin.trim().length !== 4) return;
+    if (exportPin.length < BACKUP_PASSWORD_MIN || exportPin !== exportPinConfirm) return;
     setIsExporting(true);
     try {
-      await exportBackup(exportPin.trim());
-      setExportModalVisible(false);
-      setExportPin('');
+      await exportBackup(exportPin);
+      closeExportModal();
       Alert.alert('Success', 'Backup file exported successfully.');
     } catch (e: any) {
       Alert.alert('Export Error', e?.message || 'Failed to export backup.');
@@ -442,14 +448,14 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
   const handlePerformImport = async () => {
     if (isImportingRef.current || isImporting) return;
-    if (!pickedFileContent || importPin.trim().length !== 4) return;
+    if (!pickedFileContent || importPin.length < 4) return;
 
     isImportingRef.current = true;
     setIsImporting(true);
 
     setTimeout(async () => {
       try {
-        const res = await importBackup(pickedFileContent, importPin.trim());
+        const res = await importBackup(pickedFileContent, importPin);
         setImportModalVisible(false);
         setImportPin('');
         setPickedFileContent(null);
@@ -504,14 +510,14 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       return;
     }
 
-    if (accountCurrentPin.trim().length !== 4) {
-      showAccountFeedback('Invalid Current PIN', 'Current PIN must be exactly 4 digits.');
+    if (accountCurrentPin.trim().length !== currentPinLength) {
+      showAccountFeedback('Invalid Current PIN', `Current PIN must be exactly ${currentPinLength} digits.`);
       return;
     }
 
     // 2. Check if entered old PIN is incorrect
-    if (currentUser && !CryptoService.verifyPin(accountCurrentPin.trim(), currentUser.pinHash)) {
-      showAccountFeedback('Incorrect PIN', 'Incorrect current PIN. Please enter your correct 4-digit PIN.');
+    if (currentUser && !verifyAppPin(accountCurrentPin)) {
+      showAccountFeedback('Incorrect PIN', `Incorrect current PIN. Please enter your correct ${currentPinLength}-digit PIN.`);
       return;
     }
 
@@ -546,15 +552,15 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
     if (isPinChanged) {
       if (!accountNewPin.trim()) {
-        showAccountFeedback('Enter New PIN', 'Please enter a 4-digit new PIN.');
+        showAccountFeedback('Enter New PIN', `Please enter a ${NEW_PIN_LENGTH}-digit new PIN.`);
         return;
       }
-      if (accountNewPin.trim().length !== 4 || !/^\d{4}$/.test(accountNewPin.trim())) {
-        showAccountFeedback('Invalid New PIN', 'New PIN must be exactly 4 digits.');
+      if (!new RegExp(`^\\d{${NEW_PIN_LENGTH}}$`).test(accountNewPin.trim())) {
+        showAccountFeedback('Invalid New PIN', `New PIN must be exactly ${NEW_PIN_LENGTH} digits.`);
         return;
       }
       if (!accountConfirmNewPin.trim()) {
-        showAccountFeedback('Confirm New PIN', 'Please re-enter and confirm your new 4-digit PIN.');
+        showAccountFeedback('Confirm New PIN', `Please re-enter and confirm your new ${NEW_PIN_LENGTH}-digit PIN.`);
         return;
       }
       if (accountNewPin.trim() !== accountConfirmNewPin.trim()) {
@@ -614,12 +620,12 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     }
 
     if (isSensitive) {
-      if (tabPin.trim().length !== 4 || !/^\d{4}$/.test(tabPin.trim())) {
-        Alert.alert('Invalid PIN', 'Sensitive tabs require a 4-digit PIN.');
+      if (!new RegExp(`^\\d{${NEW_PIN_LENGTH}}$`).test(tabPin.trim())) {
+        Alert.alert('Invalid PIN', `Sensitive tabs require a ${NEW_PIN_LENGTH}-digit PIN.`);
         return;
       }
       if (!confirmTabPin.trim()) {
-        Alert.alert('Confirm Tab PIN', 'Please confirm your 4-digit Tab PIN.');
+        Alert.alert('Confirm Tab PIN', `Please confirm your ${NEW_PIN_LENGTH}-digit Tab PIN.`);
         return;
       }
       if (tabPin.trim() !== confirmTabPin.trim()) {
@@ -632,7 +638,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     if (success) {
       closeCreateTab();
     } else {
-      Alert.alert('Error', 'Failed to create tab. Ensure sensitive tabs have a 4-digit PIN.');
+      Alert.alert('Error', `Failed to create tab. Ensure sensitive tabs have a ${NEW_PIN_LENGTH}-digit PIN.`);
     }
   };
 
@@ -961,29 +967,29 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               <>
                 <TextInput 
                   style={[styles.input, { letterSpacing: tabPin ? 6 : 0 }]} 
-                  placeholder="4-Digit Tab PIN" 
+                  placeholder={`${NEW_PIN_LENGTH}-Digit Tab PIN`} 
                   placeholderTextColor={AppTheme.colors.textSecondary} 
                   value={tabPin} 
-                  onChangeText={(t) => setTabPin(t.replace(/[^0-9]/g, '').slice(0, 4))} 
+                  onChangeText={(t) => setTabPin(t.replace(/[^0-9]/g, '').slice(0, NEW_PIN_LENGTH))} 
                   keyboardType="numeric" 
                   secureTextEntry 
-                  maxLength={4} 
+                  maxLength={NEW_PIN_LENGTH} 
                 />
                 <TextInput 
                   style={[
                     styles.input, 
                     { letterSpacing: confirmTabPin ? 6 : 0 },
-                    tabPin.length === 4 && confirmTabPin.length === 4 && tabPin !== confirmTabPin && { borderColor: AppTheme.colors.error, borderWidth: 1.5 }
+                    tabPin.length === NEW_PIN_LENGTH && confirmTabPin.length === NEW_PIN_LENGTH && tabPin !== confirmTabPin && { borderColor: AppTheme.colors.error, borderWidth: 1.5 }
                   ]} 
-                  placeholder="Confirm 4-Digit Tab PIN" 
+                  placeholder={`Confirm ${NEW_PIN_LENGTH}-Digit Tab PIN`} 
                   placeholderTextColor={AppTheme.colors.textSecondary} 
                   value={confirmTabPin} 
-                  onChangeText={(t) => setConfirmTabPin(t.replace(/[^0-9]/g, '').slice(0, 4))} 
+                  onChangeText={(t) => setConfirmTabPin(t.replace(/[^0-9]/g, '').slice(0, NEW_PIN_LENGTH))} 
                   keyboardType="numeric" 
                   secureTextEntry 
-                  maxLength={4} 
+                  maxLength={NEW_PIN_LENGTH} 
                 />
-                {tabPin.length === 4 && confirmTabPin.length === 4 && tabPin !== confirmTabPin && (
+                {tabPin.length === NEW_PIN_LENGTH && confirmTabPin.length === NEW_PIN_LENGTH && tabPin !== confirmTabPin && (
                   <Text style={{ color: AppTheme.colors.error, fontSize: 12, marginTop: -8, marginBottom: 8, fontWeight: '600' }}>
                     Tab PIN and Confirm Tab PIN do not match.
                   </Text>
@@ -1000,7 +1006,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
               </TouchableOpacity>
               {(() => {
-                const isCreateDisabled = !tabName.trim() || (isSensitive && (tabPin.trim().length !== 4 || confirmTabPin.trim().length !== 4 || tabPin.trim() !== confirmTabPin.trim()));
+                const isCreateDisabled = !tabName.trim() || (isSensitive && (tabPin.trim().length !== NEW_PIN_LENGTH || confirmTabPin.trim().length !== NEW_PIN_LENGTH || tabPin.trim() !== confirmTabPin.trim()));
                 return (
                   <TouchableOpacity 
                     onPress={handleCreateTab} 
@@ -1050,13 +1056,13 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               <>
                 <TextInput
                   style={[styles.input, { letterSpacing: editTabPin ? 6 : 0 }]}
-                  placeholder="New 4-Digit Tab PIN (optional to keep current)"
+                  placeholder={`New ${NEW_PIN_LENGTH}-Digit Tab PIN (optional to keep current)`}
                   placeholderTextColor={AppTheme.colors.textSecondary}
                   value={editTabPin}
-                  onChangeText={(t) => setEditTabPin(t.replace(/[^0-9]/g, '').slice(0, 4))}
+                  onChangeText={(t) => setEditTabPin(t.replace(/[^0-9]/g, '').slice(0, NEW_PIN_LENGTH))}
                   keyboardType="numeric"
                   secureTextEntry
-                  maxLength={4}
+                  maxLength={NEW_PIN_LENGTH}
                 />
                 {editTabPin.length > 0 && (
                   <>
@@ -1064,17 +1070,17 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                       style={[
                         styles.input, 
                         { letterSpacing: editConfirmTabPin ? 6 : 0 },
-                        editTabPin.length === 4 && editConfirmTabPin.length === 4 && editTabPin !== editConfirmTabPin && { borderColor: AppTheme.colors.error, borderWidth: 1.5 }
+                        editTabPin.length === NEW_PIN_LENGTH && editConfirmTabPin.length === NEW_PIN_LENGTH && editTabPin !== editConfirmTabPin && { borderColor: AppTheme.colors.error, borderWidth: 1.5 }
                       ]}
-                      placeholder="Confirm New 4-Digit Tab PIN"
+                      placeholder={`Confirm New ${NEW_PIN_LENGTH}-Digit Tab PIN`}
                       placeholderTextColor={AppTheme.colors.textSecondary}
                       value={editConfirmTabPin}
-                      onChangeText={(t) => setEditConfirmTabPin(t.replace(/[^0-9]/g, '').slice(0, 4))}
+                      onChangeText={(t) => setEditConfirmTabPin(t.replace(/[^0-9]/g, '').slice(0, NEW_PIN_LENGTH))}
                       keyboardType="numeric"
                       secureTextEntry
-                      maxLength={4}
+                      maxLength={NEW_PIN_LENGTH}
                     />
-                    {editTabPin.length === 4 && editConfirmTabPin.length === 4 && editTabPin !== editConfirmTabPin && (
+                    {editTabPin.length === NEW_PIN_LENGTH && editConfirmTabPin.length === NEW_PIN_LENGTH && editTabPin !== editConfirmTabPin && (
                       <Text style={{ color: AppTheme.colors.error, fontSize: 12, marginTop: -8, marginBottom: 8, fontWeight: '600' }}>
                         New Tab PIN and Confirm Tab PIN do not match.
                       </Text>
@@ -1085,7 +1091,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 <BiometricToggle
                   value={editTabBiometric}
                   onChange={setEditTabBiometric}
-                  disabled={!editKnownPin && editTabPin.trim().length !== 4}
+                  disabled={!editKnownPin && editTabPin.trim().length !== NEW_PIN_LENGTH}
                 />
               </>
             )}
@@ -1127,13 +1133,13 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             </View>
             <TextInput 
               style={[styles.input, { letterSpacing: unlockPin ? 6 : 0 }]} 
-              placeholder="4-Digit PIN" 
-              placeholderTextColor={AppTheme.colors.textSecondary} 
-              value={unlockPin} 
-              onChangeText={setUnlockPin} 
+              placeholder={`${unlockPinLength}-Digit PIN`}
+              placeholderTextColor={AppTheme.colors.textSecondary}
+              value={unlockPin}
+              onChangeText={(t) => setUnlockPin(t.replace(/[^0-9]/g, '').slice(0, unlockPinLength))} 
               keyboardType="numeric" 
               secureTextEntry 
-              maxLength={4} 
+              maxLength={NEW_PIN_LENGTH} 
             />
             {tabBiometricOn && selectedTab && (
               <BiometricUnlockButton onPress={() => tryTabBiometric(selectedTab, pinActionTarget)} style={{ marginBottom: 12 }} />
@@ -1143,7 +1149,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
               </TouchableOpacity>
               {(() => {
-                const isUnlockDisabled = unlockPin.trim().length !== 4;
+                const isUnlockDisabled = unlockPin.trim().length !== unlockPinLength;
                 return (
                   <TouchableOpacity 
                     onPress={handleUnlockTab} 
@@ -1733,6 +1739,15 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 </TouchableOpacity>
               </View>
 
+              {currentPinLength < NEW_PIN_LENGTH && (
+                <View style={{ flexDirection: 'row', alignItems: 'flex-start', backgroundColor: '#fffbeb', borderColor: '#fde68a', borderWidth: 1, borderRadius: 8, padding: 10, marginTop: 12 }}>
+                  <Ionicons name="shield-half-outline" size={16} color="#b45309" style={{ marginRight: 8, marginTop: 1 }} />
+                  <Text style={{ flex: 1, fontSize: 12, color: '#92400e', lineHeight: 17 }}>
+                    Your PIN has {currentPinLength} digits. Change it to a {NEW_PIN_LENGTH}-digit PIN below for stronger protection.
+                  </Text>
+                </View>
+              )}
+
               {/* New PIN field */}
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, marginBottom: 6 }}>
                 <Text style={styles.label}>New PIN</Text>
@@ -1754,13 +1769,13 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                   value={accountNewPin}
                   onChangeText={(t) => {
                     setAccountError(null);
-                    setAccountNewPin(t.replace(/[^0-9]/g, '').slice(0, 4));
+                    setAccountNewPin(t.replace(/[^0-9]/g, '').slice(0, NEW_PIN_LENGTH));
                   }}
-                  placeholder="Enter new 4-digit PIN"
+                  placeholder={`Enter new ${NEW_PIN_LENGTH}-digit PIN`}
                   placeholderTextColor={AppTheme.colors.textSecondary}
                   keyboardType="number-pad"
                   secureTextEntry={!showNewPin}
-                  maxLength={4}
+                  maxLength={NEW_PIN_LENGTH}
                 />
                 <TouchableOpacity
                   onPress={() => {
@@ -1800,20 +1815,20 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                     style={[
                       styles.input, 
                       { letterSpacing: accountConfirmNewPin ? 6 : 0, fontSize: accountConfirmNewPin ? 17 : 14 },
-                      accountNewPin.length === 4 && accountConfirmNewPin.length === 4 && accountNewPin !== accountConfirmNewPin && { borderColor: AppTheme.colors.error, borderWidth: 1.5 }
+                      accountNewPin.length === NEW_PIN_LENGTH && accountConfirmNewPin.length === NEW_PIN_LENGTH && accountNewPin !== accountConfirmNewPin && { borderColor: AppTheme.colors.error, borderWidth: 1.5 }
                     ]}
                     value={accountConfirmNewPin}
                     onChangeText={(t) => {
                       setAccountError(null);
-                      setAccountConfirmNewPin(t.replace(/[^0-9]/g, '').slice(0, 4));
+                      setAccountConfirmNewPin(t.replace(/[^0-9]/g, '').slice(0, NEW_PIN_LENGTH));
                     }}
-                    placeholder="Re-enter new 4-digit PIN"
+                    placeholder={`Re-enter new ${NEW_PIN_LENGTH}-digit PIN`}
                     placeholderTextColor={AppTheme.colors.textSecondary}
                     keyboardType="number-pad"
                     secureTextEntry={!showNewPin}
-                    maxLength={4}
+                    maxLength={NEW_PIN_LENGTH}
                   />
-                  {accountNewPin.length === 4 && accountConfirmNewPin.length === 4 && accountNewPin !== accountConfirmNewPin && (
+                  {accountNewPin.length === NEW_PIN_LENGTH && accountConfirmNewPin.length === NEW_PIN_LENGTH && accountNewPin !== accountConfirmNewPin && (
                     <Text style={{ color: AppTheme.colors.error, fontSize: 12, marginTop: -6, marginBottom: 8, fontWeight: '600' }}>
                       New PIN and Confirm New PIN do not match.
                     </Text>
@@ -1848,13 +1863,13 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 value={accountCurrentPin}
                 onChangeText={(t) => {
                   setAccountError(null);
-                  setAccountCurrentPin(t.replace(/[^0-9]/g, '').slice(0, 4));
+                  setAccountCurrentPin(t.replace(/[^0-9]/g, '').slice(0, currentPinLength));
                 }}
-                placeholder="Enter current 4-digit PIN"
+                placeholder={`Enter current ${currentPinLength}-digit PIN`}
                 placeholderTextColor={AppTheme.colors.textSecondary}
                 keyboardType="number-pad"
                 secureTextEntry={!showCurrentPin}
-                maxLength={4}
+                maxLength={NEW_PIN_LENGTH}
               />
 
               {/* Action buttons */}
@@ -1893,24 +1908,43 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               <ModalCloseButton onPress={closeExportModal} />
             </View>
             <Text style={{ color: AppTheme.colors.textSecondary, marginBottom: AppTheme.spacing.m, fontSize: 13 }}>
-              Enter a 4-digit PIN to encrypt your backup. You must enter this exact PIN when restoring your data.
+              Choose a backup password of at least {BACKUP_PASSWORD_MIN} characters. Letters, numbers and symbols make it much harder to crack. You will need this exact password to restore the backup - it cannot be recovered.
             </Text>
             <TextInput
-              style={[styles.input, { letterSpacing: exportPin ? 8 : 0, textAlign: exportPin ? 'center' : 'left', fontSize: exportPin ? 18 : 15 }]}
-              placeholder="Enter 4-Digit Export PIN"
+              style={[styles.input, { letterSpacing: 0 }]}
+              placeholder={`Backup password (min ${BACKUP_PASSWORD_MIN} characters)`}
               placeholderTextColor={AppTheme.colors.textSecondary}
               value={exportPin}
               onChangeText={setExportPin}
-              keyboardType="numeric"
+              autoCapitalize="none"
+              autoCorrect={false}
               secureTextEntry
-              maxLength={4}
             />
+            <TextInput
+              style={[
+                styles.input,
+                { letterSpacing: 0 },
+                exportPinConfirm.length > 0 && exportPin !== exportPinConfirm && { borderColor: AppTheme.colors.error, borderWidth: 1.5 },
+              ]}
+              placeholder="Confirm backup password"
+              placeholderTextColor={AppTheme.colors.textSecondary}
+              value={exportPinConfirm}
+              onChangeText={setExportPinConfirm}
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry
+            />
+            {exportPinConfirm.length > 0 && exportPin !== exportPinConfirm && (
+              <Text style={{ color: AppTheme.colors.error, fontSize: 12, marginTop: -8, marginBottom: 8, fontWeight: '600' }}>
+                The passwords do not match.
+              </Text>
+            )}
             <View style={styles.modalActions}>
-              <TouchableOpacity onPress={() => { setExportModalVisible(false); setExportPin(''); }} style={[styles.button, { backgroundColor: AppTheme.colors.border }]}>
+              <TouchableOpacity onPress={closeExportModal} style={[styles.button, { backgroundColor: AppTheme.colors.border }]}>
                 <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
               </TouchableOpacity>
               {(() => {
-                const isExportDisabled = exportPin.trim().length !== 4 || isExporting;
+                const isExportDisabled = exportPin.length < BACKUP_PASSWORD_MIN || exportPin !== exportPinConfirm || isExporting;
                 return (
                   <TouchableOpacity
                     onPress={handlePerformExport}
@@ -1954,7 +1988,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             )}
 
             <Text style={{ color: AppTheme.colors.textSecondary, marginBottom: AppTheme.spacing.m, fontSize: 13 }}>
-              Enter the 4-digit password / PIN that was used to export this backup file.
+              Enter the backup password that was used to export this file. Backups made before this update use their 4-digit PIN instead.
             </Text>
 
             {/* Web file input is rendered to document.body via useEffect — no JSX needed here */}
@@ -1993,16 +2027,16 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             <TextInput
               style={[
                 styles.input, 
-                { letterSpacing: importPin ? 8 : 0, textAlign: importPin ? 'center' : 'left', fontSize: importPin ? 18 : 15 },
+                { letterSpacing: 0 },
                 (isImporting || isReadingFile) && { backgroundColor: AppTheme.colors.border, opacity: 0.6 }
               ]}
-              placeholder="Enter 4-Digit Export Password"
+              placeholder="Backup password (or old 4-digit PIN)"
               placeholderTextColor={AppTheme.colors.textSecondary}
               value={importPin}
               onChangeText={setImportPin}
-              keyboardType="numeric"
+              autoCapitalize="none"
+              autoCorrect={false}
               secureTextEntry
-              maxLength={4}
               editable={!isImporting && !isReadingFile}
             />
 
@@ -2034,7 +2068,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 <Text style={[styles.buttonText, { color: (isImporting || isReadingFile) ? AppTheme.colors.textSecondary : AppTheme.colors.primary }]}>Cancel</Text>
               </TouchableOpacity>
               {(() => {
-                const isImportDisabled = !pickedFileContent || importPin.trim().length !== 4 || isImporting || isReadingFile;
+                const isImportDisabled = !pickedFileContent || importPin.length < 4 || isImporting || isReadingFile;
                 return (
                   <TouchableOpacity
                     onPress={handlePerformImport}

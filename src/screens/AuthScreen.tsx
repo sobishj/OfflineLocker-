@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, Alert, AppState } from 'react-native';
-import { useLockerStore } from '../store/useLockerStore';
+import { useLockerStore, NEW_PIN_LENGTH } from '../store/useLockerStore';
 import { AppTheme } from '../theme/AppTheme';
 import { Feather } from '@expo/vector-icons';
 import BiometricToggle, { BiometricUnlockButton } from '../components/BiometricToggle';
 import { BiometricService, BiometricScopes } from '../services/BiometricService';
+import { VaultCrypto } from '../services/VaultCrypto';
 
 export default function AuthScreen() {
   const { currentUser, registerUser, loginUser, unlockWithBiometric, errorMessage, clearError, lockoutState, refreshLockoutState, themeVersion } = useLockerStore();
@@ -83,6 +84,8 @@ export default function AuthScreen() {
   }, []);
 
   const isLockedOut = !isRegisterMode && remainingSec > 0;
+  // A new vault gets a 6-digit PIN; an existing one may still have its 4-digit PIN
+  const pinLen = isRegisterMode ? NEW_PIN_LENGTH : VaultCrypto.pinLength(currentUser?.pinHash);
 
   const executeRegistration = async () => {
     if (pin.trim() !== confirmPin.trim()) return;
@@ -149,8 +152,8 @@ export default function AuthScreen() {
         <Text style={styles.title}>{isRegisterMode ? 'Create Vault' : 'Unlock Vault'}</Text>
         <Text style={styles.subtitle}>
           {isRegisterMode 
-            ? 'Enter a username and set a 4-digit PIN for the new vault' 
-            : `Welcome back, ${currentUser?.username || 'User'}! Enter your 4-digit PIN`}
+            ? `Enter a username and set a ${pinLen}-digit PIN for the new vault`
+            : `Welcome back, ${currentUser?.username || 'User'}! Enter your ${pinLen}-digit PIN`}
         </Text>
         
         {isRegisterMode && currentUser && (
@@ -214,16 +217,16 @@ export default function AuthScreen() {
             { letterSpacing: pin ? 8 : 0, textAlign: pin ? 'center' : 'left', fontSize: pin ? 20 : 16 },
             isLockedOut && { opacity: 0.5, backgroundColor: 'rgba(0,0,0,0.05)' }
           ]}
-          placeholder={isLockedOut ? `Locked (${formatTime(remainingSec)})` : (isRegisterMode ? "Create 4-Digit PIN" : "Enter 4-Digit PIN")}
+          placeholder={isLockedOut ? `Locked (${formatTime(remainingSec)})` : (isRegisterMode ? `Create ${pinLen}-Digit PIN` : `Enter ${pinLen}-Digit PIN`)}
           placeholderTextColor="#8e8e93"
           value={pin}
           onChangeText={(t) => {
             clearError();
-            setPin(t.replace(/[^0-9]/g, '').slice(0, 4));
+            setPin(t.replace(/[^0-9]/g, '').slice(0, pinLen));
           }}
           keyboardType="numeric"
           secureTextEntry
-          maxLength={4}
+          maxLength={pinLen}
           editable={!isLockedOut}
         />
 
@@ -232,22 +235,22 @@ export default function AuthScreen() {
             style={[
               styles.input, 
               { letterSpacing: confirmPin ? 8 : 0, textAlign: confirmPin ? 'center' : 'left', fontSize: confirmPin ? 20 : 16 },
-              confirmPin.length === 4 && pin.length === 4 && confirmPin !== pin && { borderColor: AppTheme.colors.error, borderWidth: 1.5 }
+              confirmPin.length === pinLen && pin.length === pinLen && confirmPin !== pin && { borderColor: AppTheme.colors.error, borderWidth: 1.5 }
             ]}
-            placeholder="Confirm 4-Digit PIN"
+            placeholder={`Confirm ${pinLen}-Digit PIN`}
             placeholderTextColor="#8e8e93"
             value={confirmPin}
             onChangeText={(t) => {
               clearError();
-              setConfirmPin(t.replace(/[^0-9]/g, '').slice(0, 4));
+              setConfirmPin(t.replace(/[^0-9]/g, '').slice(0, pinLen));
             }}
             keyboardType="numeric"
             secureTextEntry
-            maxLength={4}
+            maxLength={pinLen}
           />
         )}
 
-        {isRegisterMode && pin.length === 4 && confirmPin.length === 4 && pin !== confirmPin && (
+        {isRegisterMode && pin.length === pinLen && confirmPin.length === pinLen && pin !== confirmPin && (
           <Text style={[styles.error, { marginTop: -8, marginBottom: 12 }]}>
             PINs do not match. Please re-enter.
           </Text>
@@ -262,8 +265,8 @@ export default function AuthScreen() {
         {(() => {
           const isValid = !isLockedOut && (
             isRegisterMode 
-              ? (username.trim().length > 0 && pin.trim().length === 4 && confirmPin.trim().length === 4 && pin.trim() === confirmPin.trim()) 
-              : (pin.trim().length === 4)
+              ? (username.trim().length > 0 && pin.trim().length === pinLen && confirmPin.trim().length === pinLen && pin.trim() === confirmPin.trim()) 
+              : (pin.trim().length === pinLen)
           );
           return (
             <TouchableOpacity 

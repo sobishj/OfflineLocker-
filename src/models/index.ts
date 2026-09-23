@@ -33,6 +33,8 @@ export interface Document {
   encryptedMeta?: string | null;
   /** Ciphertext length, so a size can be shown without holding the bytes. */
   contentLength?: number;
+  /** The summary, decrypted when the list loads. Never written to the database. */
+  plainMeta?: string | null;
   createdAt: string;
 }
 
@@ -57,6 +59,10 @@ export interface Note {
   notePinHash?: string | null;
   createdAt: string;
   updatedAt: string;
+  /** The text, decrypted when the list loads. Never written to the database. */
+  content?: string;
+  /** True when the stored text would not decrypt; it is then never written over. */
+  unreadable?: boolean;
 }
 
 /** Which tab the app opens on. */

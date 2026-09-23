@@ -3,7 +3,8 @@ import { v4 as uuidv4 } from 'uuid';
 import 'react-native-get-random-values'; // Needed for uuid in React Native
 import { User, Tab, Document, Note, DiaryPinMode, HomeTab } from '../models';
 import { DatabaseHelper } from '../services/DatabaseHelper';
-import { CryptoService } from '../services/CryptoService';
+import { VaultCrypto } from '../services/VaultCrypto';
+import { VaultMigration, LegacyKeys } from '../services/VaultMigration';
 import { BackupService } from '../services/BackupService';
 import { clearDecryptedCache } from '../services/FileCacheService';
 import { BiometricService, BiometricScopes } from '../services/BiometricService';
@@ -31,6 +32,10 @@ const BACKGROUND_CUSTOM_STORAGE_KEY = '@offline_locker_background_custom';
 const BAR_STORAGE_KEY = '@offline_locker_bar';
 const BAR_CUSTOM_STORAGE_KEY = '@offline_locker_bar_custom';
 import { LockoutService, LockoutState } from '../services/LockoutService';
+
+/** Every PIN created or changed from now on. Existing 4-digit PINs keep working. */
+export const NEW_PIN_LENGTH = 6;
+const isNewPin = (pin?: string) => !!pin && new RegExp(`^\\d{${NEW_PIN_LENGTH}}$`).test(pin.trim());
 
 interface LockerState {
   currentUser: User | null;
@@ -85,11 +90,17 @@ interface LockerState {
   deleteTab: (tabId: string) => Promise<void>;
   verifyTabPin: (tab: Tab, candidatePin: string) => boolean;
   loadDocumentsForTab: (tabId: string) => Promise<void>;
-  addDocument: (tabId: string, title: string, type: string, plainContent: string, encryptionPin: string, plainMeta?: string) => Promise<void>;
-  updateDocument: (id: number, tabId: string, title: string, plainContent: string, encryptionPin: string, plainMeta?: string) => Promise<void>;
+  addDocument: (tabId: string, title: string, type: string, plainContent: string, plainMeta?: string) => Promise<void>;
+  updateDocument: (id: number, tabId: string, title: string, plainContent: string, plainMeta?: string) => Promise<void>;
   deleteDocument: (id: number, tabId: string) => Promise<void>;
   getDocumentContent: (id: number) => Promise<string>;
-  setDocumentMeta: (id: number, plainMeta: string, encryptionPin: string) => Promise<void>;
+  /** Plaintext of a stored value; `extraKeys` are old tab PINs some older documents are under. */
+  decryptValue: (cipher: string, extraKeys?: (string | null | undefined)[]) => Promise<string>;
+  /** Rewrites an old-format document payload once it has been opened and decrypted. */
+  upgradeDocumentContent: (id: number, plainContent: string) => Promise<void>;
+  /** The PIN an older document in this tab may be encrypted with, if known. */
+  legacyTabPin: (tabId: string) => string | undefined;
+  setDocumentMeta: (id: number, plainMeta: string) => Promise<void>;
   loadDiaryDates: () => Promise<void>;
   getDiaryEntry: (entryDate: string) => Promise<string>;
   saveDiaryEntry: (entryDate: string, plainContent: string) => Promise<void>;
@@ -121,14 +132,91 @@ interface LockerState {
   setDiaryPin: (mode: DiaryPinMode, pin?: string, biometric?: boolean) => Promise<void>;
   setDiaryBiometric: (enabled: boolean) => Promise<void>;
   verifyDiaryPin: (candidatePin: string) => boolean;
-  exportBackup: (exportPin: string) => Promise<boolean>;
-  importBackup: (encryptedContent: string, importPin: string) => Promise<{ success: boolean; tabsCount: number; docsCount: number; diaryCount: number; notesCount: number }>;
+  /** Checks the account PIN without unlocking anything, for the profile screen. */
+  verifyAppPin: (candidatePin: string) => boolean;
+  exportBackup: (password: string) => Promise<boolean>;
+  importBackup: (encryptedContent: string, secret: string) => Promise<{ success: boolean; tabsCount: number; docsCount: number; diaryCount: number; notesCount: number }>;
   updateUserProfile: (currentPin: string, newUsername?: string, newPin?: string) => Promise<{ success: boolean; message: string }>;
   refreshLockoutState: () => Promise<LockoutState>;
   clearError: () => void;
 }
 
 export const useLockerStore = create<LockerState>((set, get) => {
+  /** Older keys the open vault's legacy rows may be under, until migration is done. */
+  let legacy: LegacyKeys = { keys: [], tabPins: {} };
+  /** False until the open vault is known to hold nothing in the old format. */
+  let migrationDone = false;
+
+  /** Keeps an old key for good; a failed save is retried by the next migration pass. */
+  const rememberLegacy = (userId: string, add: Partial<LegacyKeys>) => {
+    legacy = {
+      keys: Array.from(new Set([...legacy.keys, ...(add.keys || [])])),
+      tabPins: { ...legacy.tabPins, ...(add.tabPins || {}) },
+    };
+    VaultCrypto.setLegacyKeys(legacy.keys);
+    VaultMigration.saveLegacyKeys(userId, legacy).catch(() => {});
+  };
+
+  /**
+   * Opens the vault key for `user`. The first time after the update there is
+   * no key yet: one is created, and the old PIN hash - which is what the
+   * existing data is encrypted with - is kept as a legacy key, sealed under it.
+   * False means this device has no key for a vault already in the new format.
+   */
+  const openVault = async (user: User): Promise<boolean> => {
+    if (VaultCrypto.isOpen() && VaultCrypto.openUserId() === user.uuid) return true;
+    if (await VaultCrypto.open(user.uuid)) {
+      migrationDone = await VaultMigration.isComplete(user.uuid);
+      try {
+        legacy = await VaultMigration.loadLegacyKeys(user.uuid);
+      } catch {
+        // Unreadable: nothing is saved over it, and the PIN typed at login
+        // re-derives the main old key anyway
+        legacy = { keys: [], tabPins: {} };
+      }
+      // Covers an interrupted first run, where the key was stored but the
+      // legacy keys were not: the account hash is then still the old one
+      if (VaultCrypto.isLegacyHash(user.pinHash) && !legacy.keys.includes(user.pinHash)) {
+        legacy.keys.push(user.pinHash);
+        await VaultMigration.saveLegacyKeys(user.uuid, legacy);
+      }
+      VaultCrypto.setLegacyKeys(legacy.keys);
+      return true;
+    }
+    if (VaultCrypto.isLegacyHash(user.pinHash)) {
+      await VaultCrypto.create(user.uuid, [user.pinHash]);
+      migrationDone = false;
+      legacy = { keys: [user.pinHash], tabPins: {} };
+      await VaultMigration.saveLegacyKeys(user.uuid, legacy);
+      return true;
+    }
+    return false;
+  };
+
+  const missingKeyMessage =
+    'This device no longer has the key for this vault, so it cannot be opened. Restore it from an OfflineLocker backup, or register a new vault.';
+
+  /** Background pass over old-format data; the store reloads what it rewrote. */
+  const startMigration = (userId: string) => {
+    setTimeout(async () => {
+      try {
+        const complete = await VaultMigration.run(userId);
+        if (!VaultCrypto.isOpen() || VaultCrypto.openUserId() !== userId) return;
+        migrationDone = complete;
+        if (complete) legacy = { keys: [], tabPins: {} };
+        else legacy = await VaultMigration.loadLegacyKeys(userId).catch(() => legacy);
+        // PIN hashes may have been upgraded; refresh them without touching plaintext
+        const user = (await DatabaseHelper.getAllUsers()).find(u => u.uuid === userId);
+        if (user && get().currentUser?.uuid === userId) set({ currentUser: user });
+        await get().loadTabs();
+        if (get().notes.length > 0) await get().loadNotes();
+        await get().loadDiaryPinMode();
+      } catch (error) {
+        console.warn('Vault migration paused', error);
+      }
+    }, 1500);
+  };
+
   /** Shared by the PIN and the biometric paths once the user is known to be the owner. */
   const completeLogin = async () => {
     await LockoutService.resetLockoutState();
@@ -138,6 +226,15 @@ export const useLockerStore = create<LockerState>((set, get) => {
     // Read here as well as on the diary's own mount: by the time the tab can
     // be tapped the answer is already in, so it never opens and then locks
     await get().loadDiaryPinMode();
+    const userId = get().currentUser?.uuid;
+    if (userId) startMigration(userId);
+  };
+
+  /** Replaces a legacy PIN hash once the PIN behind it has been typed correctly. */
+  const upgradePinHash = (stored: string | null | undefined, pin: string, scope: 'tab' | 'note' | 'diary', write: (hash: string) => Promise<void>) => {
+    if (!VaultCrypto.isLegacyHash(stored) || !VaultCrypto.isOpen()) return;
+    const hash = VaultCrypto.makeVerifier(pin, scope);
+    write(hash).catch(() => { /* retried by the migration */ });
   };
 
   return {
@@ -188,24 +285,36 @@ export const useLockerStore = create<LockerState>((set, get) => {
 
   registerUser: async (username: string, pin: string, biometric?: boolean) => {
     try {
-      // The old account's data is about to go, and its biometric switches with it
-      await BiometricService.clearAll(get().currentUser?.uuid);
+      if (!isNewPin(pin)) {
+        set({ errorMessage: `The PIN must be exactly ${NEW_PIN_LENGTH} digits.` });
+        return false;
+      }
+      // The old account's data is about to go, and its key and biometric switches with it
+      const previous = get().currentUser?.uuid;
+      await BiometricService.clearAll(previous);
+      await VaultCrypto.destroy(previous);
       await DatabaseHelper.clearAllData();
       await LockoutService.resetLockoutState();
 
+      const uuid = uuidv4();
+      await VaultCrypto.create(uuid);
+      legacy = { keys: [], tabPins: {} };
       const newUser: User = {
-        uuid: uuidv4(),
+        uuid,
         username: username.trim(),
-        pinHash: CryptoService.hashPin(pin.trim()),
+        pinHash: VaultCrypto.makeVerifier(pin, 'app'),
         createdAt: new Date().toISOString(),
       };
       await DatabaseHelper.createUser(newUser);
-      
+      // A new vault has nothing in the old format to migrate
+      await VaultMigration.markComplete(uuid);
+      migrationDone = true;
+
       const defaultTab: Tab = {
         uuid: uuidv4(),
         userId: newUser.uuid,
-        name: 'General Vault',
-        description: 'Default secure storage tab',
+        name: await VaultCrypto.encrypt('General Vault'),
+        description: await VaultCrypto.encrypt('Default secure storage tab'),
         isSensitive: 0,
         tabPinHash: null,
         createdAt: new Date().toISOString(),
@@ -241,16 +350,39 @@ export const useLockerStore = create<LockerState>((set, get) => {
       return false;
     }
 
-    const isValid = CryptoService.verifyPin(pin.trim(), currentUser.pinHash);
+    // A new-format hash is keyed from the vault key, so the key is needed to
+    // check it. An old hash can be checked on its own.
+    const legacyAccount = VaultCrypto.isLegacyHash(currentUser.pinHash);
+    if (!legacyAccount && !(await openVault(currentUser))) {
+      set({ errorMessage: missingKeyMessage });
+      return false;
+    }
+
+    const isValid = VaultCrypto.checkPin(pin, currentUser.pinHash, 'app');
     if (isValid) {
+      if (!(await openVault(currentUser))) {
+        set({ errorMessage: missingKeyMessage });
+        return false;
+      }
+      // Older rows are encrypted with a hash of this very PIN, so while any
+      // remain it is kept as a key - even if the saved copy were ever lost
+      if (!migrationDone) rememberLegacy(currentUser.uuid, { keys: [VaultCrypto.legacyKeyForPin(pin)] });
+      if (legacyAccount) {
+        // The PIN is known right now, so the old hash is replaced at once
+        const pinHash = VaultCrypto.makeVerifier(pin, 'app');
+        await DatabaseHelper.setUserPinHash(currentUser.uuid, pinHash);
+        set({ currentUser: { ...currentUser, pinHash } });
+      }
       await completeLogin();
       return true;
     }
+    VaultCrypto.close();
 
     // Failed attempt
     const { state, isWiped } = await LockoutService.recordFailedAttempt();
     if (isWiped) {
       await BiometricService.clearAll(currentUser.uuid);
+      await VaultCrypto.destroy(currentUser.uuid);
       set({
         currentUser: null,
         tabs: [],
@@ -285,6 +417,10 @@ export const useLockerStore = create<LockerState>((set, get) => {
     }
     const secret = await BiometricService.unlock(currentUser.uuid, BiometricScopes.app, 'Unlock OfflineLocker');
     if (!secret) return false;
+    if (!(await openVault(currentUser))) {
+      set({ errorMessage: missingKeyMessage });
+      return false;
+    }
     await completeLogin();
     return true;
   },
@@ -296,17 +432,26 @@ export const useLockerStore = create<LockerState>((set, get) => {
   },
 
   logout: () => {
-    // Decrypted diary and note content must not survive a lock, and neither do
-    // the files written out for the viewer and the share sheet
+    // Decrypted content must not survive a lock: the plaintext held in memory,
+    // the files written out for the viewer and the share sheet, and the key
     clearDecryptedCache();
-    set({ isAuthenticated: false, activeDocuments: [], diaryDates: [], notes: [], diaryPinMode: 'none', diaryPinHash: null, diaryPinLoaded: false });
+    VaultCrypto.close();
+    legacy = { keys: [], tabPins: {} };
+    migrationDone = false;
+    set({ isAuthenticated: false, tabs: [], activeDocuments: [], diaryDates: [], notes: [], diaryPinMode: 'none', diaryPinHash: null, diaryPinLoaded: false });
   },
 
   loadTabs: async () => {
     const { currentUser } = get();
-    if (!currentUser) return;
+    if (!currentUser || !VaultCrypto.isOpen()) return;
     try {
-      const tabs = await DatabaseHelper.getTabs(currentUser.uuid);
+      const rows = await DatabaseHelper.getTabs(currentUser.uuid);
+      // Names and descriptions are stored encrypted; the list holds the plaintext
+      const tabs = await Promise.all(rows.map(async tab => ({
+        ...tab,
+        name: await VaultCrypto.decryptLabel(tab.name),
+        description: await VaultCrypto.decryptLabel(tab.description),
+      })));
       const tabDocCounts = await DatabaseHelper.getTabDocumentCounts();
       set({ tabs, tabDocCounts });
     } catch (error) {
@@ -325,18 +470,18 @@ export const useLockerStore = create<LockerState>((set, get) => {
       return false;
     }
 
-    if (isSensitive && (!tabPin || tabPin.trim().length !== 4)) {
-      set({ errorMessage: 'Sensitive tabs require a mandatory 4-digit PIN.' });
+    if (isSensitive && !isNewPin(tabPin)) {
+      set({ errorMessage: `Sensitive tabs require a mandatory ${NEW_PIN_LENGTH}-digit PIN.` });
       return false;
     }
 
     try {
-      const pinHash = isSensitive && tabPin ? CryptoService.hashPin(tabPin.trim()) : null;
+      const pinHash = isSensitive && tabPin ? VaultCrypto.makeVerifier(tabPin, 'tab') : null;
       const newTab: Tab = {
         uuid: uuidv4(),
         userId: currentUser.uuid,
-        name: trimmed,
-        description: description.trim() ? description.trim() : 'Custom Vault Tab',
+        name: await VaultCrypto.encrypt(trimmed),
+        description: await VaultCrypto.encrypt(description.trim() ? description.trim() : 'Custom Vault Tab'),
         isSensitive: isSensitive ? 1 : 0,
         tabPinHash: pinHash,
         createdAt: new Date().toISOString(),
@@ -371,21 +516,21 @@ export const useLockerStore = create<LockerState>((set, get) => {
 
     try {
       const currentTab = get().tabs.find(tab => tab.uuid === tabId);
-      if (isSensitive && tabPin?.trim() && tabPin.trim().length !== 4) {
-        set({ errorMessage: 'Sensitive tabs require a 4-digit PIN.' });
+      if (isSensitive && tabPin?.trim() && !isNewPin(tabPin)) {
+        set({ errorMessage: `Sensitive tabs require a ${NEW_PIN_LENGTH}-digit PIN.` });
         return false;
       }
-      if (isSensitive && (!tabPin || tabPin.trim().length !== 4) && !currentTab?.tabPinHash) {
-        set({ errorMessage: 'Sensitive tabs require a mandatory 4-digit PIN.' });
+      if (isSensitive && !isNewPin(tabPin) && !currentTab?.tabPinHash) {
+        set({ errorMessage: `Sensitive tabs require a mandatory ${NEW_PIN_LENGTH}-digit PIN.` });
         return false;
       }
       const tabPinHash = isSensitive
-        ? (tabPin?.trim() ? CryptoService.hashPin(tabPin.trim()) : currentTab?.tabPinHash || null)
+        ? (tabPin?.trim() ? VaultCrypto.makeVerifier(tabPin, 'tab') : currentTab?.tabPinHash || null)
         : null;
       await DatabaseHelper.updateTab(
         tabId,
-        name.trim(),
-        description.trim() ? description.trim() : 'Custom Vault Tab',
+        await VaultCrypto.encrypt(name.trim()),
+        await VaultCrypto.encrypt(description.trim() ? description.trim() : 'Custom Vault Tab'),
         isSensitive ? 1 : 0,
         tabPinHash
       );
@@ -411,14 +556,35 @@ export const useLockerStore = create<LockerState>((set, get) => {
 
   verifyTabPin: (tab: Tab, candidatePin: string) => {
     if (!tab.tabPinHash) return true;
-    return CryptoService.verifyPin(candidatePin.trim(), tab.tabPinHash);
+    const ok = VaultCrypto.checkPin(candidatePin, tab.tabPinHash, 'tab');
+    const pin = candidatePin.trim();
+    const userId = get().currentUser?.uuid;
+    // Older documents in this tab may be under this PIN, so it is kept for them
+    if (ok && userId && !migrationDone && legacy.tabPins[tab.uuid] !== pin) {
+      rememberLegacy(userId, { tabPins: { [tab.uuid]: pin } });
+    }
+    if (ok && VaultCrypto.isLegacyHash(tab.tabPinHash)) {
+      upgradePinHash(tab.tabPinHash, pin, 'tab', async hash => {
+        await DatabaseHelper.setTabPinHash(tab.uuid, hash);
+        set({ tabs: get().tabs.map(t => (t.uuid === tab.uuid ? { ...t, tabPinHash: hash } : t)) });
+      });
+    }
+    return ok;
   },
 
   loadDocumentsForTab: async (tabId: string) => {
     try {
-      let activeDocuments = await DatabaseHelper.getDocumentsByTab(tabId);
-      
-      // Empty block removed to prevent auto-generating mock data when a tab is empty
+      const rows = await DatabaseHelper.getDocumentsByTab(tabId);
+      // Titles and summaries are small, so they are decrypted for the whole
+      // list; payloads wait until something opens a document
+      const activeDocuments = await Promise.all(rows.map(async doc => {
+        let plainMeta: string | null = null;
+        if (doc.encryptedMeta) {
+          const meta = await VaultCrypto.decrypt(doc.encryptedMeta, [legacy.tabPins[tabId]]);
+          plainMeta = meta && !meta.startsWith('⚠️') ? meta : null;
+        }
+        return { ...doc, title: await VaultCrypto.decryptLabel(doc.title), plainMeta };
+      }));
       const tabDocCounts = await DatabaseHelper.getTabDocumentCounts();
       set({ activeDocuments, tabDocCounts });
     } catch (error) {
@@ -426,15 +592,14 @@ export const useLockerStore = create<LockerState>((set, get) => {
     }
   },
 
-  addDocument: async (tabId: string, title: string, type: string, plainContent: string, encryptionPin: string, plainMeta?: string) => {
+  addDocument: async (tabId: string, title: string, type: string, plainContent: string, plainMeta?: string) => {
     try {
-      const encrypted = CryptoService.encryptText(plainContent, encryptionPin);
       const newDoc: Document = {
         tabId,
-        title: title.trim(),
+        title: await VaultCrypto.encrypt(title.trim()),
         type,
-        encryptedContent: encrypted,
-        encryptedMeta: plainMeta ? CryptoService.encryptText(plainMeta, encryptionPin) : null,
+        encryptedContent: await VaultCrypto.encrypt(plainContent),
+        encryptedMeta: plainMeta ? await VaultCrypto.encrypt(plainMeta) : null,
         createdAt: new Date().toISOString(),
       };
       await DatabaseHelper.createDocument(newDoc);
@@ -461,20 +626,36 @@ export const useLockerStore = create<LockerState>((set, get) => {
     }
   },
 
-  /** Backfills the list summary for a document that predates it. */
-  setDocumentMeta: async (id: number, plainMeta: string, encryptionPin: string) => {
+  decryptValue: async (cipher: string, extraKeys: (string | null | undefined)[] = []) => {
+    if (!VaultCrypto.isOpen()) return '';
+    return VaultCrypto.decrypt(cipher, extraKeys);
+  },
+
+  upgradeDocumentContent: async (id: number, plainContent: string) => {
     try {
-      await DatabaseHelper.setDocumentMeta(id, CryptoService.encryptText(plainMeta, encryptionPin));
+      if (!plainContent || plainContent.startsWith('⚠️') || !VaultCrypto.isOpen()) return;
+      await DatabaseHelper.setDocumentContent(id, await VaultCrypto.encrypt(plainContent));
+    } catch (error) {
+      // Left in the old format; it still opens, and the next pass retries it
+    }
+  },
+
+  legacyTabPin: (tabId: string) => legacy.tabPins[tabId],
+
+  /** Backfills the list summary for a document that predates it. */
+  setDocumentMeta: async (id: number, plainMeta: string) => {
+    try {
+      await DatabaseHelper.setDocumentMeta(id, await VaultCrypto.encrypt(plainMeta));
     } catch (error) {
       // A summary that cannot be stored is recomputed next time; nothing breaks
     }
   },
 
-  updateDocument: async (id: number, tabId: string, title: string, plainContent: string, encryptionPin: string, plainMeta?: string) => {
+  updateDocument: async (id: number, tabId: string, title: string, plainContent: string, plainMeta?: string) => {
     try {
-      const encrypted = CryptoService.encryptText(plainContent, encryptionPin);
-      const meta = plainMeta ? CryptoService.encryptText(plainMeta, encryptionPin) : null;
-      await DatabaseHelper.updateDocument(id, title.trim(), encrypted, meta);
+      const encrypted = await VaultCrypto.encrypt(plainContent);
+      const meta = plainMeta ? await VaultCrypto.encrypt(plainMeta) : null;
+      await DatabaseHelper.updateDocument(id, await VaultCrypto.encrypt(title.trim()), encrypted, meta);
       await get().loadDocumentsForTab(tabId);
     } catch (error) {
       console.error('Error updating document', error);
@@ -499,9 +680,13 @@ export const useLockerStore = create<LockerState>((set, get) => {
     try {
       const row = await DatabaseHelper.getDiaryEntry(currentUser.uuid, entryDate);
       if (!row) return '';
-      return CryptoService.decryptText(row.encryptedContent, currentUser.pinHash);
+      const text = await VaultCrypto.decrypt(row.encryptedContent);
+      if (text.startsWith('⚠️ Decryption Failed')) throw new Error('DIARY_UNREADABLE');
+      return text;
     } catch (error) {
-      return '';
+      // Thrown rather than returned as '': an empty page is saved as a deletion,
+      // so the caller must know this page did not load
+      throw error instanceof Error ? error : new Error('DIARY_UNREADABLE');
     }
   },
 
@@ -520,7 +705,7 @@ export const useLockerStore = create<LockerState>((set, get) => {
       await DatabaseHelper.upsertDiaryEntry({
         userId: currentUser.uuid,
         entryDate,
-        encryptedContent: CryptoService.encryptText(plainContent, currentUser.pinHash),
+        encryptedContent: await VaultCrypto.encrypt(plainContent),
         createdAt: now,
         updatedAt: now,
       });
@@ -535,9 +720,21 @@ export const useLockerStore = create<LockerState>((set, get) => {
   // --- NOTES ---
   loadNotes: async () => {
     const { currentUser } = get();
-    if (!currentUser) return;
+    if (!currentUser || !VaultCrypto.isOpen()) return;
     try {
-      set({ notes: await DatabaseHelper.getNotes(currentUser.uuid) });
+      const rows = await DatabaseHelper.getNotes(currentUser.uuid);
+      // Search and previews read the text, so it is decrypted as the list loads
+      const notes = await Promise.all(rows.map(async note => {
+        const content = await VaultCrypto.decrypt(note.encryptedContent);
+        const unreadable = content.startsWith('⚠️ Decryption Failed');
+        return {
+          ...note,
+          title: await VaultCrypto.decryptLabel(note.title),
+          content: unreadable ? '' : content,
+          unreadable,
+        };
+      }));
+      set({ notes });
     } catch (error) {
       set({ errorMessage: 'Could not load notes.' });
     }
@@ -551,11 +748,11 @@ export const useLockerStore = create<LockerState>((set, get) => {
     try {
       id = await DatabaseHelper.createNote({
         userId: currentUser.uuid,
-        title,
-        encryptedContent: CryptoService.encryptText(plainContent, currentUser.pinHash),
+        title: await VaultCrypto.encrypt(title),
+        encryptedContent: await VaultCrypto.encrypt(plainContent),
         isSensitive: isSensitive ? 1 : 0,
-        // The PIN gates access; the content stays encrypted under the account key
-        notePinHash: isSensitive && notePin ? CryptoService.hashPin(notePin.trim()) : null,
+        // The PIN gates access; the content stays encrypted under the vault key
+        notePinHash: isSensitive && notePin ? VaultCrypto.makeVerifier(notePin, 'note') : null,
         createdAt: now,
         updatedAt: now,
       });
@@ -576,14 +773,16 @@ export const useLockerStore = create<LockerState>((set, get) => {
     const pinHash = !isSensitive
       ? null
       : notePin && notePin.trim()
-        ? CryptoService.hashPin(notePin.trim())
+        ? VaultCrypto.makeVerifier(notePin, 'note')
         : existing?.notePinHash || null;
 
     try {
       await DatabaseHelper.updateNote(
         id,
-        title,
-        CryptoService.encryptText(plainContent, currentUser.pinHash),
+        await VaultCrypto.encrypt(title),
+        // A note whose text could not be decrypted keeps what is stored, rather
+        // than having the empty stand-in written over it
+        existing?.unreadable ? existing.encryptedContent : await VaultCrypto.encrypt(plainContent),
         isSensitive ? 1 : 0,
         pinHash,
         new Date().toISOString()
@@ -607,15 +806,20 @@ export const useLockerStore = create<LockerState>((set, get) => {
     await loadNotes();
   },
 
-  decryptNote: (note: Note) => {
-    const { currentUser } = get();
-    if (!currentUser) return '';
-    return CryptoService.decryptText(note.encryptedContent, currentUser.pinHash);
-  },
+  /** The note's text, decrypted when the list loaded. */
+  decryptNote: (note: Note) => note.content ?? '',
 
   verifyNotePin: (note: Note, candidatePin: string) => {
     if (!note.isSensitive || !note.notePinHash) return true;
-    return CryptoService.verifyPin(candidatePin.trim(), note.notePinHash);
+    const ok = VaultCrypto.checkPin(candidatePin, note.notePinHash, 'note');
+    if (ok && note.id != null) {
+      const id = note.id;
+      upgradePinHash(note.notePinHash, candidatePin.trim(), 'note', async hash => {
+        await DatabaseHelper.setNotePinHash(id, hash);
+        set({ notes: get().notes.map(n => (n.id === id ? { ...n, notePinHash: hash } : n)) });
+      });
+    }
+    return ok;
   },
 
   // --- PREFERENCES ---
@@ -805,7 +1009,7 @@ export const useLockerStore = create<LockerState>((set, get) => {
     const { currentUser } = get();
     if (!currentUser) return;
     // 'app' reuses the account's own unlock PIN, so no separate hash is stored
-    const hash = mode === 'custom' && pin ? CryptoService.hashPin(pin.trim()) : null;
+    const hash = mode === 'custom' && pin ? VaultCrypto.makeVerifier(pin, 'diary') : null;
     await DatabaseHelper.setSetting(currentUser.uuid, 'diary_pin_mode', mode === 'none' ? null : mode);
     await DatabaseHelper.setSetting(currentUser.uuid, 'diary_pin_hash', hash);
     set({ diaryPinMode: mode, diaryPinHash: hash, diaryPinLoaded: true });
@@ -823,25 +1027,48 @@ export const useLockerStore = create<LockerState>((set, get) => {
   verifyDiaryPin: (candidatePin: string) => {
     const { diaryPinMode, diaryPinHash, currentUser } = get();
     if (diaryPinMode === 'none') return true;
-    const pin = candidatePin.trim();
     if (diaryPinMode === 'app') {
-      return !!currentUser && CryptoService.verifyPin(pin, currentUser.pinHash);
+      return !!currentUser && VaultCrypto.checkPin(candidatePin, currentUser.pinHash, 'app');
     }
-    return !!diaryPinHash && CryptoService.verifyPin(pin, diaryPinHash);
+    const ok = !!diaryPinHash && VaultCrypto.checkPin(candidatePin, diaryPinHash, 'diary');
+    if (ok && currentUser) {
+      const userId = currentUser.uuid;
+      upgradePinHash(diaryPinHash, candidatePin.trim(), 'diary', async hash => {
+        await DatabaseHelper.setSetting(userId, 'diary_pin_hash', hash);
+        set({ diaryPinHash: hash });
+      });
+    }
+    return ok;
   },
 
-  exportBackup: async (exportPin: string) => {
+  verifyAppPin: (candidatePin: string) => {
     const { currentUser } = get();
-    if (!currentUser) return false;
-    return await BackupService.exportBackup(currentUser, exportPin);
+    return !!currentUser && VaultCrypto.checkPin(candidatePin, currentUser.pinHash, 'app');
   },
 
-  importBackup: async (encryptedContent: string, importPin: string) => {
+  exportBackup: async (password: string) => {
+    const { currentUser } = get();
+    if (!currentUser || !VaultCrypto.isOpen()) return false;
+    // A backup must open on a device that has none of the old keys, so every
+    // row - large payloads included - is brought to the current format first
+    const complete = await VaultMigration.run(currentUser.uuid, { includeLarge: true });
+    legacy = complete ? { keys: [], tabPins: {} } : await VaultMigration.loadLegacyKeys(currentUser.uuid);
+    const user = (await DatabaseHelper.getAllUsers()).find(u => u.uuid === currentUser.uuid) || currentUser;
+    return await BackupService.exportBackup(user, password, complete ? null : legacy);
+  },
+
+  importBackup: async (encryptedContent: string, secret: string) => {
     const previousUserId = get().currentUser?.uuid;
-    const result = await BackupService.importBackup(encryptedContent, importPin);
+    const result = await BackupService.importBackup(encryptedContent, secret);
     if (result.success && result.user) {
-      // The switches belonged to the account that was just replaced
-      if (previousUserId && previousUserId !== result.user.uuid) await BiometricService.clearAll(previousUserId);
+      // The key and switches belonged to the account that was just replaced
+      if (previousUserId && previousUserId !== result.user.uuid) {
+        await BiometricService.clearAll(previousUserId);
+        await VaultCrypto.destroy(previousUserId);
+      }
+      migrationDone = await VaultMigration.isComplete(result.user.uuid);
+      legacy = await VaultMigration.loadLegacyKeys(result.user.uuid).catch(() => ({ keys: VaultCrypto.legacyKeys(), tabPins: {} }));
+      VaultCrypto.setLegacyKeys(legacy.keys);
       set({ currentUser: result.user, isAuthenticated: true, activeDocuments: [], diaryDates: [], notes: [] });
       await get().loadTabs();
       // The diary and notes were restored too, so their state has to come back
@@ -852,6 +1079,7 @@ export const useLockerStore = create<LockerState>((set, get) => {
       await get().loadDiaryLined();
       await get().loadPageColors();
       await get().loadDefaultHomeTab();
+      startMigration(result.user.uuid);
     }
     return {
       success: result.success,
@@ -868,7 +1096,7 @@ export const useLockerStore = create<LockerState>((set, get) => {
       return { success: false, message: 'No active user found.' };
     }
 
-    if (!currentPin || !CryptoService.verifyPin(currentPin.trim(), currentUser.pinHash)) {
+    if (!currentPin || !VaultCrypto.checkPin(currentPin, currentUser.pinHash, 'app')) {
       return { success: false, message: 'Current PIN is incorrect.' };
     }
 
@@ -880,49 +1108,14 @@ export const useLockerStore = create<LockerState>((set, get) => {
     const trimmedNewPin = newPin ? newPin.trim() : '';
     const isChangingPin = Boolean(trimmedNewPin);
 
-    if (isChangingPin) {
-      if (trimmedNewPin.length !== 4 || !/^\d{4}$/.test(trimmedNewPin)) {
-        return { success: false, message: 'New PIN must be exactly 4 digits.' };
-      }
+    if (isChangingPin && !isNewPin(trimmedNewPin)) {
+      return { success: false, message: `New PIN must be exactly ${NEW_PIN_LENGTH} digits.` };
     }
 
     try {
-      const oldPinHash = currentUser.pinHash;
-      let newPinHash = oldPinHash;
-
-      if (isChangingPin) {
-        newPinHash = CryptoService.hashPin(trimmedNewPin);
-
-        // Re-encrypt every document that was encrypted with oldPinHash. All of
-        // the work happens first and nothing is written until it has all
-        // succeeded: encrypting as we went meant that a failure part way
-        // through left some documents under the new PIN and the rest under the
-        // old one, with no way back to either.
-        const allDocs = await DatabaseHelper.getAllDocuments();
-        const rewrites: { id: number; title: string; content: string; meta: string | null }[] = [];
-
-        for (const doc of allDocs) {
-          if (doc.encryptedContent && doc.id) {
-            const decrypted = CryptoService.decryptText(doc.encryptedContent, oldPinHash);
-            if (decrypted && !decrypted.startsWith('⚠️ Decryption Failed')) {
-              const reEncrypted = CryptoService.encryptText(decrypted, newPinHash);
-              let reMeta: string | null = null;
-              if (doc.encryptedMeta) {
-                const meta = CryptoService.decryptText(doc.encryptedMeta, oldPinHash);
-                if (meta && !meta.startsWith('⚠️ Decryption Failed')) {
-                  reMeta = CryptoService.encryptText(meta, newPinHash);
-                }
-              }
-              rewrites.push({ id: doc.id, title: doc.title, content: reEncrypted, meta: reMeta });
-            }
-          }
-        }
-
-        for (const rewrite of rewrites) {
-          await DatabaseHelper.updateDocument(rewrite.id, rewrite.title, rewrite.content, rewrite.meta);
-        }
-      }
-
+      // The PIN is only checked against the vault, never used as its key, so a
+      // new one is a new verifier: nothing has to be re-encrypted
+      const newPinHash = isChangingPin ? VaultCrypto.makeVerifier(trimmedNewPin, 'app') : currentUser.pinHash;
       await DatabaseHelper.updateUser(currentUser.uuid, trimmedUsername, newPinHash);
 
       const updatedUser: User = {
@@ -932,9 +1125,9 @@ export const useLockerStore = create<LockerState>((set, get) => {
       };
 
       set({ currentUser: updatedUser });
-      return { 
-        success: true, 
-        message: isChangingPin ? 'Username & PIN updated successfully.' : 'Username updated successfully.' 
+      return {
+        success: true,
+        message: isChangingPin ? 'Username & PIN updated successfully.' : 'Username updated successfully.'
       };
     } catch (e: any) {
       console.error('updateUserProfile error:', e);

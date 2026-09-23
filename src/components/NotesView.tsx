@@ -21,6 +21,8 @@ import ColorPickerModal from './ColorPickerModal';
 import DraggableFAB from './DraggableFAB';
 import BiometricToggle, { BiometricUnlockButton } from './BiometricToggle';
 import { BiometricService, BiometricScopes } from '../services/BiometricService';
+import { VaultCrypto } from '../services/VaultCrypto';
+import { NEW_PIN_LENGTH } from '../store/useLockerStore';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { withoutAutoLock } from '../services/AutoLockService';
@@ -88,6 +90,8 @@ export default function NotesView({ isMobile }: NotesViewProps) {
   const [pinError, setPinError] = useState('');
   // Whether the note in the PIN window can also be opened with a scan
   const [noteBiometricOn, setNoteBiometricOn] = useState(false);
+  // Existing note PINs may still be 4 digits; the prompt waits for as many as it has
+  const unlockPinLength = VaultCrypto.pinLength(pinModalNote?.notePinHash);
 
   /** Matches the Cancel button: the typed PIN never outlives the window. */
   const closePinModal = () => {
@@ -203,6 +207,10 @@ export default function NotesView({ isMobile }: NotesViewProps) {
   };
 
   const openWriter = (note: Note) => {
+    if (note.unreadable) {
+      Alert.alert('Note unavailable', 'This note could not be decrypted, so it has been left untouched.');
+      return;
+    }
     const body = decryptNote(note);
     setWriterNote(note);
     setWriterBody(body);
@@ -279,8 +287,8 @@ export default function NotesView({ isMobile }: NotesViewProps) {
     if (draftSensitive) {
       const needsPin = !detailsNote?.notePinHash || !!draftPin;
       if (needsPin) {
-        if (draftPin.length !== 4) {
-          Alert.alert('PIN required', 'Please set a 4-digit PIN for this note.');
+        if (draftPin.length !== NEW_PIN_LENGTH) {
+          Alert.alert('PIN required', `Please set a ${NEW_PIN_LENGTH}-digit PIN for this note.`);
           return;
         }
         if (draftPin !== draftConfirmPin) {
@@ -558,20 +566,20 @@ export default function NotesView({ isMobile }: NotesViewProps) {
                       marginBottom: 10,
                       letterSpacing: draftPin ? 6 : 0,
                     }}
-                    placeholder="4-Digit Note PIN"
+                    placeholder={`${NEW_PIN_LENGTH}-Digit Note PIN`}
                     placeholderTextColor={AppTheme.colors.textSecondary}
                     value={draftPin}
-                    onChangeText={t => setDraftPin(t.replace(/[^0-9]/g, '').slice(0, 4))}
+                    onChangeText={t => setDraftPin(t.replace(/[^0-9]/g, '').slice(0, NEW_PIN_LENGTH))}
                     keyboardType="numeric"
                     secureTextEntry
-                    maxLength={4}
+                    maxLength={NEW_PIN_LENGTH}
                   />
                   <TextInput
                     style={{
                       backgroundColor: '#f8fafc',
                       borderWidth: 1,
                       borderColor:
-                        draftPin.length === 4 && draftConfirmPin.length === 4 && draftPin !== draftConfirmPin
+                        draftPin.length === NEW_PIN_LENGTH && draftConfirmPin.length === NEW_PIN_LENGTH && draftPin !== draftConfirmPin
                           ? AppTheme.colors.error
                           : '#e2e8f0',
                       borderRadius: 10,
@@ -581,15 +589,15 @@ export default function NotesView({ isMobile }: NotesViewProps) {
                       marginBottom: 10,
                       letterSpacing: draftConfirmPin ? 6 : 0,
                     }}
-                    placeholder="Confirm 4-Digit Note PIN"
+                    placeholder={`Confirm ${NEW_PIN_LENGTH}-Digit Note PIN`}
                     placeholderTextColor={AppTheme.colors.textSecondary}
                     value={draftConfirmPin}
-                    onChangeText={t => setDraftConfirmPin(t.replace(/[^0-9]/g, '').slice(0, 4))}
+                    onChangeText={t => setDraftConfirmPin(t.replace(/[^0-9]/g, '').slice(0, NEW_PIN_LENGTH))}
                     keyboardType="numeric"
                     secureTextEntry
-                    maxLength={4}
+                    maxLength={NEW_PIN_LENGTH}
                   />
-                  {draftPin.length === 4 && draftConfirmPin.length === 4 && draftPin !== draftConfirmPin && (
+                  {draftPin.length === NEW_PIN_LENGTH && draftConfirmPin.length === NEW_PIN_LENGTH && draftPin !== draftConfirmPin && (
                     <Text style={{ color: AppTheme.colors.error, fontSize: 12, marginBottom: 8, fontWeight: '600' }}>
                       Note PIN and Confirm PIN do not match.
                     </Text>
@@ -932,16 +940,16 @@ export default function NotesView({ isMobile }: NotesViewProps) {
                   letterSpacing: pinInput ? 6 : 0,
                   marginBottom: pinError ? 8 : 16,
                 }}
-                placeholder="4-Digit PIN"
+                placeholder={`${unlockPinLength}-Digit PIN`}
                 placeholderTextColor={AppTheme.colors.textSecondary}
                 value={pinInput}
                 onChangeText={t => {
-                  setPinInput(t.replace(/[^0-9]/g, '').slice(0, 4));
+                  setPinInput(t.replace(/[^0-9]/g, '').slice(0, unlockPinLength));
                   setPinError('');
                 }}
                 keyboardType="numeric"
                 secureTextEntry
-                maxLength={4}
+                maxLength={NEW_PIN_LENGTH}
                 autoFocus
               />
               {!!pinError && (
@@ -972,12 +980,12 @@ export default function NotesView({ isMobile }: NotesViewProps) {
                 </TouchableOpacity>
                 <TouchableOpacity
                   onPress={handlePinSubmit}
-                  disabled={pinInput.length !== 4}
+                  disabled={pinInput.length !== unlockPinLength}
                   style={{
                     flex: 1,
                     paddingVertical: 13,
                     borderRadius: 10,
-                    backgroundColor: pinInput.length === 4 ? AppTheme.colors.primary : AppTheme.colors.border,
+                    backgroundColor: pinInput.length === unlockPinLength ? AppTheme.colors.primary : AppTheme.colors.border,
                     alignItems: 'center',
                   }}
                 >
@@ -985,7 +993,7 @@ export default function NotesView({ isMobile }: NotesViewProps) {
                     style={{
                       fontSize: 14,
                       fontWeight: '700',
-                      color: pinInput.length === 4 ? '#ffffff' : AppTheme.colors.textSecondary,
+                      color: pinInput.length === unlockPinLength ? '#ffffff' : AppTheme.colors.textSecondary,
                     }}
                   >
                     Unlock

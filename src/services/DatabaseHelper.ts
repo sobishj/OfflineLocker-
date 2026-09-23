@@ -15,6 +15,9 @@ export class DatabaseHelper {
         const db = await SQLite.openDatabaseAsync('ewallet_vault.db');
         await this.initDB(db);
         this.db = db;
+        // Development builds only: lets automated tests read the raw rows to
+        // confirm what reaches the disk is encrypted. Absent from release builds.
+        if (__DEV__) (globalThis as any).__olDb = db;
         return db;
       })();
       this.opening.catch(() => { this.opening = null; });
@@ -362,6 +365,67 @@ export class DatabaseHelper {
       `INSERT INTO app_settings (userId, key, value) VALUES (?, ?, ?)
        ON CONFLICT(userId, key) DO UPDATE SET value = excluded.value`,
       [userId, key, value]
+    );
+  }
+
+  // --- ENCRYPTION MIGRATION ---
+  // Field-by-field writes that leave timestamps alone, so re-encrypting a note
+  // or a diary page does not reorder anything.
+
+  static async setUserPinHash(uuid: string, pinHash: string): Promise<void> {
+    const db = await this.getDatabase();
+    await db.runAsync('UPDATE users SET pinHash = ? WHERE uuid = ?', [pinHash, uuid]);
+  }
+
+  static async setTabFields(uuid: string, name: string, description: string, tabPinHash: string | null): Promise<void> {
+    const db = await this.getDatabase();
+    await db.runAsync('UPDATE tabs SET name = ?, description = ?, tabPinHash = ? WHERE uuid = ?', [name, description, tabPinHash, uuid]);
+  }
+
+  /**
+   * Every document with just enough to decide whether it needs rewriting: the
+   * first characters of the payload tell its format without reading it all.
+   */
+  static async getDocumentsForMigration(): Promise<{ id: number; tabId: string; title: string; encryptedMeta: string | null; contentLength: number; contentHead: string }[]> {
+    const db = await this.getDatabase();
+    return await db.getAllAsync(
+      `SELECT id, tabId, title, encryptedMeta,
+              length(encryptedContent) AS contentLength,
+              substr(encryptedContent, 1, 8) AS contentHead
+         FROM documents ORDER BY createdAt DESC`
+    );
+  }
+
+  static async setTabPinHash(uuid: string, tabPinHash: string | null): Promise<void> {
+    const db = await this.getDatabase();
+    await db.runAsync('UPDATE tabs SET tabPinHash = ? WHERE uuid = ?', [tabPinHash, uuid]);
+  }
+
+  static async setNotePinHash(id: number, notePinHash: string | null): Promise<void> {
+    const db = await this.getDatabase();
+    await db.runAsync('UPDATE notes SET notePinHash = ? WHERE id = ?', [notePinHash, id]);
+  }
+
+  static async setDocumentTitle(id: number, title: string): Promise<void> {
+    const db = await this.getDatabase();
+    await db.runAsync('UPDATE documents SET title = ? WHERE id = ?', [title, id]);
+  }
+
+  static async setDocumentContent(id: number, encryptedContent: string): Promise<void> {
+    const db = await this.getDatabase();
+    await db.runAsync('UPDATE documents SET encryptedContent = ? WHERE id = ?', [encryptedContent, id]);
+  }
+
+  static async setNoteFields(id: number, title: string, encryptedContent: string, notePinHash: string | null): Promise<void> {
+    const db = await this.getDatabase();
+    await db.runAsync('UPDATE notes SET title = ?, encryptedContent = ?, notePinHash = ? WHERE id = ?', [title, encryptedContent, notePinHash, id]);
+  }
+
+  static async setDiaryContent(userId: string, entryDate: string, encryptedContent: string): Promise<void> {
+    const db = await this.getDatabase();
+    await db.runAsync(
+      'UPDATE diary_entries SET encryptedContent = ? WHERE userId = ? AND entryDate = ?',
+      [encryptedContent, userId, entryDate]
     );
   }
 

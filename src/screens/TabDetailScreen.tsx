@@ -4,7 +4,6 @@ import { useLockerStore } from '../store/useLockerStore';
 import { AppTheme } from '../theme/AppTheme';
 import ModalCloseButton from '../components/ModalCloseButton';
 import { Ionicons } from '@expo/vector-icons';
-import { CryptoService } from '../services/CryptoService';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -584,18 +583,17 @@ export default function TabDetailScreen({ route, navigation }: any) {
   const insets = useSafeAreaInsets();
   const tabId = route?.params?.tabId;
   const unlockPin = route?.params?.unlockPin;
-  const { tabs, activeDocuments, loadDocumentsForTab, addDocument, updateDocument, deleteDocument, getDocumentContent, setDocumentMeta, logout, currentUser, themeVersion } = useLockerStore();
+  const { tabs, activeDocuments, loadDocumentsForTab, addDocument, updateDocument, deleteDocument, getDocumentContent, setDocumentMeta, decryptValue, upgradeDocumentContent, legacyTabPin, logout, currentUser, themeVersion } = useLockerStore();
   const styles = useMemo(() => createStyles(), [themeVersion]);
   const { width: screenWidth } = useWindowDimensions();
   const isMobile = screenWidth < 768;
 
-  const candidateKeys = useMemo(() => {
-    return [currentUser?.pinHash, unlockPin, 'default_fallback'].filter(Boolean) as string[];
-  }, [currentUser?.pinHash, unlockPin]);
-
-  const decryptDoc = (cipherText: string): string => {
-    return CryptoService.decryptWithKeys(cipherText, candidateKeys);
-  };
+  /**
+   * Older documents in a sensitive tab were encrypted with the tab PIN itself,
+   * so that PIN is offered as well; everything newer opens with the vault key.
+   */
+  const decryptDoc = (cipherText: string): Promise<string> =>
+    decryptValue(cipherText, [unlockPin, legacyTabPin(tabId)]);
 
   const [loading, setLoading] = useState(true);
   const [modalVisible, setModalVisible] = useState(false);
@@ -688,7 +686,15 @@ export default function TabDetailScreen({ route, navigation }: any) {
       if (cached) return cached.plainText;
     }
     const cipher = doc.encryptedContent || (doc.id != null ? await getDocumentContent(doc.id) : '');
-    return decryptDoc(cipher || '');
+    const plainText = await decryptDoc(cipher || '');
+    // Opening an older document is the cheapest moment to bring it to the
+    // current format: it is already decrypted, and sealing it again is native
+    if (doc.id != null && cipher && !cipher.startsWith('ENC3:') && plainText && !plainText.startsWith('⚠️')) {
+      // A moment later, so the rewrite does not compete with showing the file
+      const id = doc.id;
+      setTimeout(() => upgradeDocumentContent(id, plainText), 2000);
+    }
+    return plainText;
   };
 
   /**
@@ -701,7 +707,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
     const meta = summariseDocument(doc.title || '', payload);
     legacyMetaRef.current.set(doc.id, meta);
     setLegacyMeta(prev => new Map(prev).set(doc.id, meta));
-    setDocumentMeta(doc.id, JSON.stringify(meta), currentUser?.pinHash || 'default_fallback');
+    setDocumentMeta(doc.id, JSON.stringify(meta));
   };
 
   // Document Sort state
@@ -849,6 +855,41 @@ export default function TabDetailScreen({ route, navigation }: any) {
   };
 
   const [webCameraTarget, setWebCameraTarget] = useState<'add' | 'edit'>('add');
+  // Which "Add Image" tile is showing its Camera / Gallery choice
+  const [addImageChooser, setAddImageChooser] = useState<'add' | 'edit' | null>(null);
+
+  const renderAddImageTile = (isEdit: boolean) => {
+    const target = isEdit ? 'edit' : 'add';
+    if (addImageChooser !== target) {
+      return (
+        <TouchableOpacity onPress={() => setAddImageChooser(target)} style={styles.addMoreTile}>
+          <Ionicons name="images" size={32} color={AppTheme.colors.primary} />
+          <Text style={{ color: AppTheme.colors.primary, marginTop: 8, fontSize: 12, fontWeight: 'bold' }}>Add Image</Text>
+        </TouchableOpacity>
+      );
+    }
+    return (
+      <View style={[styles.addMoreTile, { justifyContent: 'space-evenly', paddingHorizontal: 8 }]}>
+        <TouchableOpacity
+          style={styles.addImageOption}
+          onPress={() => { setAddImageChooser(null); handleTakePhoto(isEdit); }}
+        >
+          <Ionicons name="camera" size={18} color="#fff" />
+          <Text style={styles.addImageOptionText}>Camera</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.addImageOption}
+          onPress={() => { setAddImageChooser(null); handleGalleryPick(isEdit); }}
+        >
+          <Ionicons name="images" size={18} color="#fff" />
+          <Text style={styles.addImageOptionText}>Gallery</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => setAddImageChooser(null)} hitSlop={{ top: 6, bottom: 6, left: 12, right: 12 }}>
+          <Text style={{ color: AppTheme.colors.textSecondary, fontSize: 11, fontWeight: '600' }}>Cancel</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  };
 
   /**
    * Runs when a document is attached: reads dates out of the file name, any typed
@@ -1218,7 +1259,6 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
     setTimeout(async () => {
       try {
-        const encryptionKey = currentUser?.pinHash || 'default_fallback';
         const type = fileType ? fileType : 'text';
 
         let processedUris = fileUris;
@@ -1245,7 +1285,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
         }
 
         const meta = summariseDocument(trimmedTitle, { notes: docContent.trim(), startDate, endDate, number });
-        await addDocument(tabId, trimmedTitle, type, contentToEncrypt, encryptionKey, JSON.stringify(meta));
+        await addDocument(tabId, trimmedTitle, type, contentToEncrypt, JSON.stringify(meta));
         setModalVisible(false);
         setDocTitle(''); setDocContent(''); setDocNumber(''); setDocStartDate(''); setDocEndDate(''); setDocDatesEdited(false); setDocHasExpiry(false); setDateScanStatus('idle'); setFileUris([]); setFileType(null);
       } catch (e) {
@@ -1332,7 +1372,6 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
     setTimeout(async () => {
       try {
-        const encryptionKey = currentUser?.pinHash || 'default_fallback';
         const type = editFileType ? editFileType : 'text';
 
         let processedUris = editFileUris;
@@ -1359,7 +1398,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
         }
 
         const meta = summariseDocument(editDocTitle.trim(), { notes: editDocContent.trim(), startDate, endDate, number });
-        await updateDocument(editingDoc.id, tabId, editDocTitle, contentToEncrypt, encryptionKey, JSON.stringify(meta));
+        await updateDocument(editingDoc.id, tabId, editDocTitle, contentToEncrypt, JSON.stringify(meta));
 
         const updatedDoc = { ...editingDoc, title: editDocTitle.trim() };
 
@@ -1429,9 +1468,9 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
   /** The stored summary for a document, or null if it has none yet. */
   const readMeta = (doc: any): DocMeta | null => {
-    if (!doc?.encryptedMeta) return null;
+    if (!doc?.plainMeta) return null;
     try {
-      const parsed = JSON.parse(decryptDoc(doc.encryptedMeta));
+      const parsed = JSON.parse(doc.plainMeta);
       if (!parsed || typeof parsed !== 'object') return null;
       return {
         startDate: typeof parsed.startDate === 'string' ? parsed.startDate : '',
@@ -1451,7 +1490,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
       if (meta) map.set(doc.id, meta);
     });
     return map;
-  }, [activeDocuments, candidateKeys, legacyMeta]);
+  }, [activeDocuments, legacyMeta]);
 
   /**
    * Expiry state per document, taken from the summary. This used to decrypt
@@ -1483,7 +1522,6 @@ export default function TabDetailScreen({ route, navigation }: any) {
     if (pending.length === 0) return;
 
     let cancelled = false;
-    const encryptionKey = currentUser?.pinHash || 'default_fallback';
 
     (async () => {
       for (const doc of pending) {
@@ -1503,7 +1541,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
           if (doc.type === 'image') {
             decryptionCacheRef.current.set(doc.id!, { plainText, array: payload.files });
           }
-          await setDocumentMeta(doc.id!, JSON.stringify(meta), encryptionKey);
+          await setDocumentMeta(doc.id!, JSON.stringify(meta));
         } catch (e) {
           // A document that will not decrypt simply gets no summary
         }
@@ -3209,12 +3247,7 @@ ${payload.notes}`);
                   })}
 
                   {/* Option to add more photos */}
-                  {fileType === 'image' && (
-                    <TouchableOpacity onPress={() => handleTakePhoto(false)} style={styles.addMoreTile}>
-                      <Ionicons name="camera" size={32} color={AppTheme.colors.primary} />
-                      <Text style={{ color: AppTheme.colors.primary, marginTop: 8, fontSize: 12, fontWeight: 'bold' }}>Add Photo</Text>
-                    </TouchableOpacity>
-                  )}
+                  {fileType === 'image' && renderAddImageTile(false)}
                 </ScrollView>
               </View>
             )}
@@ -3509,12 +3542,7 @@ ${payload.notes}`);
                   })}
 
                   {/* Option to add more photos while editing */}
-                  {editFileType === 'image' && (
-                    <TouchableOpacity onPress={() => handleTakePhoto(true)} style={styles.addMoreTile}>
-                      <Ionicons name="camera" size={32} color={AppTheme.colors.primary} />
-                      <Text style={{ color: AppTheme.colors.primary, marginTop: 8, fontSize: 12, fontWeight: 'bold' }}>Add Photo</Text>
-                    </TouchableOpacity>
-                  )}
+                  {editFileType === 'image' && renderAddImageTile(true)}
                 </ScrollView>
               </View>
             )}
@@ -4041,6 +4069,8 @@ const createStyles = () => StyleSheet.create({
   thumbnailPdf: { width: 120, height: 120, backgroundColor: '#f8fafc', borderRadius: AppTheme.borderRadius.m, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#e2e8f0' },
   removeFileBtn: { position: 'absolute', top: -8, right: -8, width: 26, height: 26, borderRadius: 13, backgroundColor: '#ffffff', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#fee2e2', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3, zIndex: 10, elevation: 4 },
   addMoreTile: { width: 120, height: 120, borderRadius: AppTheme.borderRadius.m, borderWidth: 1.5, borderColor: AppTheme.colors.primary, borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center', backgroundColor: AppTheme.colors.primaryLight },
+  addImageOption: { alignSelf: 'stretch', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: AppTheme.colors.primary, borderRadius: AppTheme.borderRadius.s, paddingVertical: 7 },
+  addImageOptionText: { color: '#fff', fontSize: 12, fontWeight: 'bold', marginLeft: 6 },
 
   modalActions: { flexDirection: 'row', justifyContent: 'space-between', marginTop: AppTheme.spacing.s },
   button: { flex: 1, backgroundColor: AppTheme.colors.primary, paddingVertical: 14, borderRadius: AppTheme.borderRadius.s, alignItems: 'center', marginHorizontal: 4 },

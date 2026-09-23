@@ -1,8 +1,12 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import * as Crypto from 'expo-crypto';
 import { Platform } from 'react-native';
+import { pbkdf2Sha256 } from './Pbkdf2';
 import { DatabaseHelper } from './DatabaseHelper';
 import { CryptoService } from './CryptoService';
+import { VaultCrypto, utf8Encode, utf8Decode, sealedFromBase64 } from './VaultCrypto';
+import { VaultMigration, LegacyKeys } from './VaultMigration';
 import { withoutAutoLock } from './AutoLockService';
 import { User, Tab, Document, DiaryEntry, Note } from '../models';
 
@@ -13,12 +17,10 @@ export interface BackupSetting {
 }
 
 /**
- * The version stays at v1 even though diary pages, notes and settings were
- * added later: they are separate, optional fields, so a newer backup still
- * restores in an older build (minus the new parts) and an older backup still
- * restores here. Bumping it would have broken both directions for no gain.
+ * Version 1, written before encryption v3: rows under the old PIN hash, the
+ * whole file encrypted with a 4-digit PIN. Still restored; no longer written.
  */
-export interface BackupData {
+export interface BackupDataV1 {
   version: 'ewallet_v1';
   timestamp: string;
   user: User;
@@ -29,13 +31,98 @@ export interface BackupData {
   settings?: BackupSetting[];
 }
 
+/**
+ * Version 2: rows exactly as stored (sealed under the vault key), plus the
+ * vault key itself so another device can read them. The whole file is sealed
+ * with AES-256-GCM under a key stretched from the backup password.
+ */
+export interface BackupDataV2 {
+  version: 'ewallet_v2';
+  timestamp: string;
+  user: User;
+  vaultKey: string;
+  /** Old keys still needed by rows that could not be rewritten, if any. */
+  legacy?: LegacyKeys | null;
+  tabs: Tab[];
+  documents: Document[];
+  diaryEntries: DiaryEntry[];
+  notes: Note[];
+  settings: BackupSetting[];
+}
+
+const V2_PREFIX = 'OLB2:';
+/**
+ * Iterations for the password key: about a second on a phone, in JavaScript.
+ * Stored in each file, so it can be raised later without breaking old backups.
+ */
+const KDF_ITERATIONS = 100_000;
+export const BACKUP_PASSWORD_MIN = 8;
+
+interface V2Header {
+  v: 2;
+  kdf: 'pbkdf2-sha256';
+  iter: number;
+  salt: string;
+}
+
+const toB64 = (bytes: Uint8Array) => {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x2000) {
+    s += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + 0x2000)));
+  }
+  return btoa(s);
+};
+const fromB64 = (b64: string) => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+
+/** The file key: the password stretched with PBKDF2 so that guessing it offline is slow. */
+const deriveFileKey = async (password: string, salt: Uint8Array, iterations: number) => {
+  const raw = await pbkdf2Sha256(utf8Encode(password), salt, iterations);
+  return Crypto.AESEncryptionKey.import(raw);
+};
+
+const sealBackup = async (json: string, password: string): Promise<string> => {
+  const salt = Crypto.getRandomBytes(16);
+  const header: V2Header = { v: 2, kdf: 'pbkdf2-sha256', iter: KDF_ITERATIONS, salt: toB64(salt) };
+  const key = await deriveFileKey(password, salt, KDF_ITERATIONS);
+  const sealed = await Crypto.aesEncryptAsync(utf8Encode(json), key);
+  return `${V2_PREFIX}${btoa(JSON.stringify(header))}:${await sealed.combined('base64')}`;
+};
+
+const openBackup = async (content: string, password: string): Promise<string> => {
+  const rest = content.slice(V2_PREFIX.length);
+  const split = rest.indexOf(':');
+  if (split < 0) throw new Error('Unrecognized backup file format.');
+  let header: V2Header;
+  try {
+    header = JSON.parse(atob(rest.slice(0, split)));
+  } catch {
+    throw new Error('Unrecognized backup file format.');
+  }
+  if (header?.kdf !== 'pbkdf2-sha256' || !header.salt || !(header.iter > 0)) {
+    throw new Error('Unrecognized backup file format.');
+  }
+  const key = await deriveFileKey(password, fromB64(header.salt), header.iter);
+  try {
+    const sealed = sealedFromBase64(rest.slice(split + 1));
+    return utf8Decode(await Crypto.aesDecryptAsync(sealed, key));
+  } catch {
+    // An authentication failure: wrong password, or a damaged file
+    throw new Error('Incorrect backup password, or the file is damaged.');
+  }
+};
+
 export class BackupService {
+  static isPasswordFormat(content: string): boolean {
+    return content.trim().startsWith(V2_PREFIX);
+  }
+
   /**
-   * Everything the vault holds - files, diary pages and notes - encrypted with a
-   * user-provided 4-digit PIN.
+   * Everything the vault holds - files, diary pages and notes - sealed with the
+   * backup password. `legacy` is only passed when some rows could not be brought
+   * to the current format, so the keys they still need travel with them.
    */
-  static async exportBackup(user: User, exportPin: string): Promise<boolean> {
-    if (!user || exportPin.trim().length !== 4) return false;
+  static async exportBackup(user: User, password: string, legacy: LegacyKeys | null): Promise<boolean> {
+    if (!user || password.length < BACKUP_PASSWORD_MIN) return false;
 
     try {
       const tabs = await DatabaseHelper.getTabs(user.uuid);
@@ -44,12 +131,14 @@ export class BackupService {
       const allDocs = await DatabaseHelper.getDocumentsForBackup(tabs.map(t => t.uuid));
       const diaryEntries = await DatabaseHelper.getDiaryEntries(user.uuid);
       const notes = await DatabaseHelper.getNotes(user.uuid);
-      const settings = await DatabaseHelper.getAllSettings(user.uuid);
+      const settings = (await DatabaseHelper.getAllSettings(user.uuid)).filter(s => !VaultMigration.isInternalSetting(s.key));
 
-      const backupPayload: BackupData = {
-        version: 'ewallet_v1',
+      const backupPayload: BackupDataV2 = {
+        version: 'ewallet_v2',
         timestamp: new Date().toISOString(),
         user,
+        vaultKey: await VaultCrypto.exportKey(),
+        legacy,
         tabs,
         documents: allDocs,
         diaryEntries,
@@ -57,8 +146,7 @@ export class BackupService {
         settings,
       };
 
-      const jsonStr = JSON.stringify(backupPayload);
-      const encryptedData = CryptoService.encryptText(jsonStr, exportPin.trim());
+      const encryptedData = await sealBackup(JSON.stringify(backupPayload), password);
 
       const dateStr = new Date().toISOString().split('T')[0];
       const fileName = `OfflineLocker_Backup_${dateStr}.olocker`;
@@ -91,30 +179,60 @@ export class BackupService {
   }
 
   /**
-   * Import and decrypt backup file using the user-provided 4-digit PIN
+   * Restores a backup of either version, replacing the vault on this device.
+   * `secret` is the backup password, or for an old backup its 4-digit PIN.
+   * On success the restored vault is open.
    */
-  static async importBackup(encryptedContent: string, importPin: string): Promise<{ success: boolean; tabsCount: number; docsCount: number; diaryCount: number; notesCount: number; user: User }> {
-    if (!encryptedContent || importPin.trim().length !== 4) {
-      throw new Error('Please enter the 4-digit PIN used to create the backup.');
+  static async importBackup(encryptedContent: string, secret: string): Promise<{ success: boolean; tabsCount: number; docsCount: number; diaryCount: number; notesCount: number; user: User }> {
+    const content = (encryptedContent || '').trim();
+    if (!content || !secret) {
+      throw new Error('Please enter the password used to create the backup.');
     }
 
     try {
-      const decryptedJson = CryptoService.decryptText(encryptedContent.trim(), importPin.trim());
-
-      if (!decryptedJson || !decryptedJson.startsWith('{')) {
-        throw new Error('Incorrect PIN or corrupted backup file.');
+      let payload: BackupDataV1 | BackupDataV2;
+      if (this.isPasswordFormat(content)) {
+        const json = await openBackup(content, secret);
+        payload = JSON.parse(json);
+        if (!payload || payload.version !== 'ewallet_v2' || !(payload as BackupDataV2).vaultKey) {
+          throw new Error('Unrecognized backup file format.');
+        }
+      } else {
+        if (!/^\d{4}$/.test(secret.trim())) {
+          throw new Error('This is an older backup. Enter the 4-digit PIN it was created with.');
+        }
+        const decryptedJson = CryptoService.decryptText(content, secret.trim());
+        if (!decryptedJson || !decryptedJson.startsWith('{')) {
+          throw new Error('Incorrect PIN or corrupted backup file.');
+        }
+        try {
+          payload = JSON.parse(decryptedJson);
+        } catch (e) {
+          throw new Error('Incorrect PIN or invalid file format.');
+        }
+        if (!payload || payload.version !== 'ewallet_v1') {
+          throw new Error('Unrecognized backup file format.');
+        }
       }
-
-      let payload: BackupData;
-      try {
-        payload = JSON.parse(decryptedJson);
-      } catch (e) {
-        throw new Error('Incorrect PIN or invalid file format.');
-      }
-
-      if (!payload || payload.version !== 'ewallet_v1' || !payload.user || !Array.isArray(payload.tabs)) {
+      if (!payload.user || !Array.isArray(payload.tabs)) {
         throw new Error('Unrecognized backup file format.');
       }
+
+      const userId = payload.user.uuid;
+      let legacy: LegacyKeys;
+      let formatComplete: boolean;
+      if (payload.version === 'ewallet_v2') {
+        legacy = payload.legacy || { keys: [], tabPins: {} };
+        formatComplete = !payload.legacy;
+        await VaultCrypto.adoptKey(userId, payload.vaultKey, legacy.keys);
+      } else {
+        // Every row of an old backup is under the old PIN hash of its account
+        legacy = { keys: VaultCrypto.isLegacyHash(payload.user.pinHash) ? [payload.user.pinHash] : [], tabPins: {} };
+        formatComplete = false;
+        if (!(await VaultCrypto.open(userId, legacy.keys))) await VaultCrypto.create(userId, legacy.keys);
+      }
+      // Titles may be sealed, so repeats are found by their plaintext
+      const label = async (value: string | null | undefined) => (await VaultCrypto.decryptLabel(value)).trim().toLowerCase();
 
       // Clear existing data before restoring backup to prevent duplicate/multiplied files or tabs
       await DatabaseHelper.clearAllData();
@@ -126,7 +244,7 @@ export class BackupService {
       const seenTabNames = new Set<string>();
       const validTabIds = new Set<string>();
       for (const tab of payload.tabs) {
-        const tabKey = (tab.name || '').trim().toLowerCase();
+        const tabKey = await label(tab.name);
         if (seenTabNames.has(tabKey)) {
           continue;
         }
@@ -141,7 +259,7 @@ export class BackupService {
         const seenDocKeys = new Set<string>();
         for (const doc of payload.documents) {
           if (!validTabIds.has(doc.tabId)) continue;
-          const docKey = `${doc.tabId}:::${(doc.title || '').trim().toLowerCase()}`;
+          const docKey = `${doc.tabId}:::${await label(doc.title)}`;
           if (seenDocKeys.has(docKey)) {
             continue;
           }
@@ -157,7 +275,7 @@ export class BackupService {
       if (Array.isArray(payload.diaryEntries)) {
         for (const entry of payload.diaryEntries) {
           if (!entry?.entryDate || !entry.encryptedContent) continue;
-          await DatabaseHelper.upsertDiaryEntry({ ...entry, userId: payload.user.uuid });
+          await DatabaseHelper.upsertDiaryEntry({ ...entry, userId });
           restoredDiaryCount++;
         }
       }
@@ -168,13 +286,13 @@ export class BackupService {
         const seenNoteTitles = new Set<string>();
         for (const note of payload.notes) {
           if (!note) continue;
-          const noteKey = (note.title || '').trim().toLowerCase();
+          const noteKey = await label(note.title);
           if (noteKey && seenNoteTitles.has(noteKey)) continue;
           if (noteKey) seenNoteTitles.add(noteKey);
           await DatabaseHelper.createNote({
             ...note,
             id: undefined,
-            userId: payload.user.uuid,
+            userId,
             isSensitive: note.isSensitive ? 1 : 0,
           });
           restoredNotesCount++;
@@ -184,9 +302,16 @@ export class BackupService {
       // 6. Restore settings, which is where the diary's PIN lives
       if (Array.isArray(payload.settings)) {
         for (const setting of payload.settings) {
-          if (!setting?.key) continue;
-          await DatabaseHelper.setSetting(payload.user.uuid, setting.key, setting.value ?? null);
+          if (!setting?.key || VaultMigration.isInternalSetting(setting.key)) continue;
+          await DatabaseHelper.setSetting(userId, setting.key, setting.value ?? null);
         }
+      }
+
+      // 7. The vault's own bookkeeping for the rows just written
+      if (formatComplete) {
+        await VaultMigration.markComplete(userId);
+      } else {
+        await VaultMigration.saveLegacyKeys(userId, legacy);
       }
 
       return {

@@ -26,6 +26,8 @@ import ModalCloseButton from './ModalCloseButton';
 import { DiaryPinMode } from '../models';
 import BiometricToggle, { BiometricUnlockButton } from './BiometricToggle';
 import { BiometricService, BiometricScopes } from '../services/BiometricService';
+import { VaultCrypto } from '../services/VaultCrypto';
+import { NEW_PIN_LENGTH } from '../store/useLockerStore';
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -74,7 +76,7 @@ interface DiaryViewProps {
 export default function DiaryView({ isMobile }: DiaryViewProps) {
   const {
     diaryDates, loadDiaryDates, getDiaryEntry, saveDiaryEntry,
-    currentUser, diaryPinMode, diaryPinLoaded, loadDiaryPinMode, setDiaryPin, setDiaryBiometric, verifyDiaryPin,
+    currentUser, diaryPinMode, diaryPinHash, diaryPinLoaded, loadDiaryPinMode, setDiaryPin, setDiaryBiometric, verifyDiaryPin,
     diaryLined, loadDiaryLined, setDiaryLined,
     themeVersion, diaryPageColor, customDiaryPageColor, loadPageColors, setDiaryPageColor, setCustomDiaryPageColor,
   } = useLockerStore();
@@ -110,6 +112,10 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
   const [currentDate, setCurrentDate] = useState(today);
   const [pageText, setPageText] = useState('');
   const [isLoadingPage, setIsLoadingPage] = useState(false);
+  // The day whose page has actually been read. Nothing is saved until it has:
+  // saving the empty page shown while loading would delete the real one.
+  const loadedDateRef = useRef<string | null>(null);
+  const [pageUnreadable, setPageUnreadable] = useState(false);
   // Both pickers are closed by default; the page fills the tab like a real diary
   // The month navigator slides down from the top. Pinning keeps it there;
   // unpinned it collapses again so the page gets the whole tab.
@@ -141,6 +147,8 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
   const [biometricOn, setBiometricOn] = useState(false);
   // One automatic prompt per lock; after that the button brings it back
   const autoPromptedRef = useRef(false);
+  // The lock may be the app PIN or the diary's own, either possibly still 4 digits
+  const unlockPinLength = VaultCrypto.pinLength(diaryPinMode === 'app' ? currentUser?.pinHash : diaryPinHash);
 
   const year = fromDateKey(currentDate).getFullYear();
   const writtenDates = useMemo(() => new Set(diaryDates), [diaryDates]);
@@ -220,6 +228,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
 
   /** Persists the page being left before loading another. */
   const persistCurrent = useCallback(async () => {
+    if (loadedDateRef.current !== currentDateRef.current) return;
     await saveDiaryEntry(currentDateRef.current, pageTextRef.current);
   }, [saveDiaryEntry]);
 
@@ -239,11 +248,21 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
 
   const openDate = useCallback(async (dateKey: string) => {
     setIsLoadingPage(true);
+    loadedDateRef.current = null;
     try {
       const text = await getDiaryEntry(dateKey);
       setPageText(text);
       history.reset(text);
       setCurrentDate(dateKey);
+      currentDateRef.current = dateKey;
+      loadedDateRef.current = dateKey;
+      setPageUnreadable(false);
+    } catch {
+      // Shown empty and read-only, and never saved over
+      setPageText('');
+      history.reset('');
+      setCurrentDate(dateKey);
+      setPageUnreadable(true);
     } finally {
       setIsLoadingPage(false);
     }
@@ -275,7 +294,20 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
     await persistCurrent();
 
     const target = addDays(currentDateRef.current, delta);
-    const targetText = await getDiaryEntry(target);
+    loadedDateRef.current = null;
+    let targetText = '';
+    let unreadable = false;
+    try {
+      targetText = await getDiaryEntry(target);
+    } catch {
+      unreadable = true;
+    }
+    // Marks the arrived page as loaded once it is the current one
+    const arrive = () => {
+      currentDateRef.current = target;
+      loadedDateRef.current = unreadable ? null : target;
+      setPageUnreadable(unreadable);
+    };
 
     if (delta > 0) {
       setUnderText(targetText);
@@ -288,6 +320,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
         setPageText(targetText);
         history.reset(targetText);
         setCurrentDate(target);
+        arrive();
         setUnderText(null);
         turn.setValue(0);
         setIsFlipping(false);
@@ -297,6 +330,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
       setPageText(targetText);
       history.reset(targetText);
       setCurrentDate(target);
+      arrive();
       turn.setValue(1);
       Animated.timing(turn, {
         toValue: 0,
@@ -406,8 +440,8 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
 
   const applyPinMode = async (mode: DiaryPinMode) => {
     if (mode === 'custom') {
-      if (newPin.length !== 4) {
-        setManageError('Enter a 4-digit PIN.');
+      if (newPin.length !== NEW_PIN_LENGTH) {
+        setManageError(`Enter a ${NEW_PIN_LENGTH}-digit PIN.`);
         return;
       }
       if (newPin !== confirmPin) {
@@ -785,13 +819,13 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
             {renderRules()}
             <TextInput
               style={[styles.pageInput, Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : null]}
-              placeholder={isLoadingPage ? '' : 'Write about your day\u2026'}
+              placeholder={isLoadingPage ? '' : pageUnreadable ? 'This page could not be opened.' : 'Write about your day\u2026'}
               placeholderTextColor="#b6b0a0"
               value={pageText}
               onChangeText={text => { history.record(text); setPageText(text); }}
               onBlur={persistCurrent}
               multiline
-              editable={!isFlipping}
+              editable={!isFlipping && !pageUnreadable && !isLoadingPage}
               scrollEnabled
             />
           </Animated.View>
@@ -936,7 +970,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
                 Use my app PIN
               </Text>
               <Text style={{ fontSize: 11.5, color: AppTheme.colors.textSecondary, marginTop: 2 }}>
-                The same 4-digit PIN you unlock OfflineLocker with.
+                The same PIN you unlock OfflineLocker with.
               </Text>
             </View>
           </TouchableOpacity>
@@ -981,13 +1015,13 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
                 marginBottom: 8,
                 letterSpacing: newPin ? 6 : 0,
               }}
-              placeholder="4-Digit Diary PIN"
+              placeholder={`${NEW_PIN_LENGTH}-Digit Diary PIN`}
               placeholderTextColor={AppTheme.colors.textSecondary}
               value={newPin}
-              onChangeText={t => { setNewPin(t.replace(/[^0-9]/g, '').slice(0, 4)); setManageError(''); }}
+              onChangeText={t => { setNewPin(t.replace(/[^0-9]/g, '').slice(0, NEW_PIN_LENGTH)); setManageError(''); }}
               keyboardType="numeric"
               secureTextEntry
-              maxLength={4}
+              maxLength={NEW_PIN_LENGTH}
             />
             <TextInput
               style={{
@@ -1004,27 +1038,27 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
               placeholder="Confirm Diary PIN"
               placeholderTextColor={AppTheme.colors.textSecondary}
               value={confirmPin}
-              onChangeText={t => { setConfirmPin(t.replace(/[^0-9]/g, '').slice(0, 4)); setManageError(''); }}
+              onChangeText={t => { setConfirmPin(t.replace(/[^0-9]/g, '').slice(0, NEW_PIN_LENGTH)); setManageError(''); }}
               keyboardType="numeric"
               secureTextEntry
-              maxLength={4}
+              maxLength={NEW_PIN_LENGTH}
             />
             <TouchableOpacity
               onPress={() => applyPinMode('custom')}
-              disabled={newPin.length !== 4 || confirmPin.length !== 4}
+              disabled={newPin.length !== NEW_PIN_LENGTH || confirmPin.length !== NEW_PIN_LENGTH}
               style={{
                 paddingVertical: 11,
                 borderRadius: 10,
                 alignItems: 'center',
                 backgroundColor:
-                  newPin.length === 4 && confirmPin.length === 4 ? AppTheme.colors.primary : AppTheme.colors.border,
+                  newPin.length === NEW_PIN_LENGTH && confirmPin.length === NEW_PIN_LENGTH ? AppTheme.colors.primary : AppTheme.colors.border,
               }}
             >
               <Text
                 style={{
                   fontSize: 13.5,
                   fontWeight: '700',
-                  color: newPin.length === 4 && confirmPin.length === 4 ? '#ffffff' : AppTheme.colors.textSecondary,
+                  color: newPin.length === NEW_PIN_LENGTH && confirmPin.length === NEW_PIN_LENGTH ? '#ffffff' : AppTheme.colors.textSecondary,
                 }}
               >
                 {diaryPinMode === 'custom' ? 'Change PIN' : 'Enable PIN'}
@@ -1140,13 +1174,13 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
             color: AppTheme.colors.text,
             letterSpacing: pinInput ? 8 : 0,
           }}
-          placeholder="4-Digit PIN"
+          placeholder={`${unlockPinLength}-Digit PIN`}
           placeholderTextColor={AppTheme.colors.textSecondary}
           value={pinInput}
-          onChangeText={t => { setPinInput(t.replace(/[^0-9]/g, '').slice(0, 4)); setPinError(''); }}
+          onChangeText={t => { setPinInput(t.replace(/[^0-9]/g, '').slice(0, unlockPinLength)); setPinError(''); }}
           keyboardType="numeric"
           secureTextEntry
-          maxLength={4}
+          maxLength={NEW_PIN_LENGTH}
         />
         {!!pinError && (
           <Text style={{ color: AppTheme.colors.error, fontSize: 12, fontWeight: '600', marginTop: 8 }}>
@@ -1156,7 +1190,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
 
         <TouchableOpacity
           onPress={handleUnlock}
-          disabled={pinInput.length !== 4}
+          disabled={pinInput.length !== unlockPinLength}
           style={{
             width: '100%',
             maxWidth: 280,
@@ -1164,14 +1198,14 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
             paddingVertical: 13,
             borderRadius: 10,
             alignItems: 'center',
-            backgroundColor: pinInput.length === 4 ? AppTheme.colors.primary : AppTheme.colors.border,
+            backgroundColor: pinInput.length === unlockPinLength ? AppTheme.colors.primary : AppTheme.colors.border,
           }}
         >
           <Text
             style={{
               fontSize: 14,
               fontWeight: '700',
-              color: pinInput.length === 4 ? '#ffffff' : AppTheme.colors.textSecondary,
+              color: pinInput.length === unlockPinLength ? '#ffffff' : AppTheme.colors.textSecondary,
             }}
           >
             Unlock Diary
