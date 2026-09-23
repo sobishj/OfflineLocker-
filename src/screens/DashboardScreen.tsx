@@ -52,6 +52,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   // Settings split in two: credentials behind the current PIN, preferences not
   const [settingsMenuVisible, setSettingsMenuVisible] = useState(false);
   const [appSettingsVisible, setAppSettingsVisible] = useState(false);
+  const [helpVisible, setHelpVisible] = useState(false);
 
   // Dismissing a window has to clear its draft the way its Cancel button does,
   // or a half-typed PIN would still be sitting there the next time it opens.
@@ -770,7 +771,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             accessibilityLabel="Settings"
             {...(Platform.OS === 'web' ? { title: 'Settings' } : {})}
           >
-            <Ionicons name="person-circle-outline" size={isNarrow ? 19 : 22} color={AppTheme.colors.primary} />
+            <Ionicons name="settings-outline" size={isNarrow ? 18 : 20} color={AppTheme.colors.primary} />
           </TouchableOpacity>
           <TouchableOpacity 
             onPress={() => setBackupModalVisible(true)} 
@@ -1268,6 +1269,13 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                   setAppSettingsVisible(true);
                 },
               },
+              {
+                key: 'help',
+                icon: 'help-circle-outline' as const,
+                title: 'Help',
+                subtitle: 'What OfflineLocker is and how it keeps you safe',
+                onPress: () => { setSettingsMenuVisible(false); setHelpVisible(true); },
+              },
             ].map(item => (
               <TouchableOpacity key={item.key} onPress={item.onPress} style={styles.settingsRow} activeOpacity={0.7}>
                 <View style={styles.settingsRowIcon}>
@@ -1282,6 +1290,80 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             ))}
           </TouchableOpacity>
         </TouchableOpacity>
+      </Modal>
+
+      {/* HELP: what the app is, what it is for, and why the PIN matters */}
+      <Modal visible={helpVisible} animationType="slide" transparent onRequestClose={() => setHelpVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '90%' }]}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: AppTheme.spacing.m }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: AppTheme.colors.primaryLight, justifyContent: 'center', alignItems: 'center', marginRight: 10 }}>
+                  <Ionicons name="help-circle-outline" size={20} color={AppTheme.colors.primary} />
+                </View>
+                <Text style={styles.modalTitle}>Help</Text>
+              </View>
+              <TouchableOpacity onPress={() => setHelpVisible(false)}>
+                <Ionicons name="close-circle-outline" size={24} color={AppTheme.colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView contentContainerStyle={{ paddingBottom: 4 }} showsVerticalScrollIndicator={false}>
+              <Text style={styles.helpHeading}>What is OfflineLocker?</Text>
+              <Text style={styles.helpBody}>
+                OfflineLocker is a 100% offline document vault that securely stores your important personal information directly on your device. It's designed for documents like IDs, bank details, passwords, insurance information, vehicle documents, medical records, and private notes that you want to keep safe and easily accessible.
+              </Text>
+              <Text style={styles.helpBody}>
+                Your data never leaves your device. Everything is stored locally, and OfflineLocker does not upload, sync, or send your information to any server or cloud service. No personal data is collected or transmitted outside your device.
+              </Text>
+              <Text style={styles.helpBody}>
+                It works even in Airplane Mode, so your documents are always available—anytime, anywhere, without an internet connection.
+              </Text>
+
+              <Text style={styles.helpHeading}>What can I use it for?</Text>
+              {[
+                'Store Aadhaar, PAN, Passport, and Driving License details.',
+                'Save bank account and card information securely.',
+                'Keep insurance and medical records in one place.',
+                'Store Wi-Fi passwords, recovery codes, and private notes.',
+                'Organize documents into categories for quick and easy access.',
+              ].map(line => (
+                <View key={line} style={styles.helpBullet}>
+                  <Text style={styles.helpBulletDot}>{'•'}</Text>
+                  <Text style={[styles.helpBody, { flex: 1, marginBottom: 0 }]}>{line}</Text>
+                </View>
+              ))}
+
+              <Text style={styles.helpHeading}>Why is the PIN important?</Text>
+              {[
+                'Your PIN is the first layer of protection for your vault.',
+                'It prevents unauthorized access if someone uses your phone.',
+                'The PIN is required to unlock your stored information.',
+                "Choose a PIN that's difficult to guess and don't share it with anyone.",
+              ].map(line => (
+                <View key={line} style={styles.helpBullet}>
+                  <Text style={styles.helpBulletDot}>{'•'}</Text>
+                  <Text style={[styles.helpBody, { flex: 1, marginBottom: 0 }]}>{line}</Text>
+                </View>
+              ))}
+              <Text style={[styles.helpBody, { marginTop: 6 }]}>
+                If your device supports Fingerprint or Face ID, you can use biometrics for quicker access while keeping your PIN as a secure backup.
+              </Text>
+
+              <View style={styles.helpCallout}>
+                <Ionicons name="shield-checkmark-outline" size={18} color={AppTheme.colors.primary} style={{ marginRight: 8, marginTop: 1 }} />
+                <Text style={[styles.helpBody, { flex: 1, marginBottom: 0 }]}>
+                  <Text style={{ fontWeight: '700', color: AppTheme.colors.text }}>Privacy First: </Text>
+                  OfflineLocker is built around local-first privacy. Your information stays on your device and remains under your control.
+                </Text>
+              </View>
+
+              <TouchableOpacity onPress={() => setHelpVisible(false)} style={styles.button}>
+                <Text style={styles.buttonText}>Got it</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
       </Modal>
 
       {/* APP SETTINGS: preferences, so each one saves as it is chosen */}
@@ -2278,6 +2360,18 @@ const createStyles = () => StyleSheet.create({
   },
   settingsRowTitle: { fontSize: 14, fontWeight: '700', color: AppTheme.colors.text },
   settingsRowSubtitle: { fontSize: 11.5, color: AppTheme.colors.textSecondary, marginTop: 2 },
+  helpHeading: { fontSize: 15, fontWeight: '700', color: AppTheme.colors.text, marginTop: 14, marginBottom: 6 },
+  helpBody: { fontSize: 13.5, lineHeight: 20, color: AppTheme.colors.textSecondary, marginBottom: 8 },
+  helpBullet: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 5 },
+  helpBulletDot: { fontSize: 13.5, lineHeight: 20, color: AppTheme.colors.primary, width: 14 },
+  helpCallout: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: AppTheme.colors.primaryLight,
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 14,
+  },
   /** Marks the option the app ships with, under its name. */
   defaultTag: { fontSize: 8.5, fontWeight: '600', color: AppTheme.colors.textMuted, marginTop: 1 },
   tabPickerBtn: {
