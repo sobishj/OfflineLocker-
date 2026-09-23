@@ -1,21 +1,68 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, Alert } from 'react-native';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, Alert, AppState } from 'react-native';
 import { useLockerStore } from '../store/useLockerStore';
 import { AppTheme } from '../theme/AppTheme';
 import { Feather } from '@expo/vector-icons';
+import BiometricToggle, { BiometricUnlockButton } from '../components/BiometricToggle';
+import { BiometricService, BiometricScopes } from '../services/BiometricService';
 
 export default function AuthScreen() {
-  const { currentUser, registerUser, loginUser, errorMessage, clearError, lockoutState, refreshLockoutState, themeVersion } = useLockerStore();
+  const { currentUser, registerUser, loginUser, unlockWithBiometric, errorMessage, clearError, lockoutState, refreshLockoutState, themeVersion } = useLockerStore();
   const styles = useMemo(() => createStyles(), [themeVersion]);
   const [username, setUsername] = useState('');
   const [pin, setPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
   const [isRegisterMode, setIsRegisterMode] = useState(!currentUser);
   const [remainingSec, setRemainingSec] = useState(0);
+  const [registerBiometric, setRegisterBiometric] = useState(false);
+  const [biometricEnabled, setBiometricEnabled] = useState(false);
+  // One automatic prompt per visit to this screen; after that it waits for the button
+  const autoPromptedRef = useRef(false);
+  const promptingRef = useRef(false);
 
   useEffect(() => {
     setIsRegisterMode(!currentUser);
   }, [currentUser]);
+
+  useEffect(() => {
+    let alive = true;
+    BiometricService.isEnabled(currentUser?.uuid, BiometricScopes.app).then(on => { if (alive) setBiometricEnabled(on); });
+    return () => { alive = false; };
+  }, [currentUser?.uuid]);
+
+  const tryBiometric = useCallback(async () => {
+    if (promptingRef.current) return;
+    promptingRef.current = true;
+    try {
+      const ok = await unlockWithBiometric();
+      if (ok) setPin('');
+    } finally {
+      promptingRef.current = false;
+    }
+  }, [unlockWithBiometric]);
+
+  // Biometrics first. The screen is usually mounted by the auto-lock while the
+  // app is in the background, where the system refuses to show the prompt, so
+  // it waits until the app is back in front.
+  useEffect(() => {
+    if (isRegisterMode || !biometricEnabled || autoPromptedRef.current) return;
+    const fire = () => {
+      if (autoPromptedRef.current) return;
+      autoPromptedRef.current = true;
+      tryBiometric();
+    };
+    if (AppState.currentState === 'active') {
+      fire();
+      return;
+    }
+    const sub = AppState.addEventListener('change', next => {
+      if (next === 'active') {
+        sub.remove();
+        fire();
+      }
+    });
+    return () => sub.remove();
+  }, [isRegisterMode, biometricEnabled, tryBiometric]);
 
   useEffect(() => {
     let timer: any = null;
@@ -39,11 +86,12 @@ export default function AuthScreen() {
 
   const executeRegistration = async () => {
     if (pin.trim() !== confirmPin.trim()) return;
-    const success = await registerUser(username, pin);
+    const success = await registerUser(username, pin, registerBiometric);
     if (success) {
       setPin('');
       setConfirmPin('');
       setUsername('');
+      setRegisterBiometric(false);
     }
   };
 
@@ -205,6 +253,10 @@ export default function AuthScreen() {
           </Text>
         )}
 
+        {isRegisterMode && (
+          <BiometricToggle value={registerBiometric} onChange={setRegisterBiometric} style={{ alignSelf: 'stretch', marginBottom: 16 }} />
+        )}
+
         {errorMessage ? <Text style={styles.error}>{errorMessage}</Text> : null}
 
         {(() => {
@@ -225,6 +277,10 @@ export default function AuthScreen() {
             </TouchableOpacity>
           );
         })()}
+
+        {!isRegisterMode && biometricEnabled && !isLockedOut && (
+          <BiometricUnlockButton onPress={tryBiometric} style={{ alignSelf: 'stretch', marginTop: 12, height: 52 }} />
+        )}
 
         {currentUser && (
           <TouchableOpacity 

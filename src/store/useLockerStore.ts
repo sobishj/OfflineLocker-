@@ -6,6 +6,7 @@ import { DatabaseHelper } from '../services/DatabaseHelper';
 import { CryptoService } from '../services/CryptoService';
 import { BackupService } from '../services/BackupService';
 import { clearDecryptedCache } from '../services/FileCacheService';
+import { BiometricService, BiometricScopes } from '../services/BiometricService';
 import {
   applyAccent,
   applyBackground,
@@ -72,12 +73,15 @@ interface LockerState {
 
   // Actions
   checkExistingUsers: () => Promise<void>;
-  registerUser: (username: string, pin: string) => Promise<boolean>;
+  registerUser: (username: string, pin: string, biometric?: boolean) => Promise<boolean>;
   loginUser: (pin: string) => Promise<boolean>;
+  /** Unlocks the vault with a scan instead of the PIN. False means ask for the PIN. */
+  unlockWithBiometric: () => Promise<boolean>;
   logout: () => void;
   loadTabs: () => Promise<void>;
-  createTab: (name: string, description: string, isSensitive: boolean, tabPin?: string) => Promise<boolean>;
-  updateTab: (tabId: string, name: string, description: string, isSensitive: boolean, tabPin?: string) => Promise<boolean>;
+  createTab: (name: string, description: string, isSensitive: boolean, tabPin?: string, biometric?: boolean) => Promise<boolean>;
+  /** `biometric.pin` is the tab's PIN as it stands after the edit, which is what a scan hands back. */
+  updateTab: (tabId: string, name: string, description: string, isSensitive: boolean, tabPin?: string, biometric?: { enabled: boolean; pin?: string }) => Promise<boolean>;
   deleteTab: (tabId: string) => Promise<void>;
   verifyTabPin: (tab: Tab, candidatePin: string) => boolean;
   loadDocumentsForTab: (tabId: string) => Promise<void>;
@@ -90,8 +94,10 @@ interface LockerState {
   getDiaryEntry: (entryDate: string) => Promise<string>;
   saveDiaryEntry: (entryDate: string, plainContent: string) => Promise<void>;
   loadNotes: () => Promise<void>;
-  addNote: (title: string, plainContent: string, isSensitive: boolean, notePin?: string) => Promise<void>;
-  updateNote: (id: number, title: string, plainContent: string, isSensitive: boolean, notePin?: string) => Promise<void>;
+  /** Resolves to the new note's id, or null when it could not be saved. */
+  addNote: (title: string, plainContent: string, isSensitive: boolean, notePin?: string, biometric?: boolean) => Promise<number | null>;
+  /** `biometric` left undefined keeps the note's current setting. */
+  updateNote: (id: number, title: string, plainContent: string, isSensitive: boolean, notePin?: string, biometric?: boolean) => Promise<void>;
   deleteNote: (id: number) => Promise<void>;
   decryptNote: (note: Note) => string;
   verifyNotePin: (note: Note, candidatePin: string) => boolean;
@@ -112,7 +118,8 @@ interface LockerState {
   setNotePageColor: (key: string) => Promise<void>;
   setCustomNotePageColor: (hex: string) => Promise<void>;
   loadDiaryPinMode: () => Promise<void>;
-  setDiaryPin: (mode: DiaryPinMode, pin?: string) => Promise<void>;
+  setDiaryPin: (mode: DiaryPinMode, pin?: string, biometric?: boolean) => Promise<void>;
+  setDiaryBiometric: (enabled: boolean) => Promise<void>;
   verifyDiaryPin: (candidatePin: string) => boolean;
   exportBackup: (exportPin: string) => Promise<boolean>;
   importBackup: (encryptedContent: string, importPin: string) => Promise<{ success: boolean; tabsCount: number; docsCount: number; diaryCount: number; notesCount: number }>;
@@ -121,7 +128,19 @@ interface LockerState {
   clearError: () => void;
 }
 
-export const useLockerStore = create<LockerState>((set, get) => ({
+export const useLockerStore = create<LockerState>((set, get) => {
+  /** Shared by the PIN and the biometric paths once the user is known to be the owner. */
+  const completeLogin = async () => {
+    await LockoutService.resetLockoutState();
+    const cleanLockout = await LockoutService.getLockoutState();
+    set({ isAuthenticated: true, activeDocuments: [], lockoutState: cleanLockout, errorMessage: null });
+    await get().loadTabs();
+    // Read here as well as on the diary's own mount: by the time the tab can
+    // be tapped the answer is already in, so it never opens and then locks
+    await get().loadDiaryPinMode();
+  };
+
+  return {
   currentUser: null,
   tabs: [],
   tabDocCounts: {},
@@ -153,6 +172,10 @@ export const useLockerStore = create<LockerState>((set, get) => ({
     try {
       const users = await DatabaseHelper.getAllUsers();
       const lockoutState = await LockoutService.getLockoutState();
+      // A slow first read (the web opens the database in a worker) can land
+      // after the user has already registered or unlocked; applying it then
+      // would throw them back to the lock screen
+      if (get().isAuthenticated) return;
       if (users.length > 0) {
         set({ currentUser: users[0], isAuthenticated: false, lockoutState });
       } else {
@@ -163,8 +186,10 @@ export const useLockerStore = create<LockerState>((set, get) => ({
     }
   },
 
-  registerUser: async (username: string, pin: string) => {
+  registerUser: async (username: string, pin: string, biometric?: boolean) => {
     try {
+      // The old account's data is about to go, and its biometric switches with it
+      await BiometricService.clearAll(get().currentUser?.uuid);
       await DatabaseHelper.clearAllData();
       await LockoutService.resetLockoutState();
 
@@ -186,6 +211,7 @@ export const useLockerStore = create<LockerState>((set, get) => ({
         createdAt: new Date().toISOString(),
       };
       await DatabaseHelper.createTab(defaultTab);
+      if (biometric) await BiometricService.enable(newUser.uuid, BiometricScopes.app);
 
       const lockoutState = await LockoutService.getLockoutState();
       set({ currentUser: newUser, isAuthenticated: true, lockoutState, errorMessage: null });
@@ -193,6 +219,14 @@ export const useLockerStore = create<LockerState>((set, get) => ({
       return true;
     } catch (error) {
       console.error('Registration failed', error);
+      // Shown on the form: returning quietly left the button looking dead
+      const storageMissing = typeof window !== 'undefined' && typeof document !== 'undefined'
+        && typeof SharedArrayBuffer === 'undefined';
+      set({
+        errorMessage: storageMissing
+          ? 'This browser cannot open the vault storage here. Open the app via http://localhost:8081 (or https) instead of a network address.'
+          : 'Could not create the vault. Please try again.',
+      });
       return false;
     }
   },
@@ -209,19 +243,14 @@ export const useLockerStore = create<LockerState>((set, get) => ({
 
     const isValid = CryptoService.verifyPin(pin.trim(), currentUser.pinHash);
     if (isValid) {
-      await LockoutService.resetLockoutState();
-      const cleanLockout = await LockoutService.getLockoutState();
-      set({ isAuthenticated: true, activeDocuments: [], lockoutState: cleanLockout, errorMessage: null });
-      await get().loadTabs();
-      // Read here as well as on the diary's own mount: by the time the tab can
-      // be tapped the answer is already in, so it never opens and then locks
-      await get().loadDiaryPinMode();
+      await completeLogin();
       return true;
     }
 
     // Failed attempt
     const { state, isWiped } = await LockoutService.recordFailedAttempt();
     if (isWiped) {
+      await BiometricService.clearAll(currentUser.uuid);
       set({
         currentUser: null,
         tabs: [],
@@ -243,6 +272,21 @@ export const useLockerStore = create<LockerState>((set, get) => ({
 
     set({ lockoutState: state, errorMessage: msg });
     return false;
+  },
+
+  unlockWithBiometric: async () => {
+    const { currentUser } = get();
+    if (!currentUser) return false;
+    // A lockout earned with wrong PINs is not lifted by switching to a scan
+    const currentLockout = await LockoutService.getLockoutState();
+    if (currentLockout.remainingSeconds > 0) {
+      set({ lockoutState: currentLockout });
+      return false;
+    }
+    const secret = await BiometricService.unlock(currentUser.uuid, BiometricScopes.app, 'Unlock OfflineLocker');
+    if (!secret) return false;
+    await completeLogin();
+    return true;
   },
 
   refreshLockoutState: async () => {
@@ -270,7 +314,7 @@ export const useLockerStore = create<LockerState>((set, get) => ({
     }
   },
 
-  createTab: async (name: string, description: string, isSensitive: boolean, tabPin?: string) => {
+  createTab: async (name: string, description: string, isSensitive: boolean, tabPin?: string, biometric?: boolean) => {
     const { currentUser, tabs } = get();
     if (!currentUser) return false;
     const trimmed = name.trim();
@@ -299,6 +343,9 @@ export const useLockerStore = create<LockerState>((set, get) => ({
       };
 
       await DatabaseHelper.createTab(newTab);
+      if (isSensitive && tabPin && biometric) {
+        await BiometricService.enable(currentUser.uuid, BiometricScopes.tab(newTab.uuid), tabPin.trim());
+      }
       await get().loadTabs();
       return true;
     } catch (error) {
@@ -309,10 +356,11 @@ export const useLockerStore = create<LockerState>((set, get) => ({
 
   deleteTab: async (tabId: string) => {
     await DatabaseHelper.deleteTab(tabId);
+    await BiometricService.disable(get().currentUser?.uuid, BiometricScopes.tab(tabId));
     await get().loadTabs();
   },
 
-  updateTab: async (tabId: string, name: string, description: string, isSensitive: boolean, tabPin?: string) => {
+  updateTab: async (tabId: string, name: string, description: string, isSensitive: boolean, tabPin?: string, biometric?: { enabled: boolean; pin?: string }) => {
     const trimmed = name.trim();
     if (!trimmed) return false;
 
@@ -341,6 +389,18 @@ export const useLockerStore = create<LockerState>((set, get) => ({
         isSensitive ? 1 : 0,
         tabPinHash
       );
+      const userId = get().currentUser?.uuid;
+      const scope = BiometricScopes.tab(tabId);
+      const pinNow = tabPin?.trim() || biometric?.pin?.trim();
+      if (!isSensitive) {
+        await BiometricService.disable(userId, scope);
+      } else if (biometric) {
+        if (biometric.enabled && userId && pinNow) await BiometricService.enable(userId, scope, pinNow);
+        else await BiometricService.disable(userId, scope);
+      } else if (tabPin?.trim() && userId && await BiometricService.isEnabled(userId, scope)) {
+        // A changed PIN has to replace the one a scan hands back
+        await BiometricService.enable(userId, scope, tabPin.trim());
+      }
       await get().loadTabs();
       return true;
     } catch (error) {
@@ -483,12 +543,13 @@ export const useLockerStore = create<LockerState>((set, get) => ({
     }
   },
 
-  addNote: async (title: string, plainContent: string, isSensitive: boolean, notePin?: string) => {
+  addNote: async (title: string, plainContent: string, isSensitive: boolean, notePin?: string, biometric?: boolean) => {
     const { currentUser, loadNotes } = get();
-    if (!currentUser) return;
+    if (!currentUser) return null;
     const now = new Date().toISOString();
+    let id: number;
     try {
-      await DatabaseHelper.createNote({
+      id = await DatabaseHelper.createNote({
         userId: currentUser.uuid,
         title,
         encryptedContent: CryptoService.encryptText(plainContent, currentUser.pinHash),
@@ -500,12 +561,14 @@ export const useLockerStore = create<LockerState>((set, get) => ({
       });
     } catch (error) {
       set({ errorMessage: 'Could not save the note.' });
-      return;
+      return null;
     }
+    if (isSensitive && biometric) await BiometricService.enable(currentUser.uuid, BiometricScopes.note(id));
     await loadNotes();
+    return id;
   },
 
-  updateNote: async (id: number, title: string, plainContent: string, isSensitive: boolean, notePin?: string) => {
+  updateNote: async (id: number, title: string, plainContent: string, isSensitive: boolean, notePin?: string, biometric?: boolean) => {
     const { currentUser, loadNotes, notes } = get();
     if (!currentUser) return;
     const existing = notes.find(n => n.id === id);
@@ -529,12 +592,18 @@ export const useLockerStore = create<LockerState>((set, get) => ({
       set({ errorMessage: 'Could not save the note.' });
       return;
     }
+    if (!isSensitive || biometric === false) {
+      await BiometricService.disable(currentUser.uuid, BiometricScopes.note(id));
+    } else if (biometric) {
+      await BiometricService.enable(currentUser.uuid, BiometricScopes.note(id));
+    }
     await loadNotes();
   },
 
   deleteNote: async (id: number) => {
     const { loadNotes } = get();
     await DatabaseHelper.deleteNote(id);
+    await BiometricService.disable(get().currentUser?.uuid, BiometricScopes.note(id));
     await loadNotes();
   },
 
@@ -732,7 +801,7 @@ export const useLockerStore = create<LockerState>((set, get) => ({
     }
   },
 
-  setDiaryPin: async (mode: DiaryPinMode, pin?: string) => {
+  setDiaryPin: async (mode: DiaryPinMode, pin?: string, biometric?: boolean) => {
     const { currentUser } = get();
     if (!currentUser) return;
     // 'app' reuses the account's own unlock PIN, so no separate hash is stored
@@ -740,6 +809,15 @@ export const useLockerStore = create<LockerState>((set, get) => ({
     await DatabaseHelper.setSetting(currentUser.uuid, 'diary_pin_mode', mode === 'none' ? null : mode);
     await DatabaseHelper.setSetting(currentUser.uuid, 'diary_pin_hash', hash);
     set({ diaryPinMode: mode, diaryPinHash: hash, diaryPinLoaded: true });
+    if (mode === 'none' || biometric === false) await BiometricService.disable(currentUser.uuid, BiometricScopes.diary);
+    else if (biometric) await BiometricService.enable(currentUser.uuid, BiometricScopes.diary);
+  },
+
+  setDiaryBiometric: async (enabled: boolean) => {
+    const { currentUser, diaryPinMode } = get();
+    if (!currentUser) return;
+    if (enabled && diaryPinMode !== 'none') await BiometricService.enable(currentUser.uuid, BiometricScopes.diary);
+    else await BiometricService.disable(currentUser.uuid, BiometricScopes.diary);
   },
 
   verifyDiaryPin: (candidatePin: string) => {
@@ -759,8 +837,11 @@ export const useLockerStore = create<LockerState>((set, get) => ({
   },
 
   importBackup: async (encryptedContent: string, importPin: string) => {
+    const previousUserId = get().currentUser?.uuid;
     const result = await BackupService.importBackup(encryptedContent, importPin);
     if (result.success && result.user) {
+      // The switches belonged to the account that was just replaced
+      if (previousUserId && previousUserId !== result.user.uuid) await BiometricService.clearAll(previousUserId);
       set({ currentUser: result.user, isAuthenticated: true, activeDocuments: [], diaryDates: [], notes: [] });
       await get().loadTabs();
       // The diary and notes were restored too, so their state has to come back
@@ -864,4 +945,5 @@ export const useLockerStore = create<LockerState>((set, get) => ({
   clearError: () => {
     set({ errorMessage: null });
   }
-}));
+  };
+});

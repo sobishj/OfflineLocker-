@@ -2,7 +2,7 @@
   "expo": {
     "name": "OfflineLocker",
     "slug": "offlinelocker",
-    "version": "1.0.20",
+    "version": "1.0.21",
     "orientation": "portrait",
     "icon": "./assets/offlinelocker-icon.png",
     "userInterfaceStyle": "light",
@@ -11,11 +11,12 @@
       "bundleIdentifier": "com.offlinelocker.app",
       "infoPlist": {
         "NSCameraUsageDescription": "OfflineLocker requires camera access to capture and store photos securely.",
-        "NSPhotoLibraryUsageDescription": "OfflineLocker requires photo library access to select and store photos securely."
+        "NSPhotoLibraryUsageDescription": "OfflineLocker requires photo library access to select and store photos securely.",
+        "NSFaceIDUsageDescription": "OfflineLocker uses Face ID to unlock your vault, tabs, notes and diary."
       }
     },
     "android": {
-      "versionCode": 21,
+      "versionCode": 22,
       "adaptiveIcon": {
         "backgroundColor": "#0284C7",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -37,6 +38,18 @@
         {
           "photosPermission": "OfflineLocker requires photo library access to select and store photos securely.",
           "cameraPermission": "OfflineLocker requires camera access to capture and store photos securely."
+        }
+      ],
+      [
+        "expo-secure-store",
+        {
+          "faceIDPermission": "OfflineLocker uses Face ID to unlock your vault, tabs, notes and diary."
+        }
+      ],
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "OfflineLocker uses Face ID to unlock your vault, tabs, notes and diary."
         }
       ]
     ],

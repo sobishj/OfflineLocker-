@@ -19,6 +19,8 @@ import { Note } from '../models';
 import { AppTheme, getPageColor, PAGE_COLORS, CUSTOM_KEY, DEFAULT_PAGE_COLOR_KEY } from '../theme/AppTheme';
 import ColorPickerModal from './ColorPickerModal';
 import DraggableFAB from './DraggableFAB';
+import BiometricToggle, { BiometricUnlockButton } from './BiometricToggle';
+import { BiometricService, BiometricScopes } from '../services/BiometricService';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { withoutAutoLock } from '../services/AutoLockService';
@@ -40,7 +42,7 @@ const formatStamp = (iso: string): string => {
 };
 
 export default function NotesView({ isMobile }: NotesViewProps) {
-  const { notes, loadNotes, addNote, updateNote, deleteNote, decryptNote, verifyNotePin, notePageColor, customNotePageColor, loadPageColors, setNotePageColor, setCustomNotePageColor } = useLockerStore();
+  const { currentUser, notes, loadNotes, addNote, updateNote, deleteNote, decryptNote, verifyNotePin, notePageColor, customNotePageColor, loadPageColors, setNotePageColor, setCustomNotePageColor } = useLockerStore();
   const paper = getPageColor(notePageColor, customNotePageColor);
   const insets = useSafeAreaInsets();
 
@@ -53,6 +55,7 @@ export default function NotesView({ isMobile }: NotesViewProps) {
   const [draftSensitive, setDraftSensitive] = useState(false);
   const [draftPin, setDraftPin] = useState('');
   const [draftConfirmPin, setDraftConfirmPin] = useState('');
+  const [draftBiometric, setDraftBiometric] = useState(false);
 
   // Step 2 — writing the note itself
   const [paperVisible, setPaperVisible] = useState(false);
@@ -83,6 +86,8 @@ export default function NotesView({ isMobile }: NotesViewProps) {
   const [pinAction, setPinAction] = useState<PinAction>('open');
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState('');
+  // Whether the note in the PIN window can also be opened with a scan
+  const [noteBiometricOn, setNoteBiometricOn] = useState(false);
 
   /** Matches the Cancel button: the typed PIN never outlives the window. */
   const closePinModal = () => {
@@ -116,6 +121,10 @@ export default function NotesView({ isMobile }: NotesViewProps) {
     setDraftSensitive(note ? note.isSensitive === 1 : false);
     setDraftPin('');
     setDraftConfirmPin('');
+    setDraftBiometric(false);
+    if (note?.id != null) {
+      BiometricService.isEnabled(currentUser?.uuid, BiometricScopes.note(note.id)).then(setDraftBiometric);
+    }
     setDetailsVisible(true);
   };
 
@@ -201,15 +210,40 @@ export default function NotesView({ isMobile }: NotesViewProps) {
   };
 
   /** Runs `action` straight away for an open note, or asks for the PIN first. */
-  const requirePin = (note: Note, action: PinAction, run: () => void) => {
+  const requirePin = async (note: Note, action: PinAction, run: () => void) => {
     if (isUnlocked(note)) {
       run();
       return;
     }
+    // Biometrics first; the PIN window only when that is off, cancelled or fails
+    const enabled = note.id != null && await BiometricService.isEnabled(currentUser?.uuid, BiometricScopes.note(note.id));
+    setNoteBiometricOn(enabled);
+    if (enabled && await tryNoteBiometric(note, action)) return;
     setPinModalNote(note);
     setPinAction(action);
     setPinInput('');
     setPinError('');
+  };
+
+  /** What happens once the note's PIN, or a scan standing in for it, has been accepted. */
+  const proceedWithNote = (note: Note, action: PinAction) => {
+    if (note.id != null) setUnlockedId(note.id);
+    setPinModalNote(null);
+    setPinInput('');
+    setPinError('');
+
+    if (action === 'edit') openDetails(note);
+    else if (action === 'delete') confirmDelete(note);
+    else openWriter(note);
+  };
+
+  const tryNoteBiometric = async (note: Note, action: PinAction): Promise<boolean> => {
+    if (note.id == null) return false;
+    const verb = action === 'edit' ? 'edit' : action === 'delete' ? 'delete' : 'unlock';
+    const ok = await BiometricService.unlock(currentUser?.uuid, BiometricScopes.note(note.id), `Verify to ${verb} ${note.title}`);
+    if (!ok) return false;
+    proceedWithNote(note, action);
+    return true;
   };
 
   const handlePinSubmit = () => {
@@ -219,15 +253,7 @@ export default function NotesView({ isMobile }: NotesViewProps) {
       setPinInput('');
       return;
     }
-    const note = pinModalNote;
-    if (note.id != null) setUnlockedId(note.id);
-    setPinModalNote(null);
-    setPinInput('');
-    setPinError('');
-
-    if (pinAction === 'edit') openDetails(note);
-    else if (pinAction === 'delete') confirmDelete(note);
-    else openWriter(note);
+    proceedWithNote(pinModalNote, pinAction);
   };
 
   const confirmDelete = (note: Note) => {
@@ -269,17 +295,12 @@ export default function NotesView({ isMobile }: NotesViewProps) {
       let keepUnlocked: number | null = null;
       if (detailsNote?.id) {
         // Renaming must not disturb the body, so it is re-saved as-is
-        await updateNote(detailsNote.id, title, decryptNote(detailsNote), draftSensitive, draftPin || undefined);
+        await updateNote(detailsNote.id, title, decryptNote(detailsNote), draftSensitive, draftPin || undefined, draftSensitive && draftBiometric);
       } else {
-        await addNote(title, '', draftSensitive, draftPin || undefined);
+        const createdId = await addNote(title, '', draftSensitive, draftPin || undefined, draftSensitive && draftBiometric);
         // The PIN was just chosen, so writing the new note straight away does
         // not ask for it again — closing that writer re-locks as usual
-        if (draftSensitive) {
-          const created = useLockerStore
-            .getState()
-            .notes.find(n => n.title === title && n.isSensitive === 1);
-          if (created?.id != null) keepUnlocked = created.id;
-        }
+        if (draftSensitive && createdId != null) keepUnlocked = createdId;
       }
       setDetailsVisible(false);
       setDetailsNote(null);
@@ -287,6 +308,7 @@ export default function NotesView({ isMobile }: NotesViewProps) {
       setDraftSensitive(false);
       setDraftPin('');
       setDraftConfirmPin('');
+      setDraftBiometric(false);
       setUnlockedId(keepUnlocked);
     } finally {
       setIsSaving(false);
@@ -572,6 +594,7 @@ export default function NotesView({ isMobile }: NotesViewProps) {
                       Note PIN and Confirm PIN do not match.
                     </Text>
                   )}
+                  <BiometricToggle value={draftBiometric} onChange={setDraftBiometric} />
                 </>
               )}
 
@@ -925,6 +948,9 @@ export default function NotesView({ isMobile }: NotesViewProps) {
                 <Text style={{ color: AppTheme.colors.error, fontSize: 12, fontWeight: '600', marginBottom: 14 }}>
                   {pinError}
                 </Text>
+              )}
+              {noteBiometricOn && pinModalNote && (
+                <BiometricUnlockButton onPress={() => tryNoteBiometric(pinModalNote, pinAction)} style={{ marginBottom: 12 }} />
               )}
               <View style={{ flexDirection: 'row' }}>
                 <TouchableOpacity

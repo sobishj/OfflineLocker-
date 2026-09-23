@@ -21,6 +21,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StorageService } from '../utils/storage';
 import { CryptoService } from '../services/CryptoService';
 import { withoutAutoLock } from '../services/AutoLockService';
+import BiometricToggle, { BiometricUnlockButton } from '../components/BiometricToggle';
+import { BiometricService, BiometricScopes } from '../services/BiometricService';
 
 type DashboardProps = {
   navigation: NativeStackNavigationProp<any>;
@@ -58,6 +60,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     setIsSensitive(false);
     setTabPin('');
     setConfirmTabPin('');
+    setTabBiometric(false);
   };
   const closeEditTab = () => {
     setEditModalVisible(false);
@@ -67,6 +70,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     setEditIsSensitive(false);
     setEditTabPin('');
     setEditConfirmTabPin('');
+    setEditTabBiometric(false);
+    setEditKnownPin('');
   };
   const closePinModal = () => {
     setPinModalVisible(false);
@@ -110,6 +115,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   const [isSensitive, setIsSensitive] = useState(false);
   const [tabPin, setTabPin] = useState('');
   const [confirmTabPin, setConfirmTabPin] = useState('');
+  const [tabBiometric, setTabBiometric] = useState(false);
 
   // Delete tab confirmation
   const [deleteConfirmTab, setDeleteConfirmTab] = useState<any>(null);
@@ -122,11 +128,17 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   const [editIsSensitive, setEditIsSensitive] = useState(false);
   const [editTabPin, setEditTabPin] = useState('');
   const [editConfirmTabPin, setEditConfirmTabPin] = useState('');
+  const [editTabBiometric, setEditTabBiometric] = useState(false);
+  // The tab's PIN as verified on the way into the editor, kept so biometrics can
+  // be switched on without the PIN having to be changed
+  const [editKnownPin, setEditKnownPin] = useState('');
 
   // Unlock tab state
   const [selectedTab, setSelectedTab] = useState<any>(null);
   const [unlockPin, setUnlockPin] = useState('');
   const [pinActionTarget, setPinActionTarget] = useState<'open' | 'edit' | 'delete'>('open');
+  // Whether the tab in the PIN window can also be opened with a scan
+  const [tabBiometricOn, setTabBiometricOn] = useState(false);
 
   // Export / Import state
   const [backupModalVisible, setBackupModalVisible] = useState(false);
@@ -154,6 +166,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   const [isEditingUsername, setIsEditingUsername] = useState(false);
   const [isEditingNewPin, setIsEditingNewPin] = useState(false);
   const [accountError, setAccountError] = useState<string | null>(null);
+  const [accountBiometric, setAccountBiometric] = useState(false);
+  const [accountBiometricInitial, setAccountBiometricInitial] = useState(false);
   const usernameInputRef = useRef<TextInput | null>(null);
   const newPinInputRef = useRef<TextInput | null>(null);
 
@@ -260,22 +274,21 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     };
   }, []);
 
-  const openEditTabModal = (tab: any) => {
+  const openEditTabModal = async (tab: any, knownPin = '') => {
     setEditTabId(tab.uuid);
     setEditTabName(tab.name);
     setEditTabDesc(tab.description || '');
     setEditIsSensitive(tab.isSensitive === 1);
     setEditTabPin('');
     setEditConfirmTabPin('');
+    setEditKnownPin(knownPin);
+    setEditTabBiometric(await BiometricService.isEnabled(currentUser?.uuid, BiometricScopes.tab(tab.uuid)));
     setEditModalVisible(true);
   };
 
   const handleOpenEditTab = (tab: any) => {
     if (tab.isSensitive === 1 && tab.tabPinHash) {
-      setSelectedTab(tab);
-      setPinActionTarget('edit');
-      setUnlockPin('');
-      setPinModalVisible(true);
+      requestTabPin(tab, 'edit');
       return;
     }
     openEditTabModal(tab);
@@ -310,15 +323,12 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       }
     }
 
-    const success = await updateTab(editTabId, editTabName, editTabDesc, editIsSensitive, editTabPin);
+    const success = await updateTab(
+      editTabId, editTabName, editTabDesc, editIsSensitive, editTabPin,
+      editIsSensitive ? { enabled: editTabBiometric, pin: editTabPin.trim() || editKnownPin } : undefined
+    );
     if (success) {
-      setEditModalVisible(false);
-      setEditTabId('');
-      setEditTabName('');
-      setEditTabDesc('');
-      setEditIsSensitive(false);
-      setEditTabPin('');
-      setEditConfirmTabPin('');
+      closeEditTab();
     } else {
       Alert.alert('Error', 'Failed to update tab details.');
     }
@@ -341,10 +351,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
   const handleConfirmDeleteTab = (tab: any) => {
     if (tab.isSensitive === 1 && tab.tabPinHash) {
-      setSelectedTab(tab);
-      setPinActionTarget('delete');
-      setUnlockPin('');
-      setPinModalVisible(true);
+      requestTabPin(tab, 'delete');
       return;
     }
     showDeleteTabPrompt(tab);
@@ -472,6 +479,10 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     setAccountError(null);
     setAccountDefaultTab(defaultHomeTab);
     setTabPickerOpen(false);
+    BiometricService.isEnabled(currentUser?.uuid, BiometricScopes.app).then(on => {
+      setAccountBiometric(on);
+      setAccountBiometricInitial(on);
+    });
     setAccountModalVisible(true);
   };
 
@@ -506,10 +517,25 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
     const isUsernameChanged = isEditingUsername && accountUsername.trim() !== (currentUser?.username || '');
     const isPinChanged = isEditingNewPin;
+    const isBiometricChanged = accountBiometric !== accountBiometricInitial;
 
     // 3. Check if any fields were actually changed
+    if (!isUsernameChanged && !isPinChanged && !isBiometricChanged) {
+      showAccountFeedback('No Changes', 'Please click Edit on Username or New PIN, or change biometric unlock, before saving.');
+      return;
+    }
+
+    // Only the biometric switch moved: the PIN has been checked, nothing else to rewrite
     if (!isUsernameChanged && !isPinChanged) {
-      showAccountFeedback('No Changes', 'Please click Edit on Username or New PIN before saving.');
+      if (currentUser) {
+        if (accountBiometric) await BiometricService.enable(currentUser.uuid, BiometricScopes.app);
+        else await BiometricService.disable(currentUser.uuid, BiometricScopes.app);
+      }
+      setAccountBiometricInitial(accountBiometric);
+      setAccountModalVisible(false);
+      setAccountCurrentPin('');
+      setAccountError(null);
+      Alert.alert('Success', accountBiometric ? 'Biometric unlock enabled.' : 'Biometric unlock disabled.');
       return;
     }
 
@@ -546,6 +572,11 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       );
 
       if (res.success) {
+        if (isBiometricChanged && currentUser) {
+          if (accountBiometric) await BiometricService.enable(currentUser.uuid, BiometricScopes.app);
+          else await BiometricService.disable(currentUser.uuid, BiometricScopes.app);
+          setAccountBiometricInitial(accountBiometric);
+        }
         if (Platform.OS === 'web') {
           window.alert(`Success: ${res.message}`);
         } else {
@@ -597,10 +628,9 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       }
     }
 
-    const success = await createTab(tabName, tabDesc, isSensitive, tabPin);
+    const success = await createTab(tabName, tabDesc, isSensitive, tabPin, isSensitive && tabBiometric);
     if (success) {
-      setModalVisible(false);
-      setTabName(''); setTabDesc(''); setIsSensitive(false); setTabPin(''); setConfirmTabPin('');
+      closeCreateTab();
     } else {
       Alert.alert('Error', 'Failed to create tab. Ensure sensitive tabs have a 4-digit PIN.');
     }
@@ -614,30 +644,56 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     setTimeout(() => { isNavigatingRef.current = false; }, 500);
 
     if (tab.isSensitive === 1) {
-      setSelectedTab(tab);
-      setPinActionTarget('open');
-      setUnlockPin('');
-      setPinModalVisible(true);
+      requestTabPin(tab, 'open');
     } else {
       navigation.navigate('TabDetail', { tabId: tab.uuid, tabName: tab.name });
     }
   };
 
+  /** What happens once the tab's PIN is known, whether it was typed or handed back by a scan. */
+  const proceedWithTab = (tab: any, target: 'open' | 'edit' | 'delete', pin: string) => {
+    setPinModalVisible(false);
+    setUnlockPin('');
+    if (target === 'edit') {
+      openEditTabModal(tab, pin);
+    } else if (target === 'delete') {
+      showDeleteTabPrompt(tab);
+    } else {
+      navigation.navigate('TabDetail', { tabId: tab.uuid, tabName: tab.name, unlockPin: pin });
+    }
+  };
+
+  /**
+   * Biometrics first, the PIN box when that is off, cancelled or fails. The
+   * PIN a scan returns is still checked against the tab: one saved before the
+   * tab's PIN changed elsewhere (a restored backup) must not open it.
+   */
+  const tryTabBiometric = async (tab: any, target: 'open' | 'edit' | 'delete'): Promise<boolean> => {
+    const scope = BiometricScopes.tab(tab.uuid);
+    const verb = target === 'edit' ? 'edit' : target === 'delete' ? 'delete' : 'unlock';
+    const pin = await BiometricService.unlock(currentUser?.uuid, scope, `Verify to ${verb} ${tab.name}`);
+    if (!pin) return false;
+    if (!verifyTabPin(tab, pin)) {
+      await BiometricService.disable(currentUser?.uuid, scope);
+      return false;
+    }
+    proceedWithTab(tab, target, pin);
+    return true;
+  };
+
+  const requestTabPin = async (tab: any, target: 'open' | 'edit' | 'delete') => {
+    setSelectedTab(tab);
+    setPinActionTarget(target);
+    setUnlockPin('');
+    const enabled = await BiometricService.isEnabled(currentUser?.uuid, BiometricScopes.tab(tab.uuid));
+    setTabBiometricOn(enabled);
+    if (enabled && await tryTabBiometric(tab, target)) return;
+    setPinModalVisible(true);
+  };
+
   const handleUnlockTab = () => {
     if (selectedTab && verifyTabPin(selectedTab, unlockPin)) {
-      const currentSelected = selectedTab;
-      const currentTarget = pinActionTarget;
-      const pin = unlockPin;
-      setPinModalVisible(false);
-      setUnlockPin('');
-
-      if (currentTarget === 'edit') {
-        openEditTabModal(currentSelected);
-      } else if (currentTarget === 'delete') {
-        showDeleteTabPrompt(currentSelected);
-      } else {
-        navigation.navigate('TabDetail', { tabId: currentSelected.uuid, tabName: currentSelected.name, unlockPin: pin });
-      }
+      proceedWithTab(selectedTab, pinActionTarget, unlockPin);
     } else {
       Alert.alert('Error', 'Incorrect PIN');
     }
@@ -932,19 +988,13 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                     Tab PIN and Confirm Tab PIN do not match.
                   </Text>
                 )}
+                <BiometricToggle value={tabBiometric} onChange={setTabBiometric} />
               </>
             )}
 
             <View style={styles.modalActions}>
               <TouchableOpacity 
-                onPress={() => {
-                  setModalVisible(false);
-                  setTabName('');
-                  setTabDesc('');
-                  setIsSensitive(false);
-                  setTabPin('');
-                  setConfirmTabPin('');
-                }} 
+                onPress={closeCreateTab} 
                 style={[styles.button, { backgroundColor: AppTheme.colors.border }]}
               >
                 <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
@@ -1031,20 +1081,18 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                     )}
                   </>
                 )}
+                {/* Needs a PIN to hand back: the one verified on the way in, or a new one */}
+                <BiometricToggle
+                  value={editTabBiometric}
+                  onChange={setEditTabBiometric}
+                  disabled={!editKnownPin && editTabPin.trim().length !== 4}
+                />
               </>
             )}
 
             <View style={styles.modalActions}>
               <TouchableOpacity 
-                onPress={() => {
-                  setEditModalVisible(false);
-                  setEditTabId('');
-                  setEditTabName('');
-                  setEditTabDesc('');
-                  setEditIsSensitive(false);
-                  setEditTabPin('');
-                  setEditConfirmTabPin('');
-                }} 
+                onPress={closeEditTab} 
                 style={[styles.button, { backgroundColor: AppTheme.colors.border }]}
               >
                 <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
@@ -1087,6 +1135,9 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
               secureTextEntry 
               maxLength={4} 
             />
+            {tabBiometricOn && selectedTab && (
+              <BiometricUnlockButton onPress={() => tryTabBiometric(selectedTab, pinActionTarget)} style={{ marginBottom: 12 }} />
+            )}
             <View style={styles.modalActions}>
               <TouchableOpacity onPress={() => { setPinModalVisible(false); setUnlockPin(''); }} style={[styles.button, { backgroundColor: AppTheme.colors.border }]}>
                 <Text style={[styles.buttonText, { color: AppTheme.colors.primary }]}>Cancel</Text>
@@ -1769,6 +1820,12 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                   )}
                 </>
               )}
+
+              <BiometricToggle
+                value={accountBiometric}
+                onChange={(on) => { setAccountError(null); setAccountBiometric(on); }}
+                style={{ marginTop: 14, marginBottom: 0 }}
+              />
 
               {/* Divider */}
               <View style={{ height: 1, backgroundColor: AppTheme.colors.border, marginVertical: 14 }} />

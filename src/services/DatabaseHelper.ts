@@ -3,12 +3,23 @@ import { User, Tab, Document, DiaryEntry, Note } from '../models';
 
 export class DatabaseHelper {
   private static db: SQLite.SQLiteDatabase | null = null;
+  private static opening: Promise<SQLite.SQLiteDatabase> | null = null;
 
   static async getDatabase(): Promise<SQLite.SQLiteDatabase> {
     if (this.db) return this.db;
-    this.db = await SQLite.openDatabaseAsync('ewallet_vault.db');
-    await this.initDB(this.db);
-    return this.db;
+    // Calls made while the first open is still in flight share it. Caching only
+    // the finished handle let concurrent callers each open their own connection,
+    // which on the web - where opening starts a worker - finished out of order.
+    if (!this.opening) {
+      this.opening = (async () => {
+        const db = await SQLite.openDatabaseAsync('ewallet_vault.db');
+        await this.initDB(db);
+        this.db = db;
+        return db;
+      })();
+      this.opening.catch(() => { this.opening = null; });
+    }
+    return this.opening;
   }
 
   private static async initDB(db: SQLite.SQLiteDatabase) {
@@ -284,12 +295,14 @@ export class DatabaseHelper {
   }
 
   // --- NOTE OPERATIONS ---
-  static async createNote(note: Note): Promise<void> {
+  /** Returns the new note's id. */
+  static async createNote(note: Note): Promise<number> {
     const db = await this.getDatabase();
-    await db.runAsync(
+    const result = await db.runAsync(
       'INSERT INTO notes (userId, title, encryptedContent, isSensitive, notePinHash, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [note.userId, note.title, note.encryptedContent, note.isSensitive, note.notePinHash || null, note.createdAt, note.updatedAt]
     );
+    return result.lastInsertRowId;
   }
 
   static async getNotes(userId: string): Promise<Note[]> {

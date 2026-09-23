@@ -15,6 +15,7 @@ import {
   KeyboardAvoidingView,
   StyleSheet,
   ActivityIndicator,
+  AppState,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useLockerStore } from '../store/useLockerStore';
@@ -23,6 +24,8 @@ import { useTextHistory } from '../hooks/useTextHistory';
 import ColorPickerModal from './ColorPickerModal';
 import ModalCloseButton from './ModalCloseButton';
 import { DiaryPinMode } from '../models';
+import BiometricToggle, { BiometricUnlockButton } from './BiometricToggle';
+import { BiometricService, BiometricScopes } from '../services/BiometricService';
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -71,7 +74,7 @@ interface DiaryViewProps {
 export default function DiaryView({ isMobile }: DiaryViewProps) {
   const {
     diaryDates, loadDiaryDates, getDiaryEntry, saveDiaryEntry,
-    diaryPinMode, diaryPinLoaded, loadDiaryPinMode, setDiaryPin, verifyDiaryPin,
+    currentUser, diaryPinMode, diaryPinLoaded, loadDiaryPinMode, setDiaryPin, setDiaryBiometric, verifyDiaryPin,
     diaryLined, loadDiaryLined, setDiaryLined,
     themeVersion, diaryPageColor, customDiaryPageColor, loadPageColors, setDiaryPageColor, setCustomDiaryPageColor,
   } = useLockerStore();
@@ -134,6 +137,10 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
   // Which option the radios show. It is a draft: 'app' applies at once because
   // it needs no PIN, while 'custom' waits for the PIN to be entered.
   const [pinChoice, setPinChoice] = useState<DiaryPinMode>('none');
+  // Whether a scan may stand in for the diary PIN on this device
+  const [biometricOn, setBiometricOn] = useState(false);
+  // One automatic prompt per lock; after that the button brings it back
+  const autoPromptedRef = useRef(false);
 
   const year = fromDateKey(currentDate).getFullYear();
   const writtenDates = useMemo(() => new Set(diaryDates), [diaryDates]);
@@ -173,6 +180,43 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
   useEffect(() => {
     if (diaryPinLoaded && diaryPinMode === 'none') setIsUnlocked(true);
   }, [diaryPinLoaded, diaryPinMode]);
+
+  useEffect(() => {
+    let alive = true;
+    BiometricService.isEnabled(currentUser?.uuid, BiometricScopes.diary).then(on => { if (alive) setBiometricOn(on); });
+    return () => { alive = false; };
+  }, [currentUser?.uuid, diaryPinMode]);
+
+  const tryBiometricUnlock = useCallback(async () => {
+    const ok = await BiometricService.unlock(currentUser?.uuid, BiometricScopes.diary, 'Unlock your diary');
+    if (ok) {
+      setPinInput('');
+      setPinError('');
+      setIsUnlocked(true);
+    }
+  }, [currentUser?.uuid]);
+
+  // Biometrics first, as soon as the locked diary is on screen and the app is
+  // in front - the system will not show the prompt from the background
+  useEffect(() => {
+    if (!diaryPinLoaded || diaryPinMode === 'none' || isUnlocked || !biometricOn || autoPromptedRef.current) return;
+    const fire = () => {
+      if (autoPromptedRef.current) return;
+      autoPromptedRef.current = true;
+      tryBiometricUnlock();
+    };
+    if (AppState.currentState === 'active') {
+      fire();
+      return;
+    }
+    const sub = AppState.addEventListener('change', next => {
+      if (next === 'active') {
+        sub.remove();
+        fire();
+      }
+    });
+    return () => sub.remove();
+  }, [diaryPinLoaded, diaryPinMode, isUnlocked, biometricOn, tryBiometricUnlock]);
 
   /** Persists the page being left before loading another. */
   const persistCurrent = useCallback(async () => {
@@ -371,7 +415,8 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
         return;
       }
     }
-    await setDiaryPin(mode, mode === 'custom' ? newPin : undefined);
+    await setDiaryPin(mode, mode === 'custom' ? newPin : undefined, mode !== 'none' && biometricOn);
+    if (mode === 'none') setBiometricOn(false);
     setPinChoice(mode);
     setManageVisible(false);
     setNewPin('');
@@ -987,6 +1032,16 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
             </TouchableOpacity>
           </View>
 
+          {/* Applies at once while the diary has a PIN; otherwise it goes on with the PIN chosen next */}
+          <BiometricToggle
+            value={biometricOn}
+            onChange={async (on) => {
+              setBiometricOn(on);
+              if (diaryPinMode !== 'none') await setDiaryBiometric(on);
+            }}
+            style={{ marginTop: 4 }}
+          />
+
           {!!manageError && (
             <Text style={{ color: AppTheme.colors.error, fontSize: 12, fontWeight: '600', marginBottom: 10 }}>
               {manageError}
@@ -1122,6 +1177,9 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
             Unlock Diary
           </Text>
         </TouchableOpacity>
+        {biometricOn && (
+          <BiometricUnlockButton onPress={tryBiometricUnlock} style={{ width: '100%', maxWidth: 280, marginTop: 10 }} />
+        )}
       </View>
     );
   }
