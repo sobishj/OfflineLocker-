@@ -1322,7 +1322,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
               <Text style={styles.helpHeading}>What can I use it for?</Text>
               {[
-                'Store Aadhaar, PAN, Passport, and Driving License details.',
+                'Store passport, national ID, driving licence, and tax ID details.',
                 'Save bank account and card information securely.',
                 'Keep insurance and medical records in one place.',
                 'Store Wi-Fi passwords, recovery codes, and private notes.',
