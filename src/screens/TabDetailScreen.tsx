@@ -2243,12 +2243,10 @@ export default function TabDetailScreen({ route, navigation }: any) {
                       paddingHorizontal: isMobile ? 7 : 8,
                       borderRadius: isMobile ? 12 : 12,
                       marginBottom: isMobile ? 8 : 8,
-                      // The expiry state is the more urgent signal, so it keeps the
-                      // border even while the row is selected
-                      borderWidth: expiryStyle ? 2 : 1,
-                      borderColor: expiryStyle
-                        ? expiryStyle.border
-                        : (isSelected ? AppTheme.colors.primaryBorder : '#e2e8f0'),
+                      // Expiry shows through the background tint alone; the border
+                      // is reserved for marking the selected row
+                      borderWidth: isSelected ? 2 : 1,
+                      borderColor: isSelected ? AppTheme.colors.primaryBorder : '#e2e8f0',
                       flexDirection: 'row',
                       alignItems: 'center',
                       width: '100%',
