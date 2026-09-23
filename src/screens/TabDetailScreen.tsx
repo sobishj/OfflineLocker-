@@ -714,6 +714,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
   type DocSortOption = 'newest' | 'oldest' | 'name_asc' | 'name_desc';
   const [sortOption, setSortOption] = useState<DocSortOption>('newest');
   const [sortModalVisible, setSortModalVisible] = useState(false);
+  const [docSearch, setDocSearch] = useState('');
 
   useEffect(() => {
     const loadDocSortPref = async () => {
@@ -766,6 +767,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
     setPreviewDataArray([]);
     setPreviewLoading(false);
     decryptionCacheRef.current.clear();
+    setDocSearch('');
     setLoading(true);
 
     const fetchDocs = async () => {
@@ -1492,6 +1494,18 @@ export default function TabDetailScreen({ route, navigation }: any) {
     return map;
   }, [activeDocuments, legacyMeta]);
 
+  // Matches on the title and the document number from the stored summary;
+  // file contents stay encrypted, so they are not searched.
+  const visibleDocuments = useMemo(() => {
+    const term = docSearch.trim().toLowerCase();
+    if (!term) return sortedDocuments;
+    return sortedDocuments.filter(doc => {
+      if ((doc.title || '').toLowerCase().includes(term)) return true;
+      const number = doc.id != null ? metaByDocId.get(doc.id)?.number : '';
+      return !!number && number.toLowerCase().includes(term);
+    });
+  }, [sortedDocuments, docSearch, metaByDocId]);
+
   /**
    * Expiry state per document, taken from the summary. This used to decrypt
    * every document in the tab, payload and all, which is what made opening a
@@ -2212,6 +2226,34 @@ export default function TabDetailScreen({ route, navigation }: any) {
             backgroundColor: '#ffffff',
             flexDirection: 'column',
           }}>
+            <View style={{ paddingHorizontal: isMobile ? 8 : 6, paddingTop: isMobile ? 8 : 6 }}>
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  backgroundColor: '#f8fafc',
+                  borderWidth: 1,
+                  borderColor: '#e2e8f0',
+                  borderRadius: 10,
+                  paddingHorizontal: 8,
+                }}
+              >
+                <Ionicons name="search" size={isMobile ? 13 : 15} color="#94a3b8" />
+                <TextInput
+                  style={{ flex: 1, minWidth: 0, paddingVertical: isMobile ? 7 : 9, paddingHorizontal: 6, fontSize: isMobile ? 12 : 13, color: AppTheme.colors.text }}
+                  placeholder="Search files"
+                  placeholderTextColor="#94a3b8"
+                  value={docSearch}
+                  onChangeText={setDocSearch}
+                />
+                {!!docSearch && (
+                  <TouchableOpacity onPress={() => setDocSearch('')} style={{ padding: 4 }}>
+                    <Ionicons name="close-circle" size={isMobile ? 13 : 15} color="#94a3b8" />
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+
             <View style={{
               paddingHorizontal: isMobile ? 8 : 6,
               paddingVertical: isMobile ? 8 : 6,
@@ -2246,7 +2288,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
             </View>
 
             <FlatList
-              data={sortedDocuments}
+              data={visibleDocuments}
+              keyboardShouldPersistTaps="handled"
               keyExtractor={item => item.id!.toString()}
               // Windowing: without these a vault of a few hundred documents
               // builds every row up front, on the thread drawing the screen
@@ -2424,10 +2467,10 @@ export default function TabDetailScreen({ route, navigation }: any) {
                     <Ionicons name="folder-open-outline" size={isMobile ? 22 : 26} color="#94a3b8" />
                   </View>
                   <Text style={{ color: AppTheme.colors.text, fontSize: isMobile ? 12 : 13.5, fontWeight: '700', textAlign: 'center' }}>
-                    No files yet
+                    {docSearch.trim() ? 'No matching files' : 'No files yet'}
                   </Text>
                   <Text style={{ color: AppTheme.colors.textSecondary, fontSize: isMobile ? 10.5 : 12, textAlign: 'center', marginTop: 5, lineHeight: isMobile ? 14.5 : 17 }}>
-                    The added file names will be listed here.
+                    {docSearch.trim() ? 'Try a different search term.' : 'The added file names will be listed here.'}
                   </Text>
                 </View>
               }
