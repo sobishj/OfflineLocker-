@@ -316,7 +316,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       return;
     }
 
-    if (editIsSensitive && editTabPin.trim()) {
+    if (editIsSensitive && (editTabPin.trim() || editConfirmTabPin.trim())) {
       if (!new RegExp(`^\\d{${NEW_PIN_LENGTH}}$`).test(editTabPin.trim())) {
         Alert.alert('Invalid PIN', `Tab PIN must be exactly ${NEW_PIN_LENGTH} digits.`);
         return;
@@ -1069,28 +1069,24 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                   secureTextEntry
                   maxLength={NEW_PIN_LENGTH}
                 />
-                {editTabPin.length > 0 && (
-                  <>
-                    <TextInput
-                      style={[
-                        styles.input, 
-                        { letterSpacing: editConfirmTabPin ? 6 : 0 },
-                        editTabPin.length === NEW_PIN_LENGTH && editConfirmTabPin.length === NEW_PIN_LENGTH && editTabPin !== editConfirmTabPin && { borderColor: AppTheme.colors.error, borderWidth: 1.5 }
-                      ]}
-                      placeholder={`Confirm New ${NEW_PIN_LENGTH}-Digit Tab PIN`}
-                      placeholderTextColor={AppTheme.colors.textSecondary}
-                      value={editConfirmTabPin}
-                      onChangeText={(t) => setEditConfirmTabPin(t.replace(/[^0-9]/g, '').slice(0, NEW_PIN_LENGTH))}
-                      keyboardType="numeric"
-                      secureTextEntry
-                      maxLength={NEW_PIN_LENGTH}
-                    />
-                    {editTabPin.length === NEW_PIN_LENGTH && editConfirmTabPin.length === NEW_PIN_LENGTH && editTabPin !== editConfirmTabPin && (
-                      <Text style={{ color: AppTheme.colors.error, fontSize: 12, marginTop: -8, marginBottom: 8, fontWeight: '600' }}>
-                        New Tab PIN and Confirm Tab PIN do not match.
-                      </Text>
-                    )}
-                  </>
+                <TextInput
+                  style={[
+                    styles.input,
+                    { letterSpacing: editConfirmTabPin ? 6 : 0 },
+                    editTabPin.length === NEW_PIN_LENGTH && editConfirmTabPin.length === NEW_PIN_LENGTH && editTabPin !== editConfirmTabPin && { borderColor: AppTheme.colors.error, borderWidth: 1.5 }
+                  ]}
+                  placeholder={`Confirm New ${NEW_PIN_LENGTH}-Digit Tab PIN`}
+                  placeholderTextColor={AppTheme.colors.textSecondary}
+                  value={editConfirmTabPin}
+                  onChangeText={(t) => setEditConfirmTabPin(t.replace(/[^0-9]/g, '').slice(0, NEW_PIN_LENGTH))}
+                  keyboardType="numeric"
+                  secureTextEntry
+                  maxLength={NEW_PIN_LENGTH}
+                />
+                {editTabPin.length === NEW_PIN_LENGTH && editConfirmTabPin.length === NEW_PIN_LENGTH && editTabPin !== editConfirmTabPin && (
+                  <Text style={{ color: AppTheme.colors.error, fontSize: 12, marginTop: -8, marginBottom: 8, fontWeight: '600' }}>
+                    New Tab PIN and Confirm Tab PIN do not match.
+                  </Text>
                 )}
                 {/* Needs a PIN to hand back: the one verified on the way in, or a new one */}
                 <BiometricToggle
