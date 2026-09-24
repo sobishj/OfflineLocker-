@@ -4,12 +4,15 @@ import { Ionicons } from '@expo/vector-icons';
 import { AppTheme } from '../theme/AppTheme';
 import { BiometricService, BiometricSupport } from '../services/BiometricService';
 
-/** The device's sensor, read once. Unavailable on web and on phones with nothing enrolled. */
-export const useBiometricSupport = (): BiometricSupport | null => {
+/**
+ * The device's sensor. Unavailable on web and on phones with nothing enrolled.
+ * `refresh` reads it again, so a fingerprint enrolled meanwhile shows up.
+ */
+export const useBiometricSupport = (refresh = false): BiometricSupport | null => {
   const [support, setSupport] = useState<BiometricSupport | null>(null);
   useEffect(() => {
     let alive = true;
-    BiometricService.getSupport().then(s => { if (alive) setSupport(s); });
+    BiometricService.getSupport(refresh).then(s => { if (alive) setSupport(s); });
     return () => { alive = false; };
   }, []);
   return support;
@@ -25,13 +28,19 @@ interface BiometricToggleProps {
 /**
  * The "Enable biometric unlock" checkbox shown next to every PIN a user sets.
  * Ticking it runs the scan once, so it is never switched on for a sensor that
- * does not recognise the person holding the phone. Hidden where there is no
- * sensor, which leaves the PIN-only forms exactly as they were.
+ * does not recognise the person holding the phone. Where the sensor cannot be
+ * used it stays on screen, greyed out, saying why. Hidden only on web.
  */
-export default function BiometricToggle({ value, onChange, style, disabled }: BiometricToggleProps) {
-  const support = useBiometricSupport();
+export default function BiometricToggle({ value, onChange, style, disabled: noPin }: BiometricToggleProps) {
+  const support = useBiometricSupport(true);
   const [busy, setBusy] = useState(false);
-  if (!support?.available) return null;
+  const disabled = noPin || !support?.available;
+  // Without a usable PIN there is nothing to fall back on, so it cannot stay ticked.
+  // A sensor that is missing for now only shows unticked; the saved choice is left alone.
+  useEffect(() => {
+    if (noPin && value) onChange(false);
+  }, [noPin, value]);
+  if (!support || (!support.available && !support.reason)) return null;
 
   const toggle = async () => {
     if (busy || disabled) return;
@@ -54,11 +63,15 @@ export default function BiometricToggle({ value, onChange, style, disabled }: Bi
       disabled={disabled}
       style={[{ flexDirection: 'row', alignItems: 'center', marginBottom: 12, opacity: disabled ? 0.5 : 1 }, style]}
     >
-      <Ionicons name={value ? 'checkbox' : 'square-outline'} size={22} color={AppTheme.colors.primary} />
+      <Ionicons name={value && support.available ? 'checkbox' : 'square-outline'} size={22} color={AppTheme.colors.primary} />
       <View style={{ marginLeft: 10, flex: 1 }}>
         <Text style={{ fontSize: 14, fontWeight: '600', color: AppTheme.colors.text }}>Enable biometric unlock</Text>
         <Text style={{ fontSize: 11.5, color: AppTheme.colors.textSecondary, marginTop: 1 }}>
-          Unlock with {support.label} first; the PIN still works as a fallback.
+          {!support.available
+            ? support.reason
+            : noPin
+            ? 'Enter and confirm a PIN first to turn this on.'
+            : `Unlock with ${support.label} first; the PIN still works as a fallback.`}
         </Text>
       </View>
       <Ionicons name={support.icon} size={20} color={AppTheme.colors.textSecondary} style={{ marginLeft: 8 }} />

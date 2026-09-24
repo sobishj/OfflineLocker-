@@ -257,7 +257,12 @@ export default function AuthScreen() {
         )}
 
         {isRegisterMode && (
-          <BiometricToggle value={registerBiometric} onChange={setRegisterBiometric} style={{ alignSelf: 'stretch', marginBottom: 16 }} />
+          <BiometricToggle
+            value={registerBiometric}
+            onChange={setRegisterBiometric}
+            disabled={pin.length !== pinLen || pin !== confirmPin}
+            style={{ alignSelf: 'stretch', marginBottom: 16 }}
+          />
         )}
 
         {errorMessage ? <Text style={styles.error}>{errorMessage}</Text> : null}

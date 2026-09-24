@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { withoutAutoLock } from './AutoLockService';
 
 /**
@@ -32,9 +33,13 @@ export interface BiometricSupport {
   /** What to call it in a sentence: "Face ID", "Touch ID", "fingerprint", "biometrics". */
   label: string;
   icon: 'scan-outline' | 'finger-print';
+  /** Why it cannot be used on this phone; set only when `available` is false. */
+  reason?: string;
 }
 
 const UNSUPPORTED: BiometricSupport = { available: false, label: 'biometrics', icon: 'finger-print' };
+
+const unavailable = (reason: string): BiometricSupport => ({ ...UNSUPPORTED, reason });
 
 const STORE_OPTIONS: SecureStore.SecureStoreOptions = {
   keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
@@ -76,13 +81,22 @@ export const BiometricService = {
     if (!isNative) return Promise.resolve(UNSUPPORTED);
     if (supportCache && !refresh) return supportCache;
     supportCache = (async () => {
+      // Expo Go cannot carry this app's Face ID permission, so iOS refuses the scan there
+      if (Platform.OS === 'ios' && Constants.executionEnvironment === ExecutionEnvironment.StoreClient) {
+        return unavailable('Face ID works in the installed OfflineLocker app, not in Expo Go.');
+      }
       try {
         const [hasHardware, isEnrolled, types] = await Promise.all([
           LocalAuthentication.hasHardwareAsync(),
           LocalAuthentication.isEnrolledAsync(),
           LocalAuthentication.supportedAuthenticationTypesAsync(),
         ]);
-        if (!hasHardware || !isEnrolled) return UNSUPPORTED;
+        if (!hasHardware) return unavailable('This phone has no fingerprint or face sensor.');
+        if (!isEnrolled) {
+          return unavailable(Platform.OS === 'ios'
+            ? 'Set up Face ID or Touch ID in iPhone Settings to use this.'
+            : 'Add a fingerprint or face in your phone\'s Settings to use this.');
+        }
         const face = types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION);
         const finger = types.includes(LocalAuthentication.AuthenticationType.FINGERPRINT);
         if (Platform.OS === 'ios') {

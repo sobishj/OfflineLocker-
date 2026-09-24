@@ -995,7 +995,11 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                     Tab PIN and Confirm Tab PIN do not match.
                   </Text>
                 )}
-                <BiometricToggle value={tabBiometric} onChange={setTabBiometric} />
+                <BiometricToggle
+                  value={tabBiometric}
+                  onChange={setTabBiometric}
+                  disabled={tabPin.length !== NEW_PIN_LENGTH || tabPin !== confirmTabPin}
+                />
               </>
             )}
 
@@ -1092,7 +1096,9 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 <BiometricToggle
                   value={editTabBiometric}
                   onChange={setEditTabBiometric}
-                  disabled={!editKnownPin && editTabPin.trim().length !== NEW_PIN_LENGTH}
+                  disabled={editTabPin
+                    ? editTabPin.length !== NEW_PIN_LENGTH || editTabPin !== editConfirmTabPin
+                    : !editKnownPin}
                 />
               </>
             )}

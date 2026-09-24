@@ -605,7 +605,13 @@ export default function NotesView({ isMobile }: NotesViewProps) {
                       Note PIN and Confirm PIN do not match.
                     </Text>
                   )}
-                  <BiometricToggle value={draftBiometric} onChange={setDraftBiometric} />
+                  <BiometricToggle
+                    value={draftBiometric}
+                    onChange={setDraftBiometric}
+                    disabled={draftPin
+                      ? draftPin.length !== NEW_PIN_LENGTH || draftPin !== draftConfirmPin
+                      : !detailsNote?.notePinHash}
+                  />
                 </>
               )}
 

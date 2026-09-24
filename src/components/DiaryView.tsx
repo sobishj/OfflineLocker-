@@ -1073,6 +1073,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
               setBiometricOn(on);
               if (diaryPinMode !== 'none') await setDiaryBiometric(on);
             }}
+            disabled={diaryPinMode === 'none' && (newPin.length !== NEW_PIN_LENGTH || newPin !== confirmPin)}
             style={{ marginTop: 4 }}
           />
 
