@@ -715,96 +715,97 @@ export default function NotesView({ isMobile }: NotesViewProps) {
             autoFocus
           />
         </View>
-      </Modal>
 
-      {/* HOW TO SHARE THE OPEN NOTE */}
-      <Modal
-        visible={shareChoiceVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShareChoiceVisible(false)}
-        onDismiss={() => {
-          const asPdf = pendingShareRef.current;
-          pendingShareRef.current = null;
-          if (asPdf !== null) shareWriterNote(asPdf);
-        }}
-      >
-        <View style={{ flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'center', padding: 18 }}>
-          <View style={{ backgroundColor: '#ffffff', borderRadius: 18, padding: 18, maxHeight: '90%', maxWidth: 520, width: '100%', alignSelf: 'center' }}>
-            <ScrollView contentContainerStyle={{ paddingBottom: 2 }} showsVerticalScrollIndicator={false}>
-            <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-              <Text style={{ fontSize: 17, fontWeight: '800', color: AppTheme.colors.text, marginBottom: 4, flex: 1 }} numberOfLines={2}>
-                Share note
+        {/* HOW TO SHARE THE OPEN NOTE. Nested in the writer: iOS will not present a
+          sibling modal on top of one that is already open. */}
+        <Modal
+          visible={shareChoiceVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShareChoiceVisible(false)}
+          onDismiss={() => {
+            const asPdf = pendingShareRef.current;
+            pendingShareRef.current = null;
+            if (asPdf !== null) shareWriterNote(asPdf);
+          }}
+        >
+          <View style={{ flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'center', padding: 18 }}>
+            <View style={{ backgroundColor: '#ffffff', borderRadius: 18, padding: 18, maxHeight: '90%', maxWidth: 520, width: '100%', alignSelf: 'center' }}>
+              <ScrollView contentContainerStyle={{ paddingBottom: 2 }} showsVerticalScrollIndicator={false}>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+                <Text style={{ fontSize: 17, fontWeight: '800', color: AppTheme.colors.text, marginBottom: 4, flex: 1 }} numberOfLines={2}>
+                  Share note
+                </Text>
+                <ModalCloseButton onPress={() => setShareChoiceVisible(false)} />
+              </View>
+              <Text style={{ fontSize: 12, color: AppTheme.colors.textSecondary, marginBottom: 14 }} numberOfLines={2}>
+                {writerNote?.title}
               </Text>
-              <ModalCloseButton onPress={() => setShareChoiceVisible(false)} />
-            </View>
-            <Text style={{ fontSize: 12, color: AppTheme.colors.textSecondary, marginBottom: 14 }} numberOfLines={2}>
-              {writerNote?.title}
-            </Text>
 
-            {[
-              {
-                key: 'pdf',
-                icon: 'document-text-outline' as const,
-                title: 'As a PDF',
-                subtitle: 'Reads the same anywhere',
-                asPdf: true,
-              },
-              {
-                key: 'text',
-                icon: 'text-outline' as const,
-                title: 'As plain text',
-                subtitle: 'A .txt file anything can open',
-                asPdf: false,
-              },
-            ].map(option => (
+              {[
+                {
+                  key: 'pdf',
+                  icon: 'document-text-outline' as const,
+                  title: 'As a PDF',
+                  subtitle: 'Reads the same anywhere',
+                  asPdf: true,
+                },
+                {
+                  key: 'text',
+                  icon: 'text-outline' as const,
+                  title: 'As plain text',
+                  subtitle: 'A .txt file anything can open',
+                  asPdf: false,
+                },
+              ].map(option => (
+                <TouchableOpacity
+                  key={option.key}
+                  onPress={() => {
+                    setShareChoiceVisible(false);
+                    if (Platform.OS === 'ios') pendingShareRef.current = option.asPdf;
+                    else shareWriterNote(option.asPdf);
+                  }}
+                  activeOpacity={0.7}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    padding: 13,
+                    borderRadius: 12,
+                    borderWidth: 1,
+                    borderColor: '#e2e8f0',
+                    backgroundColor: '#f8fafc',
+                    marginBottom: 10,
+                  }}
+                >
+                  <View style={{
+                    width: 34,
+                    height: 34,
+                    borderRadius: 17,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor: AppTheme.colors.primaryLight,
+                    marginRight: 11,
+                  }}>
+                    <Ionicons name={option.icon} size={18} color={AppTheme.colors.primary} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 14, fontWeight: '700', color: AppTheme.colors.text }}>{option.title}</Text>
+                    <Text style={{ fontSize: 11.5, color: AppTheme.colors.textSecondary, marginTop: 2 }}>{option.subtitle}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color={AppTheme.colors.textMuted} />
+                </TouchableOpacity>
+              ))}
+
               <TouchableOpacity
-                key={option.key}
-                onPress={() => {
-                  setShareChoiceVisible(false);
-                  if (Platform.OS === 'ios') pendingShareRef.current = option.asPdf;
-                  else shareWriterNote(option.asPdf);
-                }}
-                activeOpacity={0.7}
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  padding: 13,
-                  borderRadius: 12,
-                  borderWidth: 1,
-                  borderColor: '#e2e8f0',
-                  backgroundColor: '#f8fafc',
-                  marginBottom: 10,
-                }}
+                onPress={() => setShareChoiceVisible(false)}
+                style={{ paddingVertical: 12, alignItems: 'center' }}
               >
-                <View style={{
-                  width: 34,
-                  height: 34,
-                  borderRadius: 17,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  backgroundColor: AppTheme.colors.primaryLight,
-                  marginRight: 11,
-                }}>
-                  <Ionicons name={option.icon} size={18} color={AppTheme.colors.primary} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 14, fontWeight: '700', color: AppTheme.colors.text }}>{option.title}</Text>
-                  <Text style={{ fontSize: 11.5, color: AppTheme.colors.textSecondary, marginTop: 2 }}>{option.subtitle}</Text>
-                </View>
-                <Ionicons name="chevron-forward" size={18} color={AppTheme.colors.textMuted} />
+                <Text style={{ color: AppTheme.colors.primary, fontWeight: '700', fontSize: 13 }}>Cancel</Text>
               </TouchableOpacity>
-            ))}
-
-            <TouchableOpacity
-              onPress={() => setShareChoiceVisible(false)}
-              style={{ paddingVertical: 12, alignItems: 'center' }}
-            >
-              <Text style={{ color: AppTheme.colors.primary, fontWeight: '700', fontSize: 13 }}>Cancel</Text>
-            </TouchableOpacity>
-            </ScrollView>
+              </ScrollView>
+            </View>
           </View>
-        </View>
+        </Modal>
       </Modal>
 
       {/* PAGE COLOUR */}
