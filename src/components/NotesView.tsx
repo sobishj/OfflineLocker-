@@ -63,6 +63,9 @@ export default function NotesView({ isMobile }: NotesViewProps) {
   const [paperVisible, setPaperVisible] = useState(false);
   const [paperPickerVisible, setPaperPickerVisible] = useState(false);
   const [shareChoiceVisible, setShareChoiceVisible] = useState(false);
+  // iOS will not present the share sheet while the choice modal is still
+  // animating away, so the chosen format waits here for its onDismiss.
+  const pendingShareRef = useRef<boolean | null>(null);
   // Both pickers open from the writer while it may still hold the keyboard,
   // which would sit over them
   useEffect(() => {
@@ -720,6 +723,11 @@ export default function NotesView({ isMobile }: NotesViewProps) {
         transparent
         animationType="fade"
         onRequestClose={() => setShareChoiceVisible(false)}
+        onDismiss={() => {
+          const asPdf = pendingShareRef.current;
+          pendingShareRef.current = null;
+          if (asPdf !== null) shareWriterNote(asPdf);
+        }}
       >
         <View style={{ flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'center', padding: 18 }}>
           <View style={{ backgroundColor: '#ffffff', borderRadius: 18, padding: 18, maxHeight: '90%', maxWidth: 520, width: '100%', alignSelf: 'center' }}>
@@ -752,7 +760,11 @@ export default function NotesView({ isMobile }: NotesViewProps) {
             ].map(option => (
               <TouchableOpacity
                 key={option.key}
-                onPress={() => { setShareChoiceVisible(false); shareWriterNote(option.asPdf); }}
+                onPress={() => {
+                  setShareChoiceVisible(false);
+                  if (Platform.OS === 'ios') pendingShareRef.current = option.asPdf;
+                  else shareWriterNote(option.asPdf);
+                }}
                 activeOpacity={0.7}
                 style={{
                   flexDirection: 'row',
