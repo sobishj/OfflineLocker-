@@ -160,6 +160,10 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
   const turn = useRef(new Animated.Value(0)).current;
   const drag = useRef(new Animated.Value(0)).current;
   const [isFlipping, setIsFlipping] = useState(false);
+  // True from the first sideways drag until the sheet has settled again
+  const [isDragging, setIsDragging] = useState(false);
+  // Bumped after every turn, so the sheet comes back as a fresh view lying flat
+  const [sheetKey, setSheetKey] = useState(0);
   // The page underneath, revealed as the top sheet swings across
   const [underText, setUnderText] = useState<string | null>(null);
   // Measured so exactly the right number of rules is drawn, which avoids
@@ -291,6 +295,20 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
    * Forwards, the sheet being left behind is the one that moves. Backwards,
    * the sheet swinging back down is the one arriving.
    */
+  /**
+   * Lays the sheet flat once a turn is over. The turn runs on the native side,
+   * so the props React last drew could still have it swung over and hidden;
+   * the next layout change - the keyboard coming up - put those back, the
+   * page vanished and taps fell through it until a keystroke redrew it.
+   */
+  const settleSheet = useCallback(() => {
+    turn.setValue(0);
+    drag.setValue(0);
+    setIsDragging(false);
+    setIsFlipping(false);
+    setSheetKey(k => k + 1);
+  }, [drag, turn]);
+
   const turnPage = useCallback(async (delta: number) => {
     if (isFlipping) return;
     Keyboard.dismiss();
@@ -327,8 +345,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
         setCurrentDate(target);
         arrive();
         setUnderText(null);
-        turn.setValue(0);
-        setIsFlipping(false);
+        settleSheet();
       });
     } else {
       setUnderText(pageTextRef.current);
@@ -343,10 +360,10 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
         useNativeDriver: true,
       }).start(() => {
         setUnderText(null);
-        setIsFlipping(false);
+        settleSheet();
       });
     }
-  }, [drag, getDiaryEntry, isFlipping, persistCurrent, turn]);
+  }, [drag, getDiaryEntry, isFlipping, persistCurrent, settleSheet, turn]);
 
   const panResponder = useMemo(
     () =>
@@ -355,6 +372,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
         // vertical scrolling and taps
         onMoveShouldSetPanResponder: (_evt, gesture) =>
           Math.abs(gesture.dx) > 24 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.5,
+        onPanResponderGrant: () => setIsDragging(true),
         onPanResponderMove: (_evt, gesture) => {
           // Only a small lift follows the finger; the sheet turns on release
           const progress = Math.max(-1, Math.min(1, gesture.dx / (screenWidth * 0.8)));
@@ -366,14 +384,27 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
           } else if (gesture.dx >= SWIPE_THRESHOLD) {
             turnPage(-1);
           } else {
-            Animated.spring(drag, { toValue: 0, useNativeDriver: true, bounciness: 4 }).start();
+            Animated.spring(drag, { toValue: 0, useNativeDriver: true, bounciness: 4 }).start(() => setIsDragging(false));
           }
+        },
+        // Something else took the gesture over: the sheet goes back flat
+        onPanResponderTerminate: () => {
+          Animated.spring(drag, { toValue: 0, useNativeDriver: true, bounciness: 4 }).start(() => setIsDragging(false));
         },
       }),
     [drag, screenWidth, turnPage]
   );
 
-  const pageStyle = {
+  // At rest the sheet is drawn with plain values rather than the animated
+  // ones, so nothing left over from a turn can be laid back over it
+  const restingPageStyle = {
+    transformOrigin: 'left center',
+    backfaceVisibility: 'hidden' as const,
+    transform: [{ perspective: 1400 }, { rotateY: '0deg' }, { translateX: 0 }],
+    shadowOpacity: 0.06,
+  };
+
+  const movingPageStyle = {
     // Anchored on the bound edge, so the sheet pivots rather than slides
     transformOrigin: 'left center',
     backfaceVisibility: 'hidden' as const,
@@ -399,6 +430,8 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
       outputRange: [0.06, 0.28, 0.06],
     }),
   };
+
+  const pageStyle = isFlipping || isDragging ? movingPageStyle : restingPageStyle;
 
   // The sheet and its border both follow the chosen paper, so a tinted page
   // does not sit inside a border left over from the cream one
@@ -826,6 +859,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
           )}
 
           <Animated.View
+            key={sheetKey}
             style={[styles.page, styles.pageFill, paperStyle, pageStyle]}
             onLayout={e => setPageHeight(e.nativeEvent.layout.height)}
           >
