@@ -2,7 +2,7 @@
   "expo": {
     "name": "OfflineLocker",
     "slug": "offlinelocker",
-    "version": "1.0.34",
+    "version": "1.0.35",
     "orientation": "portrait",
     "icon": "./assets/offlinelocker-icon.png",
     "userInterfaceStyle": "light",
@@ -16,7 +16,7 @@
       }
     },
     "android": {
-      "versionCode": 35,
+      "versionCode": 36,
       "adaptiveIcon": {
         "backgroundColor": "#0465FD",
         "foregroundImage": "./assets/android-icon-foreground.png",
