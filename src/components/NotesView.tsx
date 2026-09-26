@@ -358,6 +358,15 @@ export default function NotesView({ isMobile }: NotesViewProps) {
       Alert.alert('Name required', 'Please give the note a name.');
       return;
     }
+    // Names are compared as tabs and documents compare theirs; a note keeping
+    // its own name while being edited is not a clash
+    const isDuplicate = notes.some(
+      n => n.id !== detailsNote?.id && (n.title || '').trim().toLowerCase() === title.toLowerCase()
+    );
+    if (isDuplicate) {
+      Alert.alert('Duplicate Note Name', `A note named "${title}" already exists. Please choose a different name.`);
+      return;
+    }
     if (draftSensitive) {
       const needsPin = !detailsNote?.notePinHash || !!draftPin;
       if (needsPin) {
