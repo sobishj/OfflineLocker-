@@ -371,3 +371,59 @@ export const getPageColor = (key: string, customHex?: string): PageColor => {
   if (key === CUSTOM_KEY) return derivePageColor(customHex || DEFAULT_CUSTOM_PAPER);
   return PAGE_COLORS.find(c => c.key === key) || PAGE_COLORS[0];
 };
+
+/**
+ * A note's own paper. Stored as a preset key, or as the hex a custom paper was
+ * mixed to. Notes saved before papers were per note have none, and keep the
+ * paper that used to be shared by every note.
+ */
+export const resolveNotePageColor = (value: string | null | undefined, fallback: PageColor): PageColor => {
+  if (!value) return fallback;
+  if (isHexColor(value)) return derivePageColor(value);
+  return PAGE_COLORS.find(c => c.key === value) || fallback;
+};
+
+/** The colour a note's card wears in the list, set alongside its name. */
+export interface NoteTabColor {
+  key: string;
+  label: string;
+  /** The card's fill. */
+  card: string;
+  /** The card's border. */
+  border: string;
+  /** The stripe down the card's edge and the swatch in the picker. */
+  accent: string;
+}
+
+export const NOTE_TAB_COLORS: NoteTabColor[] = [
+  { key: 'default', label: 'Plain', card: '#ffffff', border: '#e2e8f0', accent: '#cbd5e1' },
+  { key: 'red', label: 'Red', card: '#fef2f2', border: '#fecaca', accent: '#ef4444' },
+  { key: 'orange', label: 'Orange', card: '#fff7ed', border: '#fed7aa', accent: '#f97316' },
+  { key: 'yellow', label: 'Yellow', card: '#fefce8', border: '#fde68a', accent: '#eab308' },
+  { key: 'green', label: 'Green', card: '#f0fdf4', border: '#bbf7d0', accent: '#22c55e' },
+  { key: 'teal', label: 'Teal', card: '#f0fdfa', border: '#99f6e4', accent: '#14b8a6' },
+  { key: 'blue', label: 'Blue', card: '#eff6ff', border: '#bfdbfe', accent: '#3b82f6' },
+  { key: 'purple', label: 'Purple', card: '#faf5ff', border: '#e9d5ff', accent: '#a855f7' },
+  { key: 'pink', label: 'Pink', card: '#fdf2f8', border: '#fbcfe8', accent: '#ec4899' },
+];
+
+export const DEFAULT_NOTE_TAB_COLOR_KEY = 'default';
+export const DEFAULT_CUSTOM_NOTE_TAB = '#0ea5e9';
+
+/** A custom card: the mixed colour as the stripe, with a pale wash of it behind. */
+export const deriveNoteTabColor = (hex: string): NoteTabColor => {
+  const { h, s, l } = hexToHsl(hex);
+  return {
+    key: CUSTOM_KEY,
+    label: 'Custom',
+    card: hslToHex(h, Math.min(s, 80), 96),
+    border: hslToHex(h, Math.min(s, 70), 84),
+    accent: hslToHex(h, s, l),
+  };
+};
+
+/** Stored as a preset key or a custom hex, as note papers are. */
+export const resolveNoteTabColor = (value: string | null | undefined): NoteTabColor => {
+  if (value && isHexColor(value)) return deriveNoteTabColor(value);
+  return NOTE_TAB_COLORS.find(c => c.key === value) || NOTE_TAB_COLORS[0];
+};

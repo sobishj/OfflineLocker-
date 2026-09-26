@@ -21,6 +21,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useLockerStore } from '../store/useLockerStore';
 import { AppTheme, getPageColor, PAGE_COLORS, CUSTOM_KEY, DEFAULT_PAGE_COLOR_KEY } from '../theme/AppTheme';
 import { useTextHistory } from '../hooks/useTextHistory';
+import { useKeyboardInset } from '../hooks/useKeyboardInset';
+import { useTextScrollbar } from '../hooks/useTextScrollbar';
 import ColorPickerModal from './ColorPickerModal';
 import ModalCloseButton from './ModalCloseButton';
 import { DiaryPinMode } from '../models';
@@ -163,6 +165,9 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
   // Measured so exactly the right number of rules is drawn, which avoids
   // needing overflow clipping on a sheet that is being rotated in 3D
   const [pageHeight, setPageHeight] = useState(0);
+  const pageInputRef = useRef<TextInput | null>(null);
+  const keyboard = useKeyboardInset(pageInputRef);
+  const scrollbar = useTextScrollbar();
 
   // The page writes itself to disk a moment after each keystroke, so a
   // deletion cannot be walked away from. This is what stands in for the Save
@@ -796,7 +801,15 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
       {renderSlidePanel()}
 
       {/* THE PAGE */}
-      <View style={{ flex: 1, paddingHorizontal: 12, paddingBottom: 10 }} {...panResponder.panHandlers}>
+      {/* Lifted clear of the keyboard, so the page shortens and scrolls
+          rather than the lines being written under it */}
+      <View
+        ref={keyboard.containerRef}
+        onLayout={keyboard.onLayout}
+        collapsable={false}
+        style={{ flex: 1, paddingHorizontal: 12, paddingBottom: 10 + keyboard.inset }}
+        {...panResponder.panHandlers}
+      >
         <View style={{ flex: 1 }}>
           {/* The binding stays put while the sheets turn through it */}
           <View style={styles.spiralColumn} pointerEvents="none">
@@ -817,21 +830,42 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
             onLayout={e => setPageHeight(e.nativeEvent.layout.height)}
           >
             {renderRules()}
-            <TextInput
-              style={[styles.pageInput, Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : null]}
-              placeholder={isLoadingPage ? '' : pageUnreadable ? 'This page could not be opened.' : 'Write about your day\u2026'}
-              placeholderTextColor="#b6b0a0"
-              value={pageText}
-              onChangeText={text => { history.record(text); setPageText(text); }}
-              onBlur={persistCurrent}
-              multiline
-              editable={!isFlipping && !pageUnreadable && !isLoadingPage}
-              scrollEnabled
-            />
+            <View style={{ flex: 1 }}>
+              <TextInput
+                ref={pageInputRef}
+                style={[styles.pageInput, Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : null]}
+                placeholder={isLoadingPage ? '' : pageUnreadable ? 'This page could not be opened.' : 'Write about your day\u2026'}
+                placeholderTextColor="#b6b0a0"
+                value={pageText}
+                onChangeText={text => { history.record(text); setPageText(text); }}
+                onBlur={persistCurrent}
+                multiline
+                editable={!isFlipping && !pageUnreadable && !isLoadingPage}
+                scrollEnabled
+                // A tap on the page raises the keyboard; the next one puts it away
+                {...keyboard.tapToggle}
+                {...scrollbar.inputProps}
+              />
+              {scrollbar.thumb && (
+                <View
+                  pointerEvents="none"
+                  style={{
+                    position: 'absolute',
+                    right: 2,
+                    width: 4,
+                    borderRadius: 2,
+                    backgroundColor: 'rgba(15,23,42,0.28)',
+                    top: scrollbar.thumb.top,
+                    height: scrollbar.thumb.height,
+                  }}
+                />
+              )}
+            </View>
           </Animated.View>
         </View>
 
-        <Text style={styles.hint}>Swipe left or right to turn the page</Text>
+        {/* Gives its line back to the page while the keyboard is up */}
+        {keyboard.inset === 0 && <Text style={styles.hint}>Swipe left or right to turn the page</Text>}
       </View>
     </View>
   );

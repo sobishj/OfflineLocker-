@@ -18,7 +18,7 @@
     "android": {
       "versionCode": 34,
       "adaptiveIcon": {
-        "backgroundColor": "#0284C7",
+        "backgroundColor": "#0465FD",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png"
       },

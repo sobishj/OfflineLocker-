@@ -57,6 +57,10 @@ export interface Note {
   /** 0 or 1 in SQLite, mirroring how Tab stores the same flag. */
   isSensitive: number;
   notePinHash?: string | null;
+  /** The paper inside the note: a page-colour key or a custom hex. None keeps the old shared paper. */
+  pageColor?: string | null;
+  /** The note's card in the list: a tab-colour key or a custom hex. */
+  tabColor?: string | null;
   createdAt: string;
   updatedAt: string;
   /** The text, decrypted when the list loads. Never written to the database. */

@@ -109,6 +109,8 @@ interface LockerState {
   addNote: (title: string, plainContent: string, isSensitive: boolean, notePin?: string, biometric?: boolean) => Promise<number | null>;
   /** `biometric` left undefined keeps the note's current setting. */
   updateNote: (id: number, title: string, plainContent: string, isSensitive: boolean, notePin?: string, biometric?: boolean) => Promise<void>;
+  /** Either colour left undefined keeps what the note has. */
+  setNoteColors: (id: number, colors: { pageColor?: string | null; tabColor?: string | null }) => Promise<void>;
   deleteNote: (id: number) => Promise<void>;
   decryptNote: (note: Note) => string;
   verifyNotePin: (note: Note, candidatePin: string) => boolean;
@@ -797,6 +799,19 @@ export const useLockerStore = create<LockerState>((set, get) => {
       await BiometricService.enable(currentUser.uuid, BiometricScopes.note(id));
     }
     await loadNotes();
+  },
+
+  setNoteColors: async (id, colors) => {
+    const existing = get().notes.find(n => n.id === id);
+    const pageColor = colors.pageColor !== undefined ? colors.pageColor : existing?.pageColor ?? null;
+    const tabColor = colors.tabColor !== undefined ? colors.tabColor : existing?.tabColor ?? null;
+    // Shown at once; the list does not wait on the write
+    set({ notes: get().notes.map(n => (n.id === id ? { ...n, pageColor, tabColor } : n)) });
+    try {
+      await DatabaseHelper.setNoteColors(id, pageColor, tabColor);
+    } catch (e) {
+      set({ errorMessage: 'Could not save the note colour.' });
+    }
   },
 
   deleteNote: async (id: number) => {

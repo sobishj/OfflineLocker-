@@ -98,6 +98,8 @@ export class DatabaseHelper {
     const additions: { table: string; column: string; definition: string }[] = [
       { table: 'notes', column: 'isSensitive', definition: 'INTEGER NOT NULL DEFAULT 0' },
       { table: 'notes', column: 'notePinHash', definition: 'TEXT' },
+      { table: 'notes', column: 'pageColor', definition: 'TEXT' },
+      { table: 'notes', column: 'tabColor', definition: 'TEXT' },
       { table: 'documents', column: 'encryptedMeta', definition: 'TEXT' },
     ];
 
@@ -302,8 +304,8 @@ export class DatabaseHelper {
   static async createNote(note: Note): Promise<number> {
     const db = await this.getDatabase();
     const result = await db.runAsync(
-      'INSERT INTO notes (userId, title, encryptedContent, isSensitive, notePinHash, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [note.userId, note.title, note.encryptedContent, note.isSensitive, note.notePinHash || null, note.createdAt, note.updatedAt]
+      'INSERT INTO notes (userId, title, encryptedContent, isSensitive, notePinHash, pageColor, tabColor, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [note.userId, note.title, note.encryptedContent, note.isSensitive, note.notePinHash || null, note.pageColor || null, note.tabColor || null, note.createdAt, note.updatedAt]
     );
     return result.lastInsertRowId;
   }
@@ -326,6 +328,12 @@ export class DatabaseHelper {
       'UPDATE notes SET title = ?, encryptedContent = ?, isSensitive = ?, notePinHash = ?, updatedAt = ? WHERE id = ?',
       [title, encryptedContent, isSensitive, notePinHash, updatedAt, id]
     );
+  }
+
+  /** Colours only, and the timestamp left alone: recolouring a note is not editing it. */
+  static async setNoteColors(id: number, pageColor: string | null, tabColor: string | null): Promise<void> {
+    const db = await this.getDatabase();
+    await db.runAsync('UPDATE notes SET pageColor = ?, tabColor = ? WHERE id = ?', [pageColor, tabColor, id]);
   }
 
   static async deleteNote(id: number): Promise<void> {

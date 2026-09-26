@@ -16,7 +16,19 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLockerStore } from '../store/useLockerStore';
 import { Note } from '../models';
-import { AppTheme, getPageColor, PAGE_COLORS, CUSTOM_KEY, DEFAULT_PAGE_COLOR_KEY } from '../theme/AppTheme';
+import {
+  AppTheme,
+  getPageColor,
+  PAGE_COLORS,
+  DEFAULT_PAGE_COLOR_KEY,
+  DEFAULT_CUSTOM_PAPER,
+  isHexColor,
+  resolveNotePageColor,
+  NOTE_TAB_COLORS,
+  DEFAULT_NOTE_TAB_COLOR_KEY,
+  DEFAULT_CUSTOM_NOTE_TAB,
+  resolveNoteTabColor,
+} from '../theme/AppTheme';
 import ColorPickerModal from './ColorPickerModal';
 import DraggableFAB from './DraggableFAB';
 import BiometricToggle, { BiometricUnlockButton } from './BiometricToggle';
@@ -30,6 +42,8 @@ import { ensureDecryptedCacheDir } from '../services/FileCacheService';
 import { buildTextPdf } from '../services/PdfBuilder';
 import { useTextHistory } from '../hooks/useTextHistory';
 import ModalCloseButton from './ModalCloseButton';
+import { useKeyboardInset } from '../hooks/useKeyboardInset';
+import { useTextScrollbar } from '../hooks/useTextScrollbar';
 
 interface NotesViewProps {
   isMobile: boolean;
@@ -44,8 +58,10 @@ const formatStamp = (iso: string): string => {
 };
 
 export default function NotesView({ isMobile }: NotesViewProps) {
-  const { currentUser, notes, loadNotes, addNote, updateNote, deleteNote, decryptNote, verifyNotePin, notePageColor, customNotePageColor, loadPageColors, setNotePageColor, setCustomNotePageColor } = useLockerStore();
-  const paper = getPageColor(notePageColor, customNotePageColor);
+  const { currentUser, notes, loadNotes, addNote, updateNote, deleteNote, decryptNote, verifyNotePin, notePageColor, customNotePageColor, loadPageColors, setNoteColors } = useLockerStore();
+  // The paper every note shared before each could have its own. Notes that
+  // never chose one still open on it.
+  const sharedPaper = getPageColor(notePageColor, customNotePageColor);
   const insets = useSafeAreaInsets();
 
   const [search, setSearch] = useState('');
@@ -58,6 +74,9 @@ export default function NotesView({ isMobile }: NotesViewProps) {
   const [draftPin, setDraftPin] = useState('');
   const [draftConfirmPin, setDraftConfirmPin] = useState('');
   const [draftBiometric, setDraftBiometric] = useState(false);
+  // The colour of the note's card in the list
+  const [draftTabColor, setDraftTabColor] = useState<string>(DEFAULT_NOTE_TAB_COLOR_KEY);
+  const [tabPickerVisible, setTabPickerVisible] = useState(false);
 
   // Step 2 — writing the note itself
   const [paperVisible, setPaperVisible] = useState(false);
@@ -72,6 +91,14 @@ export default function NotesView({ isMobile }: NotesViewProps) {
     if (paperVisible || shareChoiceVisible) Keyboard.dismiss();
   }, [paperVisible, shareChoiceVisible]);
   const [writerNote, setWriterNote] = useState<Note | null>(null);
+  // The open note as the store has it now, so a new paper shows straight away
+  const liveWriterNote = writerNote ? notes.find(n => n.id === writerNote.id) || writerNote : null;
+  const paper = resolveNotePageColor(liveWriterNote?.pageColor, sharedPaper);
+  const isCustomPaper = isHexColor(liveWriterNote?.pageColor || '');
+  const customPaper = resolveNotePageColor(isCustomPaper ? liveWriterNote?.pageColor : DEFAULT_CUSTOM_PAPER, sharedPaper);
+  const writerInputRef = useRef<TextInput | null>(null);
+  const keyboard = useKeyboardInset(writerInputRef);
+  const scrollbar = useTextScrollbar();
   const [writerBody, setWriterBody] = useState('');
   // Read by the close handler, which must not depend on a stale render
   const writerBodyRef = useRef(writerBody);
@@ -129,6 +156,7 @@ export default function NotesView({ isMobile }: NotesViewProps) {
     setDraftPin('');
     setDraftConfirmPin('');
     setDraftBiometric(false);
+    setDraftTabColor(note?.tabColor || DEFAULT_NOTE_TAB_COLOR_KEY);
     if (note?.id != null) {
       BiometricService.isEnabled(currentUser?.uuid, BiometricScopes.note(note.id)).then(setDraftBiometric);
     }
@@ -304,11 +332,14 @@ export default function NotesView({ isMobile }: NotesViewProps) {
     setIsSaving(true);
     try {
       let keepUnlocked: number | null = null;
+      const tabColor = draftTabColor === DEFAULT_NOTE_TAB_COLOR_KEY ? null : draftTabColor;
       if (detailsNote?.id) {
         // Renaming must not disturb the body, so it is re-saved as-is
         await updateNote(detailsNote.id, title, decryptNote(detailsNote), draftSensitive, draftPin || undefined, draftSensitive && draftBiometric);
+        await setNoteColors(detailsNote.id, { tabColor });
       } else {
         const createdId = await addNote(title, '', draftSensitive, draftPin || undefined, draftSensitive && draftBiometric);
+        if (createdId != null && tabColor) await setNoteColors(createdId, { tabColor });
         // The PIN was just chosen, so writing the new note straight away does
         // not ask for it again — closing that writer re-locks as usual
         if (draftSensitive && createdId != null) keepUnlocked = createdId;
@@ -329,53 +360,30 @@ export default function NotesView({ isMobile }: NotesViewProps) {
   const renderList = () => (
     <View style={{ flex: 1 }}>
       <View style={{ padding: 12 }}>
-        {/* The page-colour control sits at the end of this row, where the diary
-            keeps its own rather than on a line of its own */}
-        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          <View
-            style={{
-              flex: 1,
-              flexDirection: 'row',
-              alignItems: 'center',
-              backgroundColor: '#f8fafc',
-              borderWidth: 1,
-              borderColor: '#e2e8f0',
-              borderRadius: 10,
-              paddingHorizontal: 10,
-            }}
-          >
-            <Ionicons name="search" size={15} color="#94a3b8" />
-            <TextInput
-              style={{ flex: 1, paddingVertical: 9, paddingHorizontal: 8, fontSize: 13, color: AppTheme.colors.text }}
-              placeholder="Search notes"
-              placeholderTextColor="#94a3b8"
-              value={search}
-              onChangeText={setSearch}
-            />
-            {!!search && (
-              <TouchableOpacity onPress={() => setSearch('')} style={{ padding: 4 }}>
-                <Ionicons name="close-circle" size={15} color="#94a3b8" />
-              </TouchableOpacity>
-            )}
-          </View>
-
-          <TouchableOpacity
-            onPress={() => setPaperVisible(true)}
-            accessibilityLabel="Note page colour"
-            style={{
-              width: 38,
-              height: 38,
-              marginLeft: 8,
-              borderRadius: 10,
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderWidth: 1,
-              borderColor: paper.rule,
-              backgroundColor: paper.paper,
-            }}
-          >
-            <Ionicons name="color-palette-outline" size={18} color={AppTheme.colors.primary} />
-          </TouchableOpacity>
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            backgroundColor: '#f8fafc',
+            borderWidth: 1,
+            borderColor: '#e2e8f0',
+            borderRadius: 10,
+            paddingHorizontal: 10,
+          }}
+        >
+          <Ionicons name="search" size={15} color="#94a3b8" />
+          <TextInput
+            style={{ flex: 1, paddingVertical: 9, paddingHorizontal: 8, fontSize: 13, color: AppTheme.colors.text }}
+            placeholder="Search notes"
+            placeholderTextColor="#94a3b8"
+            value={search}
+            onChangeText={setSearch}
+          />
+          {!!search && (
+            <TouchableOpacity onPress={() => setSearch('')} style={{ padding: 4 }}>
+              <Ionicons name="close-circle" size={15} color="#94a3b8" />
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
@@ -391,13 +399,18 @@ export default function NotesView({ isMobile }: NotesViewProps) {
         renderItem={({ item }) => {
           const locked = !isUnlocked(item);
           const preview = locked ? '' : decryptNote(item).replace(/\s+/g, ' ').trim();
+          const tab = resolveNoteTabColor(item.tabColor);
+          const plain = tab.key === DEFAULT_NOTE_TAB_COLOR_KEY;
           return (
             <TouchableOpacity
               onPress={() => requirePin(item, 'open', () => openWriter(item))}
               style={{
-                backgroundColor: '#ffffff',
+                backgroundColor: tab.card,
                 borderWidth: 1,
-                borderColor: '#e2e8f0',
+                borderColor: tab.border,
+                // The chosen colour runs down the card's edge as well as behind it
+                borderLeftWidth: plain ? 1 : 5,
+                borderLeftColor: plain ? tab.border : tab.accent,
                 borderRadius: 12,
                 padding: 12,
                 marginBottom: 8,
@@ -535,6 +548,78 @@ export default function NotesView({ isMobile }: NotesViewProps) {
                 autoFocus={!detailsNote}
               />
 
+              {/* How the note's card looks in the list. The paper inside is
+                  chosen from the note itself. */}
+              <Text style={{ fontSize: 12, fontWeight: '700', color: AppTheme.colors.textSecondary, marginBottom: 8 }}>
+                Tab colour
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: 6 }}>
+                {NOTE_TAB_COLORS.map(option => {
+                  const isChosen = option.key === draftTabColor;
+                  return (
+                    <TouchableOpacity
+                      key={option.key}
+                      onPress={() => setDraftTabColor(option.key)}
+                      style={{ width: '20%', alignItems: 'center', marginBottom: 10 }}
+                      accessibilityLabel={`${option.label} tab`}
+                    >
+                      <View
+                        style={{
+                          width: 30,
+                          height: 30,
+                          borderRadius: 15,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          backgroundColor: option.key === DEFAULT_NOTE_TAB_COLOR_KEY ? option.card : option.accent,
+                          borderWidth: isChosen ? 2.5 : 1,
+                          borderColor: isChosen ? AppTheme.colors.text : option.border,
+                        }}
+                      >
+                        {isChosen && (
+                          <Ionicons
+                            name="checkmark"
+                            size={14}
+                            color={option.key === DEFAULT_NOTE_TAB_COLOR_KEY ? AppTheme.colors.text : '#ffffff'}
+                          />
+                        )}
+                      </View>
+                      <Text style={{ fontSize: 10, color: AppTheme.colors.textSecondary, marginTop: 3 }} numberOfLines={1}>
+                        {option.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+
+                {/* Whatever was mixed; tapping it again reopens the mixer */}
+                <TouchableOpacity
+                  onPress={() => setTabPickerVisible(true)}
+                  style={{ width: '20%', alignItems: 'center', marginBottom: 10 }}
+                  accessibilityLabel="Custom tab colour"
+                >
+                  <View
+                    style={{
+                      width: 30,
+                      height: 30,
+                      borderRadius: 15,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      backgroundColor: isHexColor(draftTabColor) ? draftTabColor : '#f8fafc',
+                      borderWidth: isHexColor(draftTabColor) ? 2.5 : 1,
+                      borderColor: isHexColor(draftTabColor) ? AppTheme.colors.text : '#e2e8f0',
+                    }}
+                  >
+                    <Ionicons
+                      name={isHexColor(draftTabColor) ? 'brush' : 'color-palette-outline'}
+                      size={14}
+                      color={isHexColor(draftTabColor) ? '#ffffff' : AppTheme.colors.primary}
+                    />
+                  </View>
+                  <Text style={{ fontSize: 10, color: AppTheme.colors.textSecondary, marginTop: 3 }} numberOfLines={1}>
+                    Custom
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
               <TouchableOpacity
                 onPress={() => setDraftSensitive(!draftSensitive)}
                 style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}
@@ -650,11 +735,27 @@ export default function NotesView({ isMobile }: NotesViewProps) {
             </ScrollView>
           </View>
         </KeyboardAvoidingView>
+
+        {/* Inside the details window: iOS presents one modal at a time */}
+        <ColorPickerModal
+          visible={tabPickerVisible}
+          value={isHexColor(draftTabColor) ? draftTabColor : DEFAULT_CUSTOM_NOTE_TAB}
+          title="Custom tab colour"
+          hint="How this note's card looks in the list."
+          onSelect={setDraftTabColor}
+          onClose={() => setTabPickerVisible(false)}
+        />
       </Modal>
 
       {/* STEP 2 — writing. Full screen, with Save in the top bar so the keyboard can never cover it. */}
       <Modal visible={!!writerNote} animationType="slide" onRequestClose={closeWriter}>
-        <View style={{ flex: 1, backgroundColor: paper.paper, paddingTop: insets.top }}>
+        <View
+          ref={keyboard.containerRef}
+          onLayout={keyboard.onLayout}
+          collapsable={false}
+          // Lifted clear of the keyboard, so the last line is never written under it
+          style={{ flex: 1, backgroundColor: paper.paper, paddingTop: insets.top, paddingBottom: keyboard.inset }}
+        >
           <View
             style={{
               flexDirection: 'row',
@@ -691,6 +792,23 @@ export default function NotesView({ isMobile }: NotesViewProps) {
               <Ionicons name="arrow-redo-outline" size={20} color={AppTheme.colors.primary} />
             </TouchableOpacity>
             <TouchableOpacity
+              onPress={() => setPaperVisible(true)}
+              style={{
+                width: 32,
+                height: 32,
+                marginHorizontal: 2,
+                borderRadius: 9,
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderWidth: 1,
+                borderColor: paper.rule,
+                backgroundColor: paper.paper,
+              }}
+              accessibilityLabel="This note's page colour"
+            >
+              <Ionicons name="color-palette-outline" size={18} color={AppTheme.colors.primary} />
+            </TouchableOpacity>
+            <TouchableOpacity
               onPress={() => setShareChoiceVisible(true)}
               style={{ padding: 6 }}
               accessibilityLabel="Share this note"
@@ -699,27 +817,48 @@ export default function NotesView({ isMobile }: NotesViewProps) {
             </TouchableOpacity>
           </View>
 
-          <TextInput
-            style={[
-              {
-                flex: 1,
-                padding: 16,
-                fontSize: 14.5,
-                lineHeight: 22,
-                color: AppTheme.colors.text,
-                textAlignVertical: 'top',
-              },
-              // The browser's focus ring reads as a stray black box on web
-              Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : null,
-            ]}
-            placeholder="Write your note…"
-            placeholderTextColor="#94a3b8"
-            value={writerBody}
-            onChangeText={text => { history.record(text); setWriterBody(text); }}
-            onBlur={persistWriter}
-            multiline
-            autoFocus
-          />
+          <View style={{ flex: 1 }}>
+            <TextInput
+              ref={writerInputRef}
+              style={[
+                {
+                  flex: 1,
+                  padding: 16,
+                  fontSize: 14.5,
+                  lineHeight: 22,
+                  color: AppTheme.colors.text,
+                  textAlignVertical: 'top',
+                },
+                // The browser's focus ring reads as a stray black box on web
+                Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : null,
+              ]}
+              placeholder="Write your note…"
+              placeholderTextColor="#94a3b8"
+              value={writerBody}
+              onChangeText={text => { history.record(text); setWriterBody(text); }}
+              onBlur={persistWriter}
+              multiline
+              autoFocus
+              scrollEnabled
+              // A tap on the page raises the keyboard; the next one puts it away
+              {...keyboard.tapToggle}
+              {...scrollbar.inputProps}
+            />
+            {scrollbar.thumb && (
+              <View
+                pointerEvents="none"
+                style={{
+                  position: 'absolute',
+                  right: 2,
+                  width: 4,
+                  borderRadius: 2,
+                  backgroundColor: 'rgba(15,23,42,0.28)',
+                  top: scrollbar.thumb.top,
+                  height: scrollbar.thumb.height,
+                }}
+              />
+            )}
+          </View>
         </View>
 
         {/* HOW TO SHARE THE OPEN NOTE. Nested in the writer: iOS will not present a
@@ -812,121 +951,116 @@ export default function NotesView({ isMobile }: NotesViewProps) {
             </View>
           </View>
         </Modal>
-      </Modal>
 
-      {/* PAGE COLOUR */}
-      <Modal visible={paperVisible} transparent animationType="fade" onRequestClose={() => setPaperVisible(false)}>
-        <View style={{ flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'center', padding: 18 }}>
-          <View style={{ backgroundColor: '#ffffff', borderRadius: 18, padding: 18 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-              <Text style={{ fontSize: 17, fontWeight: '800', color: AppTheme.colors.text, marginBottom: 4, flex: 1 }}>
-                Page colour
-              </Text>
-              <ModalCloseButton onPress={() => setPaperVisible(false)} />
-            </View>
-            <Text style={{ fontSize: 12, color: AppTheme.colors.textSecondary, marginBottom: 14 }}>
-              The paper every note is written on.
-            </Text>
-
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
-              {PAGE_COLORS.map(option => {
-                const isChosen = option.key === notePageColor;
-                return (
-                  <TouchableOpacity
-                    key={option.key}
-                    onPress={() => setNotePageColor(option.key)}
-                    style={{ width: '20%', alignItems: 'center', marginBottom: 10 }}
-                    accessibilityLabel={option.label}
-                  >
-                    <View
-                      style={{
-                        width: 34,
-                        height: 34,
-                        borderRadius: 10,
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        backgroundColor: option.paper,
-                        borderWidth: isChosen ? 2 : 1,
-                        borderColor: isChosen ? AppTheme.colors.primary : option.rule,
-                      }}
-                    >
-                      {isChosen && <Ionicons name="checkmark" size={13} color={AppTheme.colors.primary} />}
-                    </View>
-                    <Text style={{ fontSize: 10, color: AppTheme.colors.textSecondary, marginTop: 4 }} numberOfLines={1}>
-                      {option.label}
-                    </Text>
-                    {option.key === DEFAULT_PAGE_COLOR_KEY && (
-                      <Text style={{ fontSize: 8.5, fontWeight: '600', color: AppTheme.colors.textMuted, marginTop: 1 }}>
-                        Default
-                      </Text>
-                    )}
-                  </TouchableOpacity>
-                );
-              })}
-
-              {/* Whatever the user mixed; tapping it again reopens the mixer */}
-              <TouchableOpacity
-                onPress={() => {
-                  if (notePageColor !== CUSTOM_KEY) setNotePageColor(CUSTOM_KEY);
-                  setPaperPickerVisible(true);
-                }}
-                style={{ width: '20%', alignItems: 'center', marginBottom: 10 }}
-                accessibilityLabel="Custom page colour"
-              >
-                <View
-                  style={{
-                    width: 34,
-                    height: 34,
-                    borderRadius: 10,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    backgroundColor: getPageColor(CUSTOM_KEY, customNotePageColor).paper,
-                    borderWidth: notePageColor === CUSTOM_KEY ? 2 : 1,
-                    borderColor: notePageColor === CUSTOM_KEY
-                      ? AppTheme.colors.primary
-                      : getPageColor(CUSTOM_KEY, customNotePageColor).rule,
-                  }}
-                >
-                  <Ionicons
-                    name={notePageColor === CUSTOM_KEY ? 'brush' : 'color-palette-outline'}
-                    size={13}
-                    color={AppTheme.colors.primary}
-                  />
-                </View>
-                <Text style={{ fontSize: 10, color: AppTheme.colors.textSecondary, marginTop: 4 }} numberOfLines={1}>
-                  Custom
+        {/* THIS NOTE'S PAGE COLOUR. Nested in the writer, as the share choice is. */}
+        <Modal visible={paperVisible} transparent animationType="fade" onRequestClose={() => setPaperVisible(false)}>
+          <View style={{ flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'center', padding: 18 }}>
+            <View style={{ backgroundColor: '#ffffff', borderRadius: 18, padding: 18 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+                <Text style={{ fontSize: 17, fontWeight: '800', color: AppTheme.colors.text, marginBottom: 4, flex: 1 }}>
+                  Page colour
                 </Text>
+                <ModalCloseButton onPress={() => setPaperVisible(false)} />
+              </View>
+              <Text style={{ fontSize: 12, color: AppTheme.colors.textSecondary, marginBottom: 14 }}>
+                The paper this note is written on.
+              </Text>
+
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                {PAGE_COLORS.map(option => {
+                  const isChosen = option.key === (liveWriterNote?.pageColor || '') || (!liveWriterNote?.pageColor && option.paper === paper.paper);
+                  return (
+                    <TouchableOpacity
+                      key={option.key}
+                      onPress={() => liveWriterNote?.id != null && setNoteColors(liveWriterNote.id, { pageColor: option.key })}
+                      style={{ width: '20%', alignItems: 'center', marginBottom: 10 }}
+                      accessibilityLabel={option.label}
+                    >
+                      <View
+                        style={{
+                          width: 34,
+                          height: 34,
+                          borderRadius: 10,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          backgroundColor: option.paper,
+                          borderWidth: isChosen ? 2 : 1,
+                          borderColor: isChosen ? AppTheme.colors.primary : option.rule,
+                        }}
+                      >
+                        {isChosen && <Ionicons name="checkmark" size={13} color={AppTheme.colors.primary} />}
+                      </View>
+                      <Text style={{ fontSize: 10, color: AppTheme.colors.textSecondary, marginTop: 4 }} numberOfLines={1}>
+                        {option.label}
+                      </Text>
+                      {option.key === DEFAULT_PAGE_COLOR_KEY && (
+                        <Text style={{ fontSize: 8.5, fontWeight: '600', color: AppTheme.colors.textMuted, marginTop: 1 }}>
+                          Default
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+
+                {/* Whatever the user mixed; tapping it again reopens the mixer */}
+                <TouchableOpacity
+                  onPress={() => setPaperPickerVisible(true)}
+                  style={{ width: '20%', alignItems: 'center', marginBottom: 10 }}
+                  accessibilityLabel="Custom page colour"
+                >
+                  <View
+                    style={{
+                      width: 34,
+                      height: 34,
+                      borderRadius: 10,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      backgroundColor: customPaper.paper,
+                      borderWidth: isCustomPaper ? 2 : 1,
+                      borderColor: isCustomPaper ? AppTheme.colors.primary : customPaper.rule,
+                    }}
+                  >
+                    <Ionicons
+                      name={isCustomPaper ? 'brush' : 'color-palette-outline'}
+                      size={13}
+                      color={AppTheme.colors.primary}
+                    />
+                  </View>
+                  <Text style={{ fontSize: 10, color: AppTheme.colors.textSecondary, marginTop: 4 }} numberOfLines={1}>
+                    Custom
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <TouchableOpacity
+                onPress={() => setPaperVisible(false)}
+                style={{
+                  alignSelf: 'flex-end',
+                  paddingHorizontal: 18,
+                  paddingVertical: 10,
+                  borderRadius: 10,
+                  backgroundColor: AppTheme.colors.primaryLight,
+                  borderWidth: 1,
+                  borderColor: AppTheme.colors.primaryBorder,
+                }}
+              >
+                <Text style={{ color: AppTheme.colors.primary, fontWeight: '700', fontSize: 13 }}>Done</Text>
               </TouchableOpacity>
             </View>
-
-            <TouchableOpacity
-              onPress={() => setPaperVisible(false)}
-              style={{
-                alignSelf: 'flex-end',
-                paddingHorizontal: 18,
-                paddingVertical: 10,
-                borderRadius: 10,
-                backgroundColor: AppTheme.colors.primaryLight,
-                borderWidth: 1,
-                borderColor: AppTheme.colors.primaryBorder,
-              }}
-            >
-              <Text style={{ color: AppTheme.colors.primary, fontWeight: '700', fontSize: 13 }}>Done</Text>
-            </TouchableOpacity>
           </View>
-        </View>
 
-        {/* Inside the paper window rather than beside it: iOS presents one
-            modal at a time, so a picker opened as a sibling of an open modal
-            never appeared there. */}
-        <ColorPickerModal
-          visible={paperPickerVisible}
-          value={customNotePageColor}
-          title="Custom page colour"
-          hint="The paper your notes are written on."
-          onSelect={setCustomNotePageColor}
-          onClose={() => setPaperPickerVisible(false)}
-        />
+          {/* Inside the paper window rather than beside it: iOS presents one
+              modal at a time, so a picker opened as a sibling of an open modal
+              never appeared there. */}
+          <ColorPickerModal
+            visible={paperPickerVisible}
+            value={isCustomPaper ? liveWriterNote!.pageColor! : DEFAULT_CUSTOM_PAPER}
+            title="Custom page colour"
+            hint="The paper this note is written on."
+            onSelect={hex => liveWriterNote?.id != null && setNoteColors(liveWriterNote.id, { pageColor: hex })}
+            onClose={() => setPaperPickerVisible(false)}
+          />
+        </Modal>
       </Modal>
 
       {/* NOTE PIN PROMPT */}
