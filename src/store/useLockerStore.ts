@@ -777,6 +777,13 @@ export const useLockerStore = create<LockerState>((set, get) => {
       : notePin && notePin.trim()
         ? VaultCrypto.makeVerifier(notePin, 'note')
         : existing?.notePinHash || null;
+    // The list is ordered by this, so only a change to the text itself moves a
+    // note up. Renaming it, changing its PIN or just opening and closing it
+    // leaves it where it was.
+    // An unreadable note keeps its stored text whatever is passed, so it never counts.
+    const updatedAt = existing && (existing.unreadable || (existing.content ?? '') === plainContent)
+      ? existing.updatedAt
+      : new Date().toISOString();
 
     try {
       await DatabaseHelper.updateNote(
@@ -787,7 +794,7 @@ export const useLockerStore = create<LockerState>((set, get) => {
         existing?.unreadable ? existing.encryptedContent : await VaultCrypto.encrypt(plainContent),
         isSensitive ? 1 : 0,
         pinHash,
-        new Date().toISOString()
+        updatedAt
       );
     } catch (error) {
       set({ errorMessage: 'Could not save the note.' });
