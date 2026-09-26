@@ -9,11 +9,21 @@
 
 let suppressDepth = 0;
 let graceUntil = 0;
+// When the outstanding suppressions began
+let suppressedSince = 0;
+
+/**
+ * The longest a trip out can hold the lock off. A picker iOS declined to show
+ * never returns, and without a limit that left the vault never locking again
+ * for the rest of the session.
+ */
+const MAX_SUPPRESS_MS = 10 * 60 * 1000;
 
 /** How long suppression lingers after a picker returns, in milliseconds. */
 const RESUME_GRACE_MS = 2000;
 
 export const suppressAutoLock = (): void => {
+  if (suppressDepth === 0) suppressedSince = Date.now();
   suppressDepth += 1;
 };
 
@@ -24,8 +34,13 @@ export const resumeAutoLock = (): void => {
   graceUntil = Date.now() + RESUME_GRACE_MS;
 };
 
-export const isAutoLockSuppressed = (): boolean =>
-  suppressDepth > 0 || Date.now() < graceUntil;
+export const isAutoLockSuppressed = (): boolean => {
+  if (suppressDepth > 0 && Date.now() - suppressedSince > MAX_SUPPRESS_MS) {
+    // Whatever was holding it has been gone far too long to still be coming back
+    suppressDepth = 0;
+  }
+  return suppressDepth > 0 || Date.now() < graceUntil;
+};
 
 /** Runs a native flow that takes the user out of the app without locking it. */
 export const withoutAutoLock = async <T>(run: () => Promise<T>): Promise<T> => {

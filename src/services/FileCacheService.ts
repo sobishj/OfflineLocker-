@@ -6,8 +6,9 @@ import * as FileSystem from 'expo-file-system/legacy';
  * base64 is the difference between a document opening at once and the app
  * locking up, but it does mean plaintext on disk for as long as it sits there.
  *
- * It is app-private storage, and everything in here is deleted the moment the
- * vault locks, so nothing decrypted outlives the unlocked session.
+ * It is app-private storage. Everything in here is deleted on signing out and
+ * whenever the app starts afresh; a lock that keeps the session keeps these
+ * too, since the file on screen under the lock may still be reading from one.
  */
 export const DECRYPTED_CACHE_DIR = `${FileSystem.cacheDirectory}decrypted/`;
 
@@ -25,7 +26,7 @@ export const ensureDecryptedCacheDir = async (): Promise<string> => {
   return DECRYPTED_CACHE_DIR;
 };
 
-/** Removes every decrypted file. Called whenever the vault locks. */
+/** Removes every decrypted file. Called on signing out and at every fresh start. */
 export const clearDecryptedCache = async (): Promise<void> => {
   try {
     await FileSystem.deleteAsync(DECRYPTED_CACHE_DIR, { idempotent: true });

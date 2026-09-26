@@ -10,13 +10,13 @@ import {
   useWindowDimensions,
   Platform,
   Keyboard,
-  Modal,
   Alert,
   KeyboardAvoidingView,
   StyleSheet,
   ActivityIndicator,
   AppState,
 } from 'react-native';
+import Modal from './AppModal';
 import { Ionicons } from '@expo/vector-icons';
 import { useLockerStore } from '../store/useLockerStore';
 import { AppTheme, getPageColor, PAGE_COLORS, CUSTOM_KEY, DEFAULT_PAGE_COLOR_KEY } from '../theme/AppTheme';
@@ -81,6 +81,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
     currentUser, diaryPinMode, diaryPinHash, diaryPinLoaded, loadDiaryPinMode, setDiaryPin, setDiaryBiometric, verifyDiaryPin,
     diaryLined, loadDiaryLined, setDiaryLined,
     themeVersion, diaryPageColor, customDiaryPageColor, loadPageColors, setDiaryPageColor, setCustomDiaryPageColor,
+    isLocked,
   } = useLockerStore();
   const styles = useMemo(() => createStyles(), [themeVersion]);
   const { width: viewportWidth } = useWindowDimensions();
@@ -216,7 +217,8 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
   // Biometrics first, as soon as the locked diary is on screen and the app is
   // in front - the system will not show the prompt from the background
   useEffect(() => {
-    if (!diaryPinLoaded || diaryPinMode === 'none' || isUnlocked || !biometricOn || autoPromptedRef.current) return;
+    // Not while the app's own lock is up: its prompt comes first
+    if (isLocked || !diaryPinLoaded || diaryPinMode === 'none' || isUnlocked || !biometricOn || autoPromptedRef.current) return;
     const fire = () => {
       if (autoPromptedRef.current) return;
       autoPromptedRef.current = true;
@@ -233,7 +235,7 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
       }
     });
     return () => sub.remove();
-  }, [diaryPinLoaded, diaryPinMode, isUnlocked, biometricOn, tryBiometricUnlock]);
+  }, [isLocked, diaryPinLoaded, diaryPinMode, isUnlocked, biometricOn, tryBiometricUnlock]);
 
   /** Persists the page being left before loading another. */
   const persistCurrent = useCallback(async () => {
@@ -249,6 +251,20 @@ export default function DiaryView({ isMobile }: DiaryViewProps) {
     const timer = setTimeout(() => { persistCurrent(); }, 600);
     return () => clearTimeout(timer);
   }, [pageText, isUnlocked, isFlipping, persistCurrent]);
+
+  // The app locking over the diary: whatever is typed is written now, and a
+  // diary with its own PIN asks for it again once the app PIN is in. The page
+  // itself stays where it was.
+  useEffect(() => {
+    if (!isLocked) return;
+    persistCurrent();
+    if (diaryPinMode !== 'none') {
+      setIsUnlocked(false);
+      setPinInput('');
+      setPinError('');
+      autoPromptedRef.current = false;
+    }
+  }, [isLocked]);
 
   // A final write on the way out, for anything typed inside the debounce window
   const persistRef = useRef(persistCurrent);

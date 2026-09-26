@@ -45,6 +45,16 @@ interface LockerState {
   isLoading: boolean;
   errorMessage: string | null;
   isAuthenticated: boolean;
+  /**
+   * Locked behind the PIN screen with the session kept: leaving the app puts
+   * the lock over whatever was open rather than signing out, so unlocking
+   * returns to the same tab, file or note.
+   */
+  isLocked: boolean;
+  /** A sensitive tab that was open when the app locked, and needs its own PIN again. */
+  relockTabId: string | null;
+  /** The sensitive tab now on screen, if any, so a lock knows what to re-ask for. */
+  openSensitiveTabId: string | null;
   lockoutState: LockoutState | null;
   diaryDates: string[];
   notes: Note[];
@@ -83,6 +93,10 @@ interface LockerState {
   /** Unlocks the vault with a scan instead of the PIN. False means ask for the PIN. */
   unlockWithBiometric: () => Promise<boolean>;
   logout: () => void;
+  /** Puts the PIN screen over the session without discarding it. */
+  lockSession: () => void;
+  setOpenSensitiveTab: (tabId: string | null) => void;
+  clearTabRelock: () => void;
   loadTabs: () => Promise<void>;
   createTab: (name: string, description: string, isSensitive: boolean, tabPin?: string, biometric?: boolean) => Promise<boolean>;
   /** `biometric.pin` is the tab's PIN as it stands after the edit, which is what a scan hands back. */
@@ -223,6 +237,11 @@ export const useLockerStore = create<LockerState>((set, get) => {
   const completeLogin = async () => {
     await LockoutService.resetLockoutState();
     const cleanLockout = await LockoutService.getLockoutState();
+    if (get().isAuthenticated && get().isLocked) {
+      // Coming back to a kept session: everything open is left exactly as it was
+      set({ isLocked: false, lockoutState: cleanLockout, errorMessage: null });
+      return;
+    }
     set({ isAuthenticated: true, activeDocuments: [], lockoutState: cleanLockout, errorMessage: null });
     await get().loadTabs();
     // Read here as well as on the diary's own mount: by the time the tab can
@@ -247,6 +266,9 @@ export const useLockerStore = create<LockerState>((set, get) => {
   isLoading: false,
   errorMessage: null,
   isAuthenticated: false,
+  isLocked: false,
+  relockTabId: null,
+  openSensitiveTabId: null,
   lockoutState: null,
   diaryDates: [],
   notes: [],
@@ -291,6 +313,9 @@ export const useLockerStore = create<LockerState>((set, get) => {
         set({ errorMessage: `The PIN must be exactly ${NEW_PIN_LENGTH} digits.` });
         return false;
       }
+      // Started from the lock over a kept session: that session is the old
+      // vault's, so it is closed first rather than left open under the new one
+      if (get().isAuthenticated) get().logout();
       // The old account's data is about to go, and its key and biometric switches with it
       const previous = get().currentUser?.uuid;
       await BiometricService.clearAll(previous);
@@ -378,7 +403,9 @@ export const useLockerStore = create<LockerState>((set, get) => {
       await completeLogin();
       return true;
     }
-    VaultCrypto.close();
+    // A kept session keeps its key through a mistyped PIN, as it did through
+    // the lock itself; a sixth miss still wipes it below
+    if (!get().isLocked) VaultCrypto.close();
 
     // Failed attempt
     const { state, isWiped } = await LockoutService.recordFailedAttempt();
@@ -391,6 +418,8 @@ export const useLockerStore = create<LockerState>((set, get) => {
         tabDocCounts: {},
         activeDocuments: [],
         isAuthenticated: false,
+        isLocked: false,
+        relockTabId: null,
         lockoutState: state,
         errorMessage: '⚠️ App reset: Vault data was permanently wiped due to 6 consecutive failed PIN attempts.',
       });
@@ -440,8 +469,20 @@ export const useLockerStore = create<LockerState>((set, get) => {
     VaultCrypto.close();
     legacy = { keys: [], tabPins: {} };
     migrationDone = false;
-    set({ isAuthenticated: false, tabs: [], activeDocuments: [], diaryDates: [], notes: [], diaryPinMode: 'none', diaryPinHash: null, diaryPinLoaded: false });
+    set({ isAuthenticated: false, isLocked: false, relockTabId: null, openSensitiveTabId: null, tabs: [], activeDocuments: [], diaryDates: [], notes: [], diaryPinMode: 'none', diaryPinHash: null, diaryPinLoaded: false });
   },
+
+  lockSession: () => {
+    if (!get().isAuthenticated || get().isLocked) return;
+    // The key stays open: what is on screen is already decrypted in memory,
+    // and a save still in flight (the diary and notes write a moment after
+    // each keystroke) has to be able to finish
+    set({ isLocked: true, relockTabId: get().openSensitiveTabId, errorMessage: null });
+  },
+
+  setOpenSensitiveTab: (tabId: string | null) => set({ openSensitiveTabId: tabId }),
+
+  clearTabRelock: () => set({ relockTabId: null }),
 
   loadTabs: async () => {
     const { currentUser } = get();

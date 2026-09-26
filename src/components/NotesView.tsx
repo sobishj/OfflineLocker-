@@ -5,13 +5,13 @@ import {
   TextInput,
   TouchableOpacity,
   FlatList,
-  Modal,
   Alert,
   ScrollView,
   KeyboardAvoidingView,
   Keyboard,
   Platform,
 } from 'react-native';
+import Modal from './AppModal';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLockerStore } from '../store/useLockerStore';
@@ -49,7 +49,8 @@ interface NotesViewProps {
   isMobile: boolean;
 }
 
-type PinAction = 'open' | 'edit' | 'delete';
+/** `resume` asks again for a note that was open when the app locked. */
+type PinAction = 'open' | 'edit' | 'delete' | 'resume';
 
 const formatStamp = (iso: string): string => {
   const d = new Date(iso);
@@ -58,7 +59,7 @@ const formatStamp = (iso: string): string => {
 };
 
 export default function NotesView({ isMobile }: NotesViewProps) {
-  const { currentUser, notes, loadNotes, addNote, updateNote, deleteNote, decryptNote, verifyNotePin, notePageColor, customNotePageColor, loadPageColors, setNoteColors } = useLockerStore();
+  const { currentUser, notes, loadNotes, addNote, updateNote, deleteNote, decryptNote, verifyNotePin, notePageColor, customNotePageColor, loadPageColors, setNoteColors, isLocked } = useLockerStore();
   // The paper every note shared before each could have its own. Notes that
   // never chose one still open on it.
   const sharedPaper = getPageColor(notePageColor, customNotePageColor);
@@ -93,9 +94,17 @@ export default function NotesView({ isMobile }: NotesViewProps) {
   const [writerNote, setWriterNote] = useState<Note | null>(null);
   // The open note as the store has it now, so a new paper shows straight away
   const liveWriterNote = writerNote ? notes.find(n => n.id === writerNote.id) || writerNote : null;
-  const paper = resolveNotePageColor(liveWriterNote?.pageColor, sharedPaper);
+  // Until a paper is picked inside the note, it takes after the note's tab
+  // colour; a plain tab keeps the paper notes have always had
+  const writerTab = resolveNoteTabColor(liveWriterNote?.tabColor);
+  const tabPaper = writerTab.key === DEFAULT_NOTE_TAB_COLOR_KEY
+    ? sharedPaper
+    : { key: 'tab', label: 'Tab colour', paper: writerTab.card, rule: writerTab.border };
+  const paper = resolveNotePageColor(liveWriterNote?.pageColor, tabPaper);
   const isCustomPaper = isHexColor(liveWriterNote?.pageColor || '');
-  const customPaper = resolveNotePageColor(isCustomPaper ? liveWriterNote?.pageColor : DEFAULT_CUSTOM_PAPER, sharedPaper);
+  const customPaper = resolveNotePageColor(isCustomPaper ? liveWriterNote?.pageColor : DEFAULT_CUSTOM_PAPER, tabPaper);
+  // A sensitive note that was open when the app locked, waiting for its PIN again
+  const [writerNeedsPin, setWriterNeedsPin] = useState(false);
   const writerInputRef = useRef<TextInput | null>(null);
   const keyboard = useKeyboardInset(writerInputRef);
   const scrollbar = useTextScrollbar();
@@ -125,15 +134,47 @@ export default function NotesView({ isMobile }: NotesViewProps) {
 
   /** Matches the Cancel button: the typed PIN never outlives the window. */
   const closePinModal = () => {
+    const resuming = pinAction === 'resume' && !!pinModalNote;
     setPinModalNote(null);
     setPinInput('');
     setPinError('');
+    // Declining to unlock a note that was left open closes it, saved
+    if (resuming) {
+      setWriterNeedsPin(false);
+      closeWriter();
+    }
   };
 
   useEffect(() => {
     loadNotes();
     loadPageColors();
   }, []);
+
+  // The app locking over a note: what is typed is saved, and a sensitive note
+  // is locked again, to be asked for once the app PIN is in. Its text and
+  // place are kept.
+  useEffect(() => {
+    if (!isLocked) return;
+    setPaperVisible(false);
+    setPaperPickerVisible(false);
+    setShareChoiceVisible(false);
+    setTabPickerVisible(false);
+    if (writerNote) persistWriter();
+    if (writerNote?.isSensitive === 1) {
+      setWriterNeedsPin(true);
+      setUnlockedId(null);
+    } else if (detailsVisible && detailsNote?.isSensitive === 1) {
+      // Its PIN fields are not left filled in behind the lock
+      closeDetails();
+    } else if (!writerNote && !detailsVisible) {
+      setUnlockedId(null);
+    }
+  }, [isLocked]);
+
+  useEffect(() => {
+    if (isLocked || !writerNeedsPin || !writerNote) return;
+    requirePin(writerNote, 'resume', () => setWriterNeedsPin(false));
+  }, [isLocked, writerNeedsPin]);
 
   const isUnlocked = (note: Note) => !note.isSensitive || (note.id != null && note.id === unlockedId);
 
@@ -273,6 +314,8 @@ export default function NotesView({ isMobile }: NotesViewProps) {
 
     if (action === 'edit') openDetails(note);
     else if (action === 'delete') confirmDelete(note);
+    // The writer is still holding what was typed; it only comes back into view
+    else if (action === 'resume') setWriterNeedsPin(false);
     else openWriter(note);
   };
 
@@ -748,7 +791,7 @@ export default function NotesView({ isMobile }: NotesViewProps) {
       </Modal>
 
       {/* STEP 2 — writing. Full screen, with Save in the top bar so the keyboard can never cover it. */}
-      <Modal visible={!!writerNote} animationType="slide" onRequestClose={closeWriter}>
+      <Modal visible={!!writerNote && !writerNeedsPin} animationType="slide" onRequestClose={closeWriter}>
         <View
           ref={keyboard.containerRef}
           onLayout={keyboard.onLayout}
@@ -967,8 +1010,42 @@ export default function NotesView({ isMobile }: NotesViewProps) {
               </Text>
 
               <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                {/* Following the tab colour is the default, and picking it again
+                    goes back to that from a paper chosen here */}
+                {writerTab.key !== DEFAULT_NOTE_TAB_COLOR_KEY && (
+                  <TouchableOpacity
+                    onPress={() => liveWriterNote?.id != null && setNoteColors(liveWriterNote.id, { pageColor: null })}
+                    style={{ width: '20%', alignItems: 'center', marginBottom: 10 }}
+                    accessibilityLabel="Match the tab colour"
+                  >
+                    <View
+                      style={{
+                        width: 34,
+                        height: 34,
+                        borderRadius: 10,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        backgroundColor: tabPaper.paper,
+                        borderWidth: !liveWriterNote?.pageColor ? 2 : 1,
+                        borderColor: !liveWriterNote?.pageColor ? AppTheme.colors.primary : tabPaper.rule,
+                      }}
+                    >
+                      {!liveWriterNote?.pageColor
+                        ? <Ionicons name="checkmark" size={13} color={AppTheme.colors.primary} />
+                        : <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: writerTab.accent }} />}
+                    </View>
+                    <Text style={{ fontSize: 10, color: AppTheme.colors.textSecondary, marginTop: 4 }} numberOfLines={1}>
+                      Tab colour
+                    </Text>
+                    <Text style={{ fontSize: 8.5, fontWeight: '600', color: AppTheme.colors.textMuted, marginTop: 1 }}>
+                      Default
+                    </Text>
+                  </TouchableOpacity>
+                )}
+
                 {PAGE_COLORS.map(option => {
-                  const isChosen = option.key === (liveWriterNote?.pageColor || '') || (!liveWriterNote?.pageColor && option.paper === paper.paper);
+                  const isChosen = option.key === (liveWriterNote?.pageColor || '')
+                    || (!liveWriterNote?.pageColor && writerTab.key === DEFAULT_NOTE_TAB_COLOR_KEY && option.paper === paper.paper);
                   return (
                     <TouchableOpacity
                       key={option.key}
@@ -993,7 +1070,7 @@ export default function NotesView({ isMobile }: NotesViewProps) {
                       <Text style={{ fontSize: 10, color: AppTheme.colors.textSecondary, marginTop: 4 }} numberOfLines={1}>
                         {option.label}
                       </Text>
-                      {option.key === DEFAULT_PAGE_COLOR_KEY && (
+                      {option.key === DEFAULT_PAGE_COLOR_KEY && writerTab.key === DEFAULT_NOTE_TAB_COLOR_KEY && (
                         <Text style={{ fontSize: 8.5, fontWeight: '600', color: AppTheme.colors.textMuted, marginTop: 1 }}>
                           Default
                         </Text>
@@ -1064,7 +1141,7 @@ export default function NotesView({ isMobile }: NotesViewProps) {
       </Modal>
 
       {/* NOTE PIN PROMPT */}
-      <Modal visible={!!pinModalNote} transparent animationType="fade" onRequestClose={() => setPinModalNote(null)}>
+      <Modal visible={!!pinModalNote} transparent animationType="fade" onRequestClose={closePinModal}>
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={{ flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'center', padding: 18 }}
@@ -1115,11 +1192,7 @@ export default function NotesView({ isMobile }: NotesViewProps) {
               )}
               <View style={{ flexDirection: 'row' }}>
                 <TouchableOpacity
-                  onPress={() => {
-                    setPinModalNote(null);
-                    setPinInput('');
-                    setPinError('');
-                  }}
+                  onPress={closePinModal}
                   style={{
                     flex: 1,
                     paddingVertical: 13,

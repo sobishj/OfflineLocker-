@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, Modal, StyleSheet, useWindowDimensions, Pressable, Keyboard } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, useWindowDimensions, Pressable, Keyboard } from 'react-native';
+import Modal from './AppModal';
 import { Ionicons } from '@expo/vector-icons';
 import { AppTheme } from '../theme/AppTheme';
 import { useLockerStore } from '../store/useLockerStore';

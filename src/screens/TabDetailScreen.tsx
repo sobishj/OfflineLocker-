@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, Alert, ActivityIndicator, Image, Platform, ScrollView, KeyboardAvoidingView, Keyboard, useWindowDimensions } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, Alert, ActivityIndicator, Image, Platform, ScrollView, KeyboardAvoidingView, Keyboard, useWindowDimensions } from 'react-native';
+import Modal from '../components/AppModal';
 import { useLockerStore } from '../store/useLockerStore';
 import { AppTheme } from '../theme/AppTheme';
 import ModalCloseButton from '../components/ModalCloseButton';
@@ -22,6 +23,7 @@ import * as Clipboard from 'expo-clipboard';
 import { inflate as inflateStream } from 'pako';
 import { recognizeTextFromImage, extractDatesFromMrz, isOcrAvailable } from '../services/OcrService';
 import PdfRasterizer from '../components/PdfRasterizer';
+import TabRelockGate from '../components/TabRelockGate';
 import { withoutAutoLock } from '../services/AutoLockService';
 import { ensureDecryptedCacheDir } from '../services/FileCacheService';
 import { buildImagePdf, PdfImage } from '../services/PdfBuilder';
@@ -583,7 +585,19 @@ export default function TabDetailScreen({ route, navigation }: any) {
   const insets = useSafeAreaInsets();
   const tabId = route?.params?.tabId;
   const unlockPin = route?.params?.unlockPin;
-  const { tabs, activeDocuments, loadDocumentsForTab, addDocument, updateDocument, deleteDocument, getDocumentContent, setDocumentMeta, decryptValue, upgradeDocumentContent, legacyTabPin, logout, currentUser, themeVersion } = useLockerStore();
+  const { tabs, activeDocuments, loadDocumentsForTab, addDocument, updateDocument, deleteDocument, getDocumentContent, setDocumentMeta, decryptValue, upgradeDocumentContent, legacyTabPin, logout, currentUser, themeVersion, isLocked, relockTabId, setOpenSensitiveTab, clearTabRelock } = useLockerStore();
+  const tabIsSensitive = (tabs || []).some(t => t.uuid === tabId && t.isSensitive === 1);
+
+  // A sensitive tab on screen when the app locks asks for its own PIN again
+  // after the app PIN, with everything in it left as it was
+  useEffect(() => {
+    if (!tabIsSensitive) return;
+    setOpenSensitiveTab(tabId);
+    return () => {
+      setOpenSensitiveTab(null);
+      if (useLockerStore.getState().relockTabId === tabId) clearTabRelock();
+    };
+  }, [tabIsSensitive, tabId]);
   const styles = useMemo(() => createStyles(), [themeVersion]);
   const { width: screenWidth } = useWindowDimensions();
   const isMobile = screenWidth < 768;
@@ -805,7 +819,9 @@ export default function TabDetailScreen({ route, navigation }: any) {
   }, [activeDocuments, previewDoc, loading]);
 
   const isSharingRef = useRef(false);
-  const isPickerBusyRef = useRef(false);
+  // When the last camera, gallery or PDF picker was asked for, or 0 when none
+  // is pending
+  const pickerStartedRef = useRef(0);
   const isViewingRef = useRef(false);
   const lastTapRef = useRef<{ id: string | number; time: number } | null>(null);
   const rightPaneTapRef = useRef<{ id: string | number; time: number } | null>(null);
@@ -854,6 +870,22 @@ export default function TabDetailScreen({ route, navigation }: any) {
       }
     }
     return uri;
+  };
+
+  /**
+   * Whether a picker may open now. A second tap straight after the first is
+   * ignored, but nothing longer: while a picker is really up it covers the
+   * screen, so a tap that reaches the button means the last one never came
+   * back. On an iPhone that happens when iOS declines to show the picker, and
+   * a lock held until then left the PDF, camera and gallery buttons doing
+   * nothing at all until the screen was left.
+   */
+  const beginPicker = (): boolean => {
+    const now = Date.now();
+    if (pickerStartedRef.current && now - pickerStartedRef.current < 1500) return false;
+    pickerStartedRef.current = now;
+    Keyboard.dismiss();
+    return true;
   };
 
   const [webCameraTarget, setWebCameraTarget] = useState<'add' | 'edit'>('add');
@@ -1013,8 +1045,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
   };
 
   const handleTakePhoto = async (isEdit = false) => {
-    if (isPickerBusyRef.current) return;
-    isPickerBusyRef.current = true;
+    if (!beginPicker()) return;
     try {
       if (Platform.OS === 'web') {
         setWebCameraTarget(isEdit ? 'edit' : 'add');
@@ -1062,7 +1093,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
     } catch (e) {
       console.warn('Camera launch error:', e);
     } finally {
-      isPickerBusyRef.current = false;
+      pickerStartedRef.current = 0;
     }
   };
 
@@ -1090,8 +1121,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
   };
 
   const handleGalleryPick = async (isEdit = false) => {
-    if (isPickerBusyRef.current) return;
-    isPickerBusyRef.current = true;
+    if (!beginPicker()) return;
     try {
       const result = await withoutAutoLock(() => ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
@@ -1135,13 +1165,12 @@ export default function TabDetailScreen({ route, navigation }: any) {
     } catch (e) {
       console.warn('Gallery pick error:', e);
     } finally {
-      isPickerBusyRef.current = false;
+      pickerStartedRef.current = 0;
     }
   };
 
   const handleUploadFile = async (isEdit = false) => {
-    if (isPickerBusyRef.current) return;
-    isPickerBusyRef.current = true;
+    if (!beginPicker()) return;
     try {
       const result = await withoutAutoLock(() => DocumentPicker.getDocumentAsync({
         type: 'application/pdf',
@@ -1188,9 +1217,17 @@ export default function TabDetailScreen({ route, navigation }: any) {
       }
     } catch (error) {
       console.warn('PDF pick error:', error);
-      Alert.alert('Could not add the PDF', saveFailureMessage(error));
+      if (/in progress/i.test(String((error as any)?.message || error))) {
+        // iOS still counts an earlier picker as open, and only a restart clears it
+        Alert.alert(
+          'Could not open the file picker',
+          'An earlier file picker did not close properly. Please close OfflineLocker completely and open it again, then try once more.'
+        );
+      } else {
+        Alert.alert('Could not add the PDF', saveFailureMessage(error));
+      }
     } finally {
-      isPickerBusyRef.current = false;
+      pickerStartedRef.current = 0;
     }
   };
 
@@ -2152,6 +2189,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
   };
 
   const currentTab = (tabs || []).find(t => t.uuid === tabId);
+  const needsTabPinAgain = !!currentTab && relockTabId === tabId && !isLocked;
   const displayTabName = route?.params?.tabName || currentTab?.name || 'General Vault';
   const displayTabDesc = currentTab?.description || 'Default secure storage tab';
 
@@ -4022,6 +4060,14 @@ ${payload.notes}`);
         </TouchableOpacity>
       </Modal>
 
+      {needsTabPinAgain && currentTab && (
+        <TabRelockGate
+          tab={currentTab}
+          // Leaving clears the request as the screen unmounts, so its windows
+          // never flash back up on the way out
+          onLeave={() => navigation.goBack()}
+        />
+      )}
     </View>
   );
 }
