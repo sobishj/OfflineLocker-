@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, Alert, ActivityIndicator, Image, Platform, ScrollView, KeyboardAvoidingView, Keyboard, useWindowDimensions } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, Alert, ActivityIndicator, Image, Platform, ScrollView, KeyboardAvoidingView, Keyboard, useWindowDimensions, Animated } from 'react-native';
 import Modal from '../components/AppModal';
 import { useLockerStore } from '../store/useLockerStore';
 import { AppTheme } from '../theme/AppTheme';
@@ -21,12 +21,14 @@ import { StorageService } from '../utils/storage';
 import DatePickerModal, { parseDateString, formatDate, toDisplayDate } from '../components/DatePickerModal';
 import * as Clipboard from 'expo-clipboard';
 import { inflate as inflateStream } from 'pako';
-import { recognizeTextFromImage, extractDatesFromMrz, isOcrAvailable } from '../services/OcrService';
+import { recognizeTextFromImage, recognizeRotatedText, extractDatesFromMrz, isOcrAvailable } from '../services/OcrService';
 import PdfRasterizer from '../components/PdfRasterizer';
 import TabRelockGate from '../components/TabRelockGate';
 import { withoutAutoLock } from '../services/AutoLockService';
 import { ensureDecryptedCacheDir } from '../services/FileCacheService';
 import { buildImagePdf, PdfImage } from '../services/PdfBuilder';
+import ReorderControls from '../components/ReorderControls';
+import { useCustomOrder, useDragReorder, applyCustomOrder, moveKey } from '../hooks/useCustomOrder';
 
 const MONTHS = 'jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec';
 const DATE_PATTERN = new RegExp(
@@ -376,16 +378,100 @@ const panFromRun = (run: string): string => {
 };
 
 /**
+ * Letters OCR reads in place of digits on embossed or glossy card faces. They
+ * are only swapped inside a run that is already mostly digits and stands
+ * apart from any word, so "BOSS" or "VISA" is never touched while "4O12" and
+ * "O5/2B" become "4012" and "05/28".
+ */
+const OCR_DIGIT_LOOKALIKES: Record<string, string> = {
+  O: '0', o: '0', Q: '0', D: '0',
+  I: '1', l: '1', i: '1', '|': '1', '!': '1',
+  Z: '2', z: '2', S: '5', s: '5', B: '8', G: '6', b: '6',
+};
+const LOOKALIKE_RUN = /(^|[^A-Za-z])([0-9OoQDIli|!ZzSsBGb]+)(?![A-Za-z])/g;
+
+const normaliseOcrDigits = (text: string): string =>
+  text.replace(LOOKALIKE_RUN, (whole, lead: string, run: string) => {
+    const digits = run.replace(/\D/g, '').length;
+    if (!digits || digits === run.length || digits * 2 < run.length) return whole;
+    return lead + run.replace(/\D/g, c => OCR_DIGIT_LOOKALIKES[c] || c);
+  });
+
+/** The text as read, then with look-alike letters corrected, when that differs. */
+const cardTextVariants = (text: string): string[] => {
+  const normalised = normaliseOcrDigits(text);
+  return normalised === text ? [text] : [text, normalised];
+};
+
+// The ways card numbers are printed: 4-4-4-4 for most, 4-6-5 for Amex, 4-6-4
+// for Diners, and the longer 19-digit Maestro/RuPay forms
+const CARD_GROUPINGS = new Set(['4,4,4,4', '4,4,4,4,3', '4,4,4,4,2', '4,4,4,4,1', '4,6,5', '4,6,4', '4,4,4,3', '4,4,4,1']);
+
+/** Standalone digit groups in reading order, ignoring dates and other punctuated numbers. */
+const digitGroups = (text: string): string[] =>
+  text
+    .split(/\s+/)
+    .map(token => token.replace(/^[^\d]+|[.,;:]+$/g, ''))
+    .filter(token => /^\d{1,6}$/.test(token));
+
+/**
+ * ML Kit often returns each group of a card number as its own line or block
+ * when the gaps between them are wide, which the line-at-a-time pass above
+ * cannot see. The groups are put back together here, but only in one of the
+ * shapes card numbers are actually printed in, starting with a digit a card
+ * network uses, and — unless `requireLuhn` is off — passing the check digit.
+ */
+const findGroupedCardNumber = (text: string, requireLuhn = true): string => {
+  const groups = digitGroups(text);
+  for (let from = 0; from < groups.length; from++) {
+    if (!/^[2-6]/.test(groups[from])) continue;
+    let digits = '';
+    const lengths: number[] = [];
+    for (let to = from; to < groups.length && lengths.length < 5; to++) {
+      digits += groups[to];
+      lengths.push(groups[to].length);
+      if (digits.length > 19) break;
+      if (!CARD_GROUPINGS.has(lengths.join(','))) continue;
+      if (!requireLuhn ? lengths.join(',') === '4,4,4,4' : isLuhnValid(digits)) return groupInFours(digits);
+    }
+  }
+  return '';
+};
+
+/**
  * Finds a payment card number and returns it grouped in fours for readability.
- * Read a line at a time, because a card prints its number on one line and a
- * run allowed to cross line breaks swallows whatever OCR put underneath it.
+ * Read a line at a time first, because a card prints its number on one line
+ * and a run allowed to cross line breaks swallows whatever OCR put underneath
+ * it. Only then are groups OCR split across lines joined back up.
  */
 const findCardNumber = (text: string): string => {
-  for (const line of text.split(/\r?\n/)) {
-    for (const run of line.match(/\d[\d -]{11,22}\d/g) || []) {
-      const found = panFromRun(run);
-      if (found) return found;
+  const variants = cardTextVariants(text);
+  for (const variant of variants) {
+    for (const line of variant.split(/\r?\n/)) {
+      for (const run of line.match(/\d[\d -]{11,22}\d/g) || []) {
+        const found = panFromRun(run);
+        if (found) return found;
+      }
     }
+  }
+  for (const variant of variants) {
+    const found = findGroupedCardNumber(variant);
+    if (found) return found;
+  }
+  return '';
+};
+
+/**
+ * A number printed exactly like a card number on something that says it is a
+ * card, even though one digit was misread and the check fails. Filling in 15
+ * right digits out of 16 is far less work than typing all of them, and the
+ * user sees and confirms the field before saving.
+ */
+const findUnverifiedCardNumber = (text: string): string => {
+  if (!CARD_HINTS.test(text)) return '';
+  for (const variant of cardTextVariants(text)) {
+    const found = findGroupedCardNumber(variant, false);
+    if (found) return found;
   }
   return '';
 };
@@ -396,7 +482,8 @@ const findCardNumber = (text: string): string => {
  * document looks like a card, every MM/YY on it is collected and the pair is
  * resolved by whatever cue is nearby, falling back on chronology.
  */
-const MONTH_YEAR_SCAN = /(^|[^\d\/\-.])(0?[1-9]|1[0-2])\s*[\/\-]\s*(\d{2})(?![\d\/\-.])/g;
+// The year is two digits on nearly every card, but some print all four
+const MONTH_YEAR_SCAN = /(^|[^\d\/\-.])(0?[1-9]|1[0-2])\s*[\/\-]\s*(20\d{2}|\d{2})(?![\d\/\-.])/g;
 
 const CARD_HINTS = /valid\s*(?:thru|through|from)|good\s*(?:thru|through)|member\s*since|month\s*\/\s*year|mm\s*\/\s*yy|visa|mastercard|master\s*card|maestro|rupay|amex|american\s*express|discover|credit\s*card|debit\s*card|cvv|cvc/i;
 
@@ -413,14 +500,25 @@ type MonthYearHit = { month: number; year: number; cue: 'start' | 'end' | 'none'
 const findCardValidity = (text: string): { startDate: string; endDate: string } => {
   if (!looksLikeCard(text)) return { startDate: '', endDate: '' };
 
-  const hits: MonthYearHit[] = [];
-  const scan = new RegExp(MONTH_YEAR_SCAN.source, 'g');
-  let hit: RegExpExecArray | null;
-  while ((hit = scan.exec(text)) !== null) {
-    const at = hit.index + hit[1].length;
-    const before = text.slice(Math.max(0, at - 28), at);
-    const cue = END_CUES.test(before) ? 'end' : START_CUES.test(before) ? 'start' : 'none';
-    hits.push({ month: Number(hit[2]), year: Number(hit[3]), cue });
+  const collect = (source: string): MonthYearHit[] => {
+    const found: MonthYearHit[] = [];
+    const scan = new RegExp(MONTH_YEAR_SCAN.source, 'g');
+    let hit: RegExpExecArray | null;
+    while ((hit = scan.exec(source)) !== null) {
+      const at = hit.index + hit[1].length;
+      const before = source.slice(Math.max(0, at - 28), at);
+      const cue = END_CUES.test(before) ? 'end' : START_CUES.test(before) ? 'start' : 'none';
+      found.push({ month: Number(hit[2]), year: Number(hit[3]) % 100, cue });
+    }
+    return found;
+  };
+
+  // A misread such as "O5/2B" is only corrected when the text as read has no
+  // month and year at all, so a clean read is never second-guessed
+  let hits: MonthYearHit[] = [];
+  for (const variant of cardTextVariants(text)) {
+    hits = collect(variant);
+    if (hits.length) break;
   }
   if (!hits.length) return { startDate: '', endDate: '' };
 
@@ -479,7 +577,7 @@ export const extractDocumentNumber = (text: string): string => {
   if (!text || typeof text !== 'string') return '';
   const { documentNumber } = extractDatesFromMrz(text);
   if (documentNumber && isPlausibleNumber(documentNumber)) return documentNumber;
-  const card = findCardNumber(text);
+  const card = findCardNumber(text) || findUnverifiedCardNumber(text);
   if (card) return card;
   return findNumberAfterLabel(text, NUMBER_LABELS);
 };
@@ -725,15 +823,17 @@ export default function TabDetailScreen({ route, navigation }: any) {
   };
 
   // Document Sort state
-  type DocSortOption = 'newest' | 'oldest' | 'name_asc' | 'name_desc';
+  type DocSortOption = 'newest' | 'oldest' | 'name_asc' | 'name_desc' | 'custom';
   const [sortOption, setSortOption] = useState<DocSortOption>('newest');
   const [sortModalVisible, setSortModalVisible] = useState(false);
   const [docSearch, setDocSearch] = useState('');
+  // Each category keeps its own arrangement of its files
+  const docOrder = useCustomOrder(tabId ? `@offline_locker_doc_order_${tabId}` : null);
 
   useEffect(() => {
     const loadDocSortPref = async () => {
       const saved = await StorageService.getItem('@offline_locker_doc_sort_option');
-      if (saved && ['newest', 'oldest', 'name_asc', 'name_desc'].includes(saved)) {
+      if (saved && ['newest', 'oldest', 'name_asc', 'name_desc', 'custom'].includes(saved)) {
         setSortOption(saved as DocSortOption);
       }
     };
@@ -745,6 +845,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
     { id: 'oldest', label: 'Oldest First', desc: 'Earliest added files appear first', icon: 'hourglass-outline' },
     { id: 'name_asc', label: 'File Name (A to Z)', desc: 'Alphabetical file order', icon: 'text-outline' },
     { id: 'name_desc', label: 'File Name (Z to A)', desc: 'Reverse alphabetical order', icon: 'text-outline' },
+    { id: 'custom', label: 'Custom Order', desc: 'Your own order: drag or use the arrows to move', icon: 'reorder-three-outline' },
   ];
 
   const getDocSortLabel = (opt: DocSortOption) => {
@@ -753,6 +854,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
       case 'oldest': return 'Oldest First';
       case 'name_asc': return 'Name (A–Z)';
       case 'name_desc': return 'Name (Z–A)';
+      case 'custom': return 'Custom Order';
       default: return 'Sort';
     }
   };
@@ -768,10 +870,24 @@ export default function TabDetailScreen({ route, navigation }: any) {
         return list.sort((a, b) => (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' }));
       case 'name_desc':
         return list.sort((a, b) => (b.title || '').localeCompare(a.title || '', undefined, { sensitivity: 'base' }));
+      case 'custom':
+        // Files added since the list was arranged come first, newest on top
+        list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        return applyCustomOrder(list, d => String(d.id), docOrder.order);
       default:
         return list;
     }
-  }, [activeDocuments, sortOption]);
+  }, [activeDocuments, sortOption, docOrder.order]);
+
+  const docKeys = useMemo(() => sortedDocuments.map(d => String(d.id)), [sortedDocuments]);
+  const docDrag = useDragReorder(docKeys, docOrder.setOrder);
+  // Rows are only moved within the whole list, never among search results
+  const isArrangingDocs = sortOption === 'custom' && !docSearch.trim();
+
+  const moveDoc = (key: string, step: -1 | 1) => {
+    const from = docKeys.indexOf(key);
+    docOrder.setOrder(moveKey(docKeys, from, from + step));
+  };
 
   useEffect(() => {
     // Reset preview state and decryption cache when switching tabs
@@ -962,7 +1078,22 @@ export default function TabDetailScreen({ route, navigation }: any) {
     });
   };
 
-  const autoFetchDetailsFromDocument = async (isEdit: boolean, sources: { fileName?: string; dataUri?: string }) => {
+  // Several scans can be in flight at once (the photo, then its crop), and the
+  // spinner stays up until the last of them is done
+  const scansInFlightRef = useRef(0);
+
+  /**
+   * Reads the picture's details. `ocrUri` is the picture as the camera or
+   * gallery handed it over, before it was scaled down for storage: small print
+   * such as an embossed card number reads better at full resolution.
+   * `fillMissingOnly` is for a second look at the same document (its crop),
+   * which may add what the first scan missed but never replaces what it found.
+   */
+  const autoFetchDetailsFromDocument = async (
+    isEdit: boolean,
+    sources: { fileName?: string; dataUri?: string; ocrUri?: string },
+    fillMissingOnly = false,
+  ) => {
     const alreadyEdited = isEdit ? editDocDatesEdited : docDatesEdited;
     if (alreadyEdited) return;
 
@@ -978,6 +1109,21 @@ export default function TabDetailScreen({ route, navigation }: any) {
      * blanks too would wipe a value the previous pass had recovered.
      */
     const apply = (found: Found) => {
+      if (fillMissingOnly) {
+        const keep = (value: string) => (prev: string) => prev.trim() ? prev : value;
+        if (isEdit) {
+          if (found.startDate) setEditDocStartDate(keep(found.startDate));
+          if (found.endDate) setEditDocEndDate(keep(found.endDate));
+          if (found.number) setEditDocNumber(keep(found.number));
+          if (found.startDate || found.endDate) setEditDocHasExpiry(true);
+        } else {
+          if (found.startDate) setDocStartDate(keep(found.startDate));
+          if (found.endDate) setDocEndDate(keep(found.endDate));
+          if (found.number) setDocNumber(keep(found.number));
+          if (found.startDate || found.endDate) setDocHasExpiry(true);
+        }
+        return;
+      }
       if (isEdit) {
         if (found.startDate) setEditDocStartDate(found.startDate);
         if (found.endDate) setEditDocEndDate(found.endDate);
@@ -1013,12 +1159,21 @@ export default function TabDetailScreen({ route, navigation }: any) {
     apply(found);
 
     const isComplete = (f: Found) => !!f.startDate && !!f.endDate && !!f.number;
+    const foundAny = (f: Found) => !!(f.startDate || f.endDate || f.number);
+    // A second look only ever adds, so it cannot take back a "found"
+    const report = (status: 'found' | 'none' | 'unavailable') => {
+      if (fillMissingOnly) {
+        if (status === 'found') setDateScanStatus('found');
+        return;
+      }
+      setDateScanStatus(status);
+    };
 
     // Anything still missing is worth a look at the document itself. Returning
     // early just because a filename yielded a number is what previously stopped
     // photos from ever reaching OCR.
     if (isComplete(found) || !sources.dataUri) {
-      setDateScanStatus(found.startDate || found.endDate || found.number ? 'found' : 'none');
+      report(foundAny(found) ? 'found' : 'none');
       return;
     }
 
@@ -1026,22 +1181,60 @@ export default function TabDetailScreen({ route, navigation }: any) {
     // recognition. Expo Go and the web build have no ML Kit, and staying quiet
     // about that looked like the document simply had no dates on it.
     if (!isOcrAvailable()) {
-      setDateScanStatus(found.startDate || found.endDate || found.number ? 'found' : 'unavailable');
+      report(foundAny(found) ? 'found' : 'unavailable');
       return;
     }
 
+    scansInFlightRef.current += 1;
     setIsScanningDates(true);
     try {
       const imageUri = isPdf ? await renderPdfFirstPage(sources.dataUri) : sources.dataUri;
-      const ocrText = imageUri ? await recognizeTextFromImage(imageUri) : '';
-      if (ocrText) {
-        found = merge(found, scan(`${textSources}\n${ocrText}`));
+      let ocrSoFar = '';
+      const read = async (text: string) => {
+        if (!text) return;
+        ocrSoFar += `\n${text}`;
+        found = merge(found, scan(`${textSources}\n${text}`));
         apply(found);
+      };
+      await read(imageUri ? await recognizeTextFromImage(imageUri) : '');
+
+      // A card's number and expiry are what the scan is mostly for, and the
+      // first read of a photo is the one most likely to miss them: the
+      // embossed digits are small once the picture is scaled down, or the
+      // card was photographed sideways. Each further look is only taken while
+      // something is still missing.
+      if (!isPdf && imageUri) {
+        const cardDetailsMissing = () => !found.number || !found.endDate;
+        if (cardDetailsMissing() && sources.ocrUri && sources.ocrUri !== imageUri) {
+          await read(await recognizeTextFromImage(sources.ocrUri));
+        }
+        // Turning the picture is for a scan that made out nothing useful,
+        // which is what sideways text looks like to the recogniser, or a card
+        // whose number is still missing. Other documents with no number on
+        // them are not put through two more reads for nothing.
+        for (const degrees of fillMissingOnly ? [] : [90, 270]) {
+          if (found.number) break;
+          if (foundAny(found) && !CARD_HINTS.test(ocrSoFar)) break;
+          await read(await recognizeRotatedText(imageUri, degrees));
+        }
       }
-      setDateScanStatus(found.startDate || found.endDate || found.number ? 'found' : 'none');
+      report(foundAny(found) ? 'found' : 'none');
     } finally {
-      setIsScanningDates(false);
+      scansInFlightRef.current -= 1;
+      if (scansInFlightRef.current <= 0) {
+        scansInFlightRef.current = 0;
+        setIsScanningDates(false);
+      }
     }
+  };
+
+  /**
+   * A crop leaves only the document in frame, which is worth reading again.
+   * Skipping the crop hands back the same picture, and that is not.
+   */
+  const rescanCroppedImage = (isEdit: boolean, croppedUri: string, previousUri?: string) => {
+    if (!croppedUri || !croppedUri.startsWith('data:image') || croppedUri === previousUri) return;
+    autoFetchDetailsFromDocument(isEdit, { dataUri: croppedUri }, true);
   };
 
   const handleTakePhoto = async (isEdit = false) => {
@@ -1088,7 +1281,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
             setDocTitle('Photo');
           }
         }
-        autoFetchDetailsFromDocument(isEdit, { dataUri: newUri });
+        autoFetchDetailsFromDocument(isEdit, { dataUri: newUri, ocrUri: result.assets[0].uri });
       }
     } catch (e) {
       console.warn('Camera launch error:', e);
@@ -1160,7 +1353,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
           }
         }
 
-        autoFetchDetailsFromDocument(isEdit, { fileName: pickedName, dataUri: newUri });
+        autoFetchDetailsFromDocument(isEdit, { fileName: pickedName, dataUri: newUri, ocrUri: firstAsset.uri });
       }
     } catch (e) {
       console.warn('Gallery pick error:', e);
@@ -1535,13 +1728,17 @@ export default function TabDetailScreen({ route, navigation }: any) {
   // file contents stay encrypted, so they are not searched.
   const visibleDocuments = useMemo(() => {
     const term = docSearch.trim().toLowerCase();
+    if (!term && sortOption === 'custom') {
+      const byKey = new Map(sortedDocuments.map(d => [String(d.id), d]));
+      return docDrag.orderedKeys.map(key => byKey.get(key)).filter(Boolean) as typeof sortedDocuments;
+    }
     if (!term) return sortedDocuments;
     return sortedDocuments.filter(doc => {
       if ((doc.title || '').toLowerCase().includes(term)) return true;
       const number = doc.id != null ? metaByDocId.get(doc.id)?.number : '';
       return !!number && number.toLowerCase().includes(term);
     });
-  }, [sortedDocuments, docSearch, metaByDocId]);
+  }, [sortedDocuments, docSearch, metaByDocId, sortOption, docDrag.orderedKeys]);
 
   /**
    * Expiry state per document, taken from the summary. This used to decrypt
@@ -2325,10 +2522,19 @@ export default function TabDetailScreen({ route, navigation }: any) {
               </TouchableOpacity>
             </View>
 
+            {sortOption === 'custom' && activeDocuments.length > 1 && (
+              <Text style={{ fontSize: isMobile ? 9.5 : 10, color: AppTheme.colors.textSecondary, textAlign: 'center', paddingHorizontal: 6, paddingTop: 6 }}>
+                {docSearch.trim() ? 'Clear the search to rearrange.' : 'Drag the handle or tap the arrows to rearrange.'}
+              </Text>
+            )}
+
             <FlatList
               data={visibleDocuments}
               keyboardShouldPersistTaps="handled"
               keyExtractor={item => item.id!.toString()}
+              scrollEnabled={!docDrag.isDragging}
+              extraData={docDrag.activeKey}
+              CellRendererComponent={isArrangingDocs ? docDrag.cellRendererFor(d => String(d.id)) : undefined}
               // Windowing: without these a vault of a few hundred documents
               // builds every row up front, on the thread drawing the screen
               initialNumToRender={12}
@@ -2336,8 +2542,9 @@ export default function TabDetailScreen({ route, navigation }: any) {
               updateCellsBatchingPeriod={50}
               windowSize={7}
               contentContainerStyle={{ padding: isMobile ? 9 : 8 }}
-              renderItem={({ item }) => {
+              renderItem={({ item, index }) => {
                 const isSelected = previewDoc?.id === item.id;
+                const orderKey = String(item.id);
                 const formattedDate = new Date(item.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
                 const expiry = item.id != null ? expiryByDocId.get(item.id) : undefined;
                 const expiryStyle = expiry ? EXPIRY_STYLES[expiry.status] : null;
@@ -2377,6 +2584,18 @@ export default function TabDetailScreen({ route, navigation }: any) {
                       width: '100%',
                     }}
                   >
+                    {isArrangingDocs && (
+                      <ReorderControls
+                        compact
+                        dragHandlers={docDrag.handlersFor(orderKey)}
+                        onMoveUp={() => moveDoc(orderKey, -1)}
+                        onMoveDown={() => moveDoc(orderKey, 1)}
+                        canMoveUp={index > 0}
+                        canMoveDown={index < visibleDocuments.length - 1}
+                        label={item.title}
+                      />
+                    )}
+
                     {/* Left File Type Icon Box (Compact) */}
                     <View style={{ marginRight: isMobile ? 7 : 8 }}>
                       {isPdf ? (
@@ -2484,12 +2703,15 @@ export default function TabDetailScreen({ route, navigation }: any) {
                   </TouchableOpacity>
                 );
 
-                return renderWithTooltip(
+                const row = renderWithTooltip(
                   cardContent,
                   `${item.title} (${formatFileSize(item)} • ${formattedDate})`,
                   'block',
                   () => handleViewDoc(item)
                 );
+                if (!isArrangingDocs) return row;
+                const { onLayout, style } = docDrag.rowProps(orderKey);
+                return <Animated.View onLayout={onLayout} style={style}>{row}</Animated.View>;
               }}
               ListEmptyComponent={
                 <View style={{ paddingVertical: isMobile ? 24 : 32, paddingHorizontal: isMobile ? 10 : 20, alignItems: 'center' }}>
@@ -3403,6 +3625,7 @@ ${payload.notes}`);
                 setFileUris(updated);
                 setCropIndex(null);
                 setCropTarget(null);
+                rescanCroppedImage(false, croppedBase64Uri, fileUris[cropIndex]);
               }}
               onCancel={() => {
                 setCropIndex(null);
@@ -3713,6 +3936,7 @@ ${payload.notes}`);
                 setEditFileUris(updated);
                 setCropIndex(null);
                 setCropTarget(null);
+                rescanCroppedImage(true, croppedBase64Uri, editFileUris[cropIndex]);
               }}
               onCancel={() => {
                 setCropIndex(null);
@@ -3887,6 +4111,7 @@ ${payload.notes}`);
                     updated[cropIndex] = croppedBase64Uri;
                     setFileUris(updated);
                   }
+                  rescanCroppedImage(cropTarget === 'edit', croppedBase64Uri, (cropTarget === 'edit' ? editFileUris : fileUris)[cropIndex]);
                   setCropIndex(null);
                   setCropTarget(null);
                 }}

@@ -1,5 +1,6 @@
 import { NativeModules, Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as ImageManipulator from 'expo-image-manipulator';
 
 /**
  * On-device text recognition. ML Kit is a native module, so it is required
@@ -59,7 +60,16 @@ export const recognizeTextFromImage = async (uri: string): Promise<string> => {
     console.warn('OCR could not stage the image:', e);
     return '';
   }
+  // A staged copy is a plain picture of the document sitting in the cache,
+  // so it goes as soon as it has been read
+  try {
+    return await recognizeFile(recognizer, fileUri);
+  } finally {
+    if (fileUri !== uri) FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => {});
+  }
+};
 
+const recognizeFile = async (recognizer: any, fileUri: string): Promise<string> => {
   // iOS turns the string it is given into an NSURL, which resolves only for a
   // proper file:// URL, while Android reads a bare path just as happily. Both
   // forms are tried rather than assuming which one this platform wanted.
@@ -76,6 +86,33 @@ export const recognizeTextFromImage = async (uri: string): Promise<string> => {
     }
   }
   return '';
+};
+
+/**
+ * Reads the picture turned a quarter or half turn. A card photographed with
+ * the phone held the other way comes out sideways, and ML Kit reads little or
+ * nothing of sideways text, so a scan that found nothing upright tries these.
+ */
+export const recognizeRotatedText = async (uri: string, degrees: number): Promise<string> => {
+  if (!uri || !isOcrAvailable()) return '';
+  let staged = '';
+  let rotated = '';
+  try {
+    staged = await ensureFileUri(uri);
+    const result = await ImageManipulator.manipulateAsync(
+      staged,
+      [{ rotate: degrees }],
+      { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }
+    );
+    rotated = result?.uri || '';
+    return rotated ? await recognizeTextFromImage(rotated) : '';
+  } catch (e) {
+    console.warn('OCR could not rotate the image:', e);
+    return '';
+  } finally {
+    if (staged && staged !== uri) FileSystem.deleteAsync(staged, { idempotent: true }).catch(() => {});
+    if (rotated) FileSystem.deleteAsync(rotated, { idempotent: true }).catch(() => {});
+  }
 };
 
 const yymmddToDate = (value: string): string => {

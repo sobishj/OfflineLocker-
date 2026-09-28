@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, Alert, KeyboardAvoidingView, Platform, ActivityIndicator, ScrollView, useWindowDimensions } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, Alert, KeyboardAvoidingView, Platform, ActivityIndicator, ScrollView, useWindowDimensions, Animated } from 'react-native';
 import Modal from '../components/AppModal';
 import { useLockerStore } from '../store/useLockerStore';
 import {
@@ -25,6 +25,8 @@ import { BACKUP_PASSWORD_MIN } from '../services/BackupService';
 import { NEW_PIN_LENGTH } from '../store/useLockerStore';
 import { withoutAutoLock } from '../services/AutoLockService';
 import BiometricToggle, { BiometricUnlockButton } from '../components/BiometricToggle';
+import ReorderControls from '../components/ReorderControls';
+import { useCustomOrder, useDragReorder, applyCustomOrder, moveKey } from '../hooks/useCustomOrder';
 import { BiometricService, BiometricScopes } from '../services/BiometricService';
 
 type DashboardProps = {
@@ -181,14 +183,17 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   const newPinInputRef = useRef<TextInput | null>(null);
 
   // Category Sort state
-  type SortOption = 'newest' | 'oldest' | 'name_asc' | 'name_desc';
+  type SortOption = 'newest' | 'oldest' | 'name_asc' | 'name_desc' | 'custom';
   const [sortOption, setSortOption] = useState<SortOption>('newest');
   const [sortModalVisible, setSortModalVisible] = useState(false);
+  const [tabSearch, setTabSearch] = useState('');
+  // The order the user arranged the categories in, kept per account
+  const tabOrder = useCustomOrder(currentUser?.uuid ? `@offline_locker_tab_order_${currentUser.uuid}` : null);
 
   useEffect(() => {
     const loadTabSortPref = async () => {
       const saved = await StorageService.getItem('@offline_locker_tab_sort_option');
-      if (saved && ['newest', 'oldest', 'name_asc', 'name_desc'].includes(saved)) {
+      if (saved && ['newest', 'oldest', 'name_asc', 'name_desc', 'custom'].includes(saved)) {
         setSortOption(saved as SortOption);
       }
     };
@@ -200,6 +205,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     { id: 'oldest', label: 'Oldest First', desc: 'Earliest created categories appear first', icon: 'hourglass-outline' },
     { id: 'name_asc', label: 'Name (A to Z)', desc: 'Alphabetical category order', icon: 'text-outline' },
     { id: 'name_desc', label: 'Name (Z to A)', desc: 'Reverse alphabetical category order', icon: 'text-outline' },
+    { id: 'custom', label: 'Custom Order', desc: 'Your own order: drag or use the arrows to move', icon: 'reorder-three-outline' },
   ];
 
   const getSortLabel = (opt: SortOption) => {
@@ -208,6 +214,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       case 'oldest': return 'Oldest First';
       case 'name_asc': return 'Name (A–Z)';
       case 'name_desc': return 'Name (Z–A)';
+      case 'custom': return 'Custom Order';
       default: return 'Sort';
     }
   };
@@ -223,10 +230,37 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
         return list.sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
       case 'name_desc':
         return list.sort((a, b) => (b.name || '').localeCompare(a.name || '', undefined, { sensitivity: 'base' }));
+      case 'custom':
+        // Categories added since the list was arranged come first, newest on top
+        list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        return applyCustomOrder(list, t => t.uuid, tabOrder.order);
       default:
         return list;
     }
-  }, [tabs, sortOption]);
+  }, [tabs, sortOption, tabOrder.order]);
+
+  const tabKeys = useMemo(() => sortedTabs.map(t => t.uuid), [sortedTabs]);
+  const tabDrag = useDragReorder(tabKeys, tabOrder.setOrder);
+  // Arranging is only offered over the whole list: moving a row among search
+  // results would say nothing about where it sits among the hidden ones
+  const isArrangingTabs = sortOption === 'custom' && !tabSearch.trim();
+
+  const visibleTabs = useMemo(() => {
+    const term = tabSearch.trim().toLowerCase();
+    if (term) {
+      return sortedTabs.filter(t =>
+        (t.name || '').toLowerCase().includes(term) || (t.description || '').toLowerCase().includes(term)
+      );
+    }
+    if (sortOption !== 'custom') return sortedTabs;
+    const byKey = new Map(sortedTabs.map(t => [t.uuid, t]));
+    return tabDrag.orderedKeys.map(key => byKey.get(key)).filter(Boolean) as typeof sortedTabs;
+  }, [sortedTabs, tabSearch, sortOption, tabDrag.orderedKeys]);
+
+  const moveTab = (uuid: string, step: -1 | 1) => {
+    const from = tabKeys.indexOf(uuid);
+    tabOrder.setOrder(moveKey(tabKeys, from, from + step));
+  };
 
   // Imperative hidden file input for Web — native DOM event, immune to React Modal layering
   const webFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -849,8 +883,12 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
       {homeTab === 'files' && (
       <FlatList
         style={{ flex: 1 }}
-        data={sortedTabs}
+        data={visibleTabs}
         keyExtractor={item => item.uuid}
+        scrollEnabled={!tabDrag.isDragging}
+        extraData={tabDrag.activeKey}
+        CellRendererComponent={isArrangingTabs ? tabDrag.cellRendererFor(t => t.uuid) : undefined}
+        keyboardShouldPersistTaps="handled"
         initialNumToRender={12}
         maxToRenderPerBatch={10}
         updateCellsBatchingPeriod={50}
@@ -873,15 +911,47 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 <Ionicons name="chevron-down" size={13} color={AppTheme.colors.textSecondary} style={{ marginLeft: 4 }} />
               </TouchableOpacity>
             </View>
+            <View style={styles.tabSearchBox}>
+              <Ionicons name="search" size={15} color="#94a3b8" />
+              <TextInput
+                style={styles.tabSearchInput}
+                placeholder="Search categories"
+                placeholderTextColor="#94a3b8"
+                value={tabSearch}
+                onChangeText={setTabSearch}
+              />
+              {!!tabSearch && (
+                <TouchableOpacity onPress={() => setTabSearch('')} style={{ padding: 4 }}>
+                  <Ionicons name="close-circle" size={15} color="#94a3b8" />
+                </TouchableOpacity>
+              )}
+            </View>
+            {sortOption === 'custom' && tabs.length > 1 && (
+              <Text style={styles.arrangeHint}>
+                {tabSearch.trim()
+                  ? 'Clear the search to rearrange categories.'
+                  : 'Drag the handle, or tap the arrows, to rearrange.'}
+              </Text>
+            )}
           </View>
         }
-        renderItem={({ item }) => {
+        renderItem={({ item, index }) => {
           const docCount = tabDocCounts[item.uuid] || 0;
-          return renderWithTooltip(
-            <TouchableOpacity 
-              style={styles.tabCard} 
+          const row = renderWithTooltip(
+            <TouchableOpacity
+              style={styles.tabCard}
               onPress={() => handleTabPress(item)}
             >
+              {isArrangingTabs && (
+                <ReorderControls
+                  dragHandlers={tabDrag.handlersFor(item.uuid)}
+                  onMoveUp={() => moveTab(item.uuid, -1)}
+                  onMoveDown={() => moveTab(item.uuid, 1)}
+                  canMoveUp={index > 0}
+                  canMoveDown={index < visibleTabs.length - 1}
+                  label={item.name}
+                />
+              )}
               {/* Category Folder Icon Badge */}
               <View style={styles.folderIconContainer}>
                 <Ionicons 
@@ -937,8 +1007,15 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
             `Open ${item.name} Vault Category`,
             'block'
           );
+          if (!isArrangingTabs) return row;
+          const { onLayout, style } = tabDrag.rowProps(item.uuid);
+          return <Animated.View onLayout={onLayout} style={style}>{row}</Animated.View>;
         }}
-        ListEmptyComponent={<Text style={styles.emptyText}>No tabs available. Create one below.</Text>}
+        ListEmptyComponent={
+          <Text style={styles.emptyText}>
+            {tabSearch.trim() && tabs.length > 0 ? 'No matching categories.' : 'No tabs available. Create one below.'}
+          </Text>
+        }
       />
       )}
 
@@ -2453,6 +2530,18 @@ const createStyles = () => StyleSheet.create({
   editBtn: { width: 32, height: 32, borderRadius: 8, backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#cbd5e1', justifyContent: 'center', alignItems: 'center' },
   deleteBtn: { width: 32, height: 32, borderRadius: 8, backgroundColor: '#fef2f2', borderWidth: 1, borderColor: '#fecaca', justifyContent: 'center', alignItems: 'center', marginLeft: 6 },
   sectionHeaderContainer: { marginTop: 8, marginBottom: AppTheme.spacing.l, paddingHorizontal: 4 },
+  tabSearchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    marginTop: 12,
+  },
+  tabSearchInput: { flex: 1, minWidth: 0, paddingVertical: 9, paddingHorizontal: 8, fontSize: 13, color: AppTheme.colors.text },
+  arrangeHint: { fontSize: 11.5, color: AppTheme.colors.textSecondary, marginTop: 8, marginLeft: 2 },
   sectionTitle: { color: AppTheme.colors.text, fontSize: 24, fontWeight: 'bold', letterSpacing: -0.3 },
   sectionSubtitle: { color: AppTheme.colors.textSecondary, fontSize: 15, marginTop: 4 },
   folderIconContainer: { width: 36, height: 36, borderRadius: 10, backgroundColor: AppTheme.colors.iconFolderBg, justifyContent: 'center', alignItems: 'center', marginRight: 10, position: 'relative' },

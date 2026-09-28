@@ -10,6 +10,7 @@ import {
   KeyboardAvoidingView,
   Keyboard,
   Platform,
+  Animated,
 } from 'react-native';
 import Modal from './AppModal';
 import { Ionicons } from '@expo/vector-icons';
@@ -44,10 +45,31 @@ import { useTextHistory } from '../hooks/useTextHistory';
 import ModalCloseButton from './ModalCloseButton';
 import { useKeyboardInset } from '../hooks/useKeyboardInset';
 import { useTextScrollbar } from '../hooks/useTextScrollbar';
+import ReorderControls from './ReorderControls';
+import { useCustomOrder, useDragReorder, applyCustomOrder, moveKey } from '../hooks/useCustomOrder';
+import { StorageService } from '../utils/storage';
 
 interface NotesViewProps {
   isMobile: boolean;
 }
+
+type NoteSortOption = 'updated' | 'newest' | 'oldest' | 'name_asc' | 'name_desc' | 'custom';
+
+const NOTE_SORT_KEY = '@offline_locker_note_sort_option';
+
+const NOTE_SORT_OPTIONS: { id: NoteSortOption; label: string; short: string; desc: string; icon: any }[] = [
+  { id: 'updated', label: 'Recently Updated', short: 'Recently Updated', desc: 'Notes you edited last appear first', icon: 'create-outline' },
+  { id: 'newest', label: 'Newest First', short: 'Newest First', desc: 'Recently created notes appear first', icon: 'time-outline' },
+  { id: 'oldest', label: 'Oldest First', short: 'Oldest First', desc: 'Earliest created notes appear first', icon: 'hourglass-outline' },
+  { id: 'name_asc', label: 'Name (A to Z)', short: 'Name (A–Z)', desc: 'Alphabetical note order', icon: 'text-outline' },
+  { id: 'name_desc', label: 'Name (Z to A)', short: 'Name (Z–A)', desc: 'Reverse alphabetical note order', icon: 'text-outline' },
+  { id: 'custom', label: 'Custom Order', short: 'Custom Order', desc: 'Your own order: drag or use the arrows to move', icon: 'reorder-three-outline' },
+];
+
+const timeOf = (iso: string) => {
+  const t = new Date(iso).getTime();
+  return isNaN(t) ? 0 : t;
+};
 
 /** `resume` asks again for a note that was open when the app locked. */
 type PinAction = 'open' | 'edit' | 'delete' | 'resume';
@@ -66,6 +88,22 @@ export default function NotesView({ isMobile }: NotesViewProps) {
   const insets = useSafeAreaInsets();
 
   const [search, setSearch] = useState('');
+  // The store hands notes over most recently updated first, which stays the default
+  const [sortOption, setSortOption] = useState<NoteSortOption>('updated');
+  const [sortMenuVisible, setSortMenuVisible] = useState(false);
+  const noteOrder = useCustomOrder(currentUser?.uuid ? `@offline_locker_note_order_${currentUser.uuid}` : null);
+
+  useEffect(() => {
+    StorageService.getItem(NOTE_SORT_KEY).then(saved => {
+      if (saved && NOTE_SORT_OPTIONS.some(o => o.id === saved)) setSortOption(saved as NoteSortOption);
+    });
+  }, []);
+
+  const chooseSort = (option: NoteSortOption) => {
+    setSortOption(option);
+    setSortMenuVisible(false);
+    StorageService.setItem(NOTE_SORT_KEY, option);
+  };
 
   // Step 1 — the note's name and protection
   const [detailsVisible, setDetailsVisible] = useState(false);
@@ -180,15 +218,50 @@ export default function NotesView({ isMobile }: NotesViewProps) {
 
   // Search runs over decrypted text, so it happens here rather than in SQL.
   // Locked notes match on title only — their body must stay hidden.
+  const sortedNotes = useMemo(() => {
+    const list = [...notes];
+    const byName = (a: Note, b: Note) => (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' });
+    switch (sortOption) {
+      case 'newest':
+        return list.sort((a, b) => timeOf(b.createdAt) - timeOf(a.createdAt));
+      case 'oldest':
+        return list.sort((a, b) => timeOf(a.createdAt) - timeOf(b.createdAt));
+      case 'name_asc':
+        return list.sort(byName);
+      case 'name_desc':
+        return list.sort((a, b) => byName(b, a));
+      case 'custom':
+        // Notes written since the list was arranged come first, newest on top
+        list.sort((a, b) => timeOf(b.createdAt) - timeOf(a.createdAt));
+        return applyCustomOrder(list, n => String(n.id), noteOrder.order);
+      default:
+        return list;
+    }
+  }, [notes, sortOption, noteOrder.order]);
+
+  const noteKeys = useMemo(() => sortedNotes.map(n => String(n.id)), [sortedNotes]);
+  const noteDrag = useDragReorder(noteKeys, noteOrder.setOrder);
+  // Rows are only moved within the whole list, never among search results
+  const isArranging = sortOption === 'custom' && !search.trim();
+
+  const moveNote = (key: string, step: -1 | 1) => {
+    const from = noteKeys.indexOf(key);
+    noteOrder.setOrder(moveKey(noteKeys, from, from + step));
+  };
+
   const visibleNotes = useMemo(() => {
     const term = search.trim().toLowerCase();
-    if (!term) return notes;
-    return notes.filter(n => {
+    if (!term) {
+      if (sortOption !== 'custom') return sortedNotes;
+      const byKey = new Map(sortedNotes.map(n => [String(n.id), n]));
+      return noteDrag.orderedKeys.map(key => byKey.get(key)).filter(Boolean) as Note[];
+    }
+    return sortedNotes.filter(n => {
       if (n.title.toLowerCase().includes(term)) return true;
       if (!isUnlocked(n)) return false;
       return decryptNote(n).toLowerCase().includes(term);
     });
-  }, [notes, search, decryptNote, unlockedId]);
+  }, [sortedNotes, search, decryptNote, unlockedId, sortOption, noteDrag.orderedKeys]);
 
   const openDetails = (note: Note | null) => {
     setDetailsNote(note);
@@ -437,23 +510,54 @@ export default function NotesView({ isMobile }: NotesViewProps) {
             </TouchableOpacity>
           )}
         </View>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }}>
+          <Text style={{ flex: 1, fontSize: 11.5, color: AppTheme.colors.textSecondary, marginRight: 8 }} numberOfLines={2}>
+            {sortOption === 'custom' && notes.length > 1
+              ? (search.trim() ? 'Clear the search to rearrange notes.' : 'Drag the handle, or tap the arrows, to rearrange.')
+              : ''}
+          </Text>
+          <TouchableOpacity
+            onPress={() => setSortMenuVisible(true)}
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              backgroundColor: AppTheme.colors.primaryLight,
+              paddingHorizontal: 10,
+              paddingVertical: 5,
+              borderRadius: 8,
+              borderWidth: 1,
+              borderColor: AppTheme.colors.primaryBorder,
+            }}
+            {...(Platform.OS === 'web' ? { title: 'Sort notes' } : {})}
+          >
+            <Ionicons name="swap-vertical" size={12} color={AppTheme.colors.primary} style={{ marginRight: 4 }} />
+            <Text style={{ fontSize: 11.5, fontWeight: '600', color: AppTheme.colors.primary }}>
+              {NOTE_SORT_OPTIONS.find(o => o.id === sortOption)?.short || 'Sort'}
+            </Text>
+            <Ionicons name="chevron-down" size={11} color={AppTheme.colors.primary} style={{ marginLeft: 3 }} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <FlatList
         style={{ flex: 1 }}
         data={visibleNotes}
         keyExtractor={item => String(item.id)}
+        scrollEnabled={!noteDrag.isDragging}
+        extraData={noteDrag.activeKey}
+        CellRendererComponent={isArranging ? noteDrag.cellRendererFor(n => String(n.id)) : undefined}
         initialNumToRender={12}
         maxToRenderPerBatch={10}
         updateCellsBatchingPeriod={50}
         windowSize={7}
         contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 90 }}
-        renderItem={({ item }) => {
+        renderItem={({ item, index }) => {
+          const orderKey = String(item.id);
           const locked = !isUnlocked(item);
           const preview = locked ? '' : decryptNote(item).replace(/\s+/g, ' ').trim();
           const tab = resolveNoteTabColor(item.tabColor);
           const plain = tab.key === DEFAULT_NOTE_TAB_COLOR_KEY;
-          return (
+          const row = (
             <TouchableOpacity
               onPress={() => requirePin(item, 'open', () => openWriter(item))}
               style={{
@@ -471,6 +575,16 @@ export default function NotesView({ isMobile }: NotesViewProps) {
               }}
               activeOpacity={0.7}
             >
+              {isArranging && (
+                <ReorderControls
+                  dragHandlers={noteDrag.handlersFor(orderKey)}
+                  onMoveUp={() => moveNote(orderKey, -1)}
+                  onMoveDown={() => moveNote(orderKey, 1)}
+                  canMoveUp={index > 0}
+                  canMoveDown={index < visibleNotes.length - 1}
+                  label={item.title}
+                />
+              )}
               <View style={{ flex: 1, marginRight: 8 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                   <Ionicons
@@ -516,6 +630,9 @@ export default function NotesView({ isMobile }: NotesViewProps) {
               <Ionicons name="chevron-forward" size={16} color="#cbd5e1" />
             </TouchableOpacity>
           );
+          if (!isArranging) return row;
+          const { onLayout, style } = noteDrag.rowProps(orderKey);
+          return <Animated.View onLayout={onLayout} style={style}>{row}</Animated.View>;
         }}
         ListEmptyComponent={
           <View style={{ alignItems: 'center', paddingVertical: 40, paddingHorizontal: 20 }}>
@@ -549,6 +666,65 @@ export default function NotesView({ isMobile }: NotesViewProps) {
   return (
     <View style={{ flex: 1 }}>
       {renderList()}
+
+      <Modal visible={sortMenuVisible} transparent animationType="fade" onRequestClose={() => setSortMenuVisible(false)}>
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={() => setSortMenuVisible(false)}
+          style={{ flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.4)', justifyContent: 'center', alignItems: 'center', padding: 20 }}
+        >
+          <View
+            onStartShouldSetResponder={() => true}
+            style={{ backgroundColor: '#ffffff', borderRadius: 20, padding: 20, maxWidth: 400, width: '100%', elevation: 8 }}
+          >
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <View style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: AppTheme.colors.primaryLight, justifyContent: 'center', alignItems: 'center', marginRight: 10 }}>
+                  <Ionicons name="filter" size={18} color={AppTheme.colors.primary} />
+                </View>
+                <View>
+                  <Text style={{ fontSize: 17, fontWeight: '700', color: AppTheme.colors.text }}>Sort Notes</Text>
+                  <Text style={{ fontSize: 12, color: AppTheme.colors.textSecondary }}>Choose display order</Text>
+                </View>
+              </View>
+              <TouchableOpacity onPress={() => setSortMenuVisible(false)} style={{ padding: 6 }}>
+                <Ionicons name="close" size={20} color={AppTheme.colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={{ maxHeight: 440 }} showsVerticalScrollIndicator={false}>
+              {NOTE_SORT_OPTIONS.map(opt => {
+                const selected = sortOption === opt.id;
+                return (
+                  <TouchableOpacity
+                    key={opt.id}
+                    onPress={() => chooseSort(opt.id)}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      paddingVertical: 12,
+                      paddingHorizontal: 14,
+                      borderRadius: 12,
+                      marginBottom: 8,
+                      borderWidth: 1,
+                      borderColor: selected ? AppTheme.colors.primaryBorder : '#f1f5f9',
+                      backgroundColor: selected ? AppTheme.colors.primaryLight : '#ffffff',
+                    }}
+                  >
+                    <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: selected ? AppTheme.colors.primary : AppTheme.colors.primaryLight, justifyContent: 'center', alignItems: 'center', marginRight: 12 }}>
+                      <Ionicons name={opt.icon} size={18} color={selected ? '#ffffff' : AppTheme.colors.primary} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 14, fontWeight: selected ? '700' : '600', color: selected ? AppTheme.colors.primary : AppTheme.colors.text }}>{opt.label}</Text>
+                      <Text style={{ fontSize: 12, color: AppTheme.colors.textSecondary, marginTop: 2 }}>{opt.desc}</Text>
+                    </View>
+                    {selected && <Ionicons name="checkmark-circle" size={20} color={AppTheme.colors.primary} style={{ marginLeft: 8 }} />}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Its own storage key, so moving it here does not move the one in Files */}
       <DraggableFAB
