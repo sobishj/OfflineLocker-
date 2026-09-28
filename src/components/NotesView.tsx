@@ -45,8 +45,8 @@ import { useTextHistory } from '../hooks/useTextHistory';
 import ModalCloseButton from './ModalCloseButton';
 import { useKeyboardInset } from '../hooks/useKeyboardInset';
 import { useTextScrollbar } from '../hooks/useTextScrollbar';
-import ReorderControls from './ReorderControls';
-import { useCustomOrder, useDragReorder, applyCustomOrder, moveKey } from '../hooks/useCustomOrder';
+import ReorderControls, { ArrangeDoneBar } from './ReorderControls';
+import { useCustomOrder, useDragReorder, applyCustomOrder } from '../hooks/useCustomOrder';
 import { StorageService } from '../utils/storage';
 
 interface NotesViewProps {
@@ -63,7 +63,7 @@ const NOTE_SORT_OPTIONS: { id: NoteSortOption; label: string; short: string; des
   { id: 'oldest', label: 'Oldest First', short: 'Oldest First', desc: 'Earliest created notes appear first', icon: 'hourglass-outline' },
   { id: 'name_asc', label: 'Name (A to Z)', short: 'Name (A–Z)', desc: 'Alphabetical note order', icon: 'text-outline' },
   { id: 'name_desc', label: 'Name (Z to A)', short: 'Name (Z–A)', desc: 'Reverse alphabetical note order', icon: 'text-outline' },
-  { id: 'custom', label: 'Custom Order', short: 'Custom Order', desc: 'Your own order: drag or use the arrows to move', icon: 'reorder-three-outline' },
+  { id: 'custom', label: 'Custom Order', short: 'Custom Order', desc: 'Your own order: press and hold any item to rearrange', icon: 'reorder-three-outline' },
 ];
 
 const timeOf = (iso: string) => {
@@ -91,6 +91,8 @@ export default function NotesView({ isMobile }: NotesViewProps) {
   // The store hands notes over most recently updated first, which stays the default
   const [sortOption, setSortOption] = useState<NoteSortOption>('updated');
   const [sortMenuVisible, setSortMenuVisible] = useState(false);
+  // Pressing and holding a note puts the list into rearranging until Done
+  const [arrangingNotes, setArrangingNotes] = useState(false);
   const noteOrder = useCustomOrder(currentUser?.uuid ? `@offline_locker_note_order_${currentUser.uuid}` : null);
 
   useEffect(() => {
@@ -241,12 +243,20 @@ export default function NotesView({ isMobile }: NotesViewProps) {
 
   const noteKeys = useMemo(() => sortedNotes.map(n => String(n.id)), [sortedNotes]);
   const noteDrag = useDragReorder(noteKeys, noteOrder.setOrder);
-  // Rows are only moved within the whole list, never among search results
-  const isArranging = sortOption === 'custom' && !search.trim();
+  const isArranging = arrangingNotes && sortOption === 'custom';
 
-  const moveNote = (key: string, step: -1 | 1) => {
-    const from = noteKeys.indexOf(key);
-    noteOrder.setOrder(moveKey(noteKeys, from, from + step));
+  /**
+   * Starts from the order on screen, whatever it is sorted by, and clears the
+   * search: a note is only ever moved among all of them. Holding a locked
+   * note only rearranges it; nothing in it is opened.
+   */
+  const startArranging = () => {
+    if (sortOption !== 'custom') {
+      noteOrder.setOrder(noteKeys);
+      chooseSort('custom');
+    }
+    setSearch('');
+    setArrangingNotes(true);
   };
 
   const visibleNotes = useMemo(() => {
@@ -485,6 +495,10 @@ export default function NotesView({ isMobile }: NotesViewProps) {
   const renderList = () => (
     <View style={{ flex: 1 }}>
       <View style={{ padding: 12 }}>
+        {isArranging ? (
+          <ArrangeDoneBar onDone={() => setArrangingNotes(false)} />
+        ) : (
+        <>
         <View
           style={{
             flexDirection: 'row',
@@ -510,12 +524,7 @@ export default function NotesView({ isMobile }: NotesViewProps) {
             </TouchableOpacity>
           )}
         </View>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }}>
-          <Text style={{ flex: 1, fontSize: 11.5, color: AppTheme.colors.textSecondary, marginRight: 8 }} numberOfLines={2}>
-            {sortOption === 'custom' && notes.length > 1
-              ? (search.trim() ? 'Clear the search to rearrange notes.' : 'Drag the handle, or tap the arrows, to rearrange.')
-              : ''}
-          </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 8 }}>
           <TouchableOpacity
             onPress={() => setSortMenuVisible(true)}
             style={{
@@ -537,6 +546,8 @@ export default function NotesView({ isMobile }: NotesViewProps) {
             <Ionicons name="chevron-down" size={11} color={AppTheme.colors.primary} style={{ marginLeft: 3 }} />
           </TouchableOpacity>
         </View>
+        </>
+        )}
       </View>
 
       <FlatList
@@ -551,7 +562,7 @@ export default function NotesView({ isMobile }: NotesViewProps) {
         updateCellsBatchingPeriod={50}
         windowSize={7}
         contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 90 }}
-        renderItem={({ item, index }) => {
+        renderItem={({ item }) => {
           const orderKey = String(item.id);
           const locked = !isUnlocked(item);
           const preview = locked ? '' : decryptNote(item).replace(/\s+/g, ' ').trim();
@@ -559,7 +570,9 @@ export default function NotesView({ isMobile }: NotesViewProps) {
           const plain = tab.key === DEFAULT_NOTE_TAB_COLOR_KEY;
           const row = (
             <TouchableOpacity
-              onPress={() => requirePin(item, 'open', () => openWriter(item))}
+              onPress={() => { if (!isArranging) requirePin(item, 'open', () => openWriter(item)); }}
+              onLongPress={isArranging ? undefined : startArranging}
+              delayLongPress={350}
               style={{
                 backgroundColor: tab.card,
                 borderWidth: 1,
@@ -573,17 +586,10 @@ export default function NotesView({ isMobile }: NotesViewProps) {
                 flexDirection: 'row',
                 alignItems: 'center',
               }}
-              activeOpacity={0.7}
+              activeOpacity={isArranging ? 1 : 0.7}
             >
               {isArranging && (
-                <ReorderControls
-                  dragHandlers={noteDrag.handlersFor(orderKey)}
-                  onMoveUp={() => moveNote(orderKey, -1)}
-                  onMoveDown={() => moveNote(orderKey, 1)}
-                  canMoveUp={index > 0}
-                  canMoveDown={index < visibleNotes.length - 1}
-                  label={item.title}
-                />
+                <ReorderControls dragHandlers={noteDrag.handlersFor(orderKey)} label={item.title} />
               )}
               <View style={{ flex: 1, marginRight: 8 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -615,6 +621,9 @@ export default function NotesView({ isMobile }: NotesViewProps) {
                 <Text style={{ fontSize: 10, color: '#94a3b8', marginTop: 6 }}>{formatStamp(item.updatedAt)}</Text>
               </View>
 
+              {/* Set aside while rearranging */}
+              {!isArranging && (
+              <>
               <TouchableOpacity
                 onPress={() => requirePin(item, 'edit', () => openDetails(item))}
                 style={{ padding: 7 }}
@@ -628,6 +637,8 @@ export default function NotesView({ isMobile }: NotesViewProps) {
                 <Ionicons name="trash-outline" size={17} color="#ef4444" />
               </TouchableOpacity>
               <Ionicons name="chevron-forward" size={16} color="#cbd5e1" />
+              </>
+              )}
             </TouchableOpacity>
           );
           if (!isArranging) return row;

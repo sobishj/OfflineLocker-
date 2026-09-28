@@ -27,8 +27,8 @@ import TabRelockGate from '../components/TabRelockGate';
 import { withoutAutoLock } from '../services/AutoLockService';
 import { ensureDecryptedCacheDir } from '../services/FileCacheService';
 import { buildImagePdf, PdfImage } from '../services/PdfBuilder';
-import ReorderControls from '../components/ReorderControls';
-import { useCustomOrder, useDragReorder, applyCustomOrder, moveKey } from '../hooks/useCustomOrder';
+import ReorderControls, { ArrangeDoneBar } from '../components/ReorderControls';
+import { useCustomOrder, useDragReorder, applyCustomOrder } from '../hooks/useCustomOrder';
 
 const MONTHS = 'jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec';
 const DATE_PATTERN = new RegExp(
@@ -829,6 +829,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
   const [docSearch, setDocSearch] = useState('');
   // Each category keeps its own arrangement of its files
   const docOrder = useCustomOrder(tabId ? `@offline_locker_doc_order_${tabId}` : null);
+  // Pressing and holding a file puts the list into rearranging until Done
+  const [arrangingDocs, setArrangingDocs] = useState(false);
 
   useEffect(() => {
     const loadDocSortPref = async () => {
@@ -845,7 +847,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
     { id: 'oldest', label: 'Oldest First', desc: 'Earliest added files appear first', icon: 'hourglass-outline' },
     { id: 'name_asc', label: 'File Name (A to Z)', desc: 'Alphabetical file order', icon: 'text-outline' },
     { id: 'name_desc', label: 'File Name (Z to A)', desc: 'Reverse alphabetical order', icon: 'text-outline' },
-    { id: 'custom', label: 'Custom Order', desc: 'Your own order: drag or use the arrows to move', icon: 'reorder-three-outline' },
+    { id: 'custom', label: 'Custom Order', desc: 'Your own order: press and hold any item to rearrange', icon: 'reorder-three-outline' },
   ];
 
   const getDocSortLabel = (opt: DocSortOption) => {
@@ -881,12 +883,20 @@ export default function TabDetailScreen({ route, navigation }: any) {
 
   const docKeys = useMemo(() => sortedDocuments.map(d => String(d.id)), [sortedDocuments]);
   const docDrag = useDragReorder(docKeys, docOrder.setOrder);
-  // Rows are only moved within the whole list, never among search results
-  const isArrangingDocs = sortOption === 'custom' && !docSearch.trim();
+  const isArrangingDocs = arrangingDocs && sortOption === 'custom';
 
-  const moveDoc = (key: string, step: -1 | 1) => {
-    const from = docKeys.indexOf(key);
-    docOrder.setOrder(moveKey(docKeys, from, from + step));
+  /**
+   * Starts from the order on screen, whatever it is sorted by, and clears the
+   * search: a file is only ever moved among all of them.
+   */
+  const startArrangingDocs = () => {
+    if (sortOption !== 'custom') {
+      docOrder.setOrder(docKeys);
+      setSortOption('custom');
+      StorageService.setItem('@offline_locker_doc_sort_option', 'custom');
+    }
+    setDocSearch('');
+    setArrangingDocs(true);
   };
 
   useEffect(() => {
@@ -898,6 +908,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
     setPreviewLoading(false);
     decryptionCacheRef.current.clear();
     setDocSearch('');
+    setArrangingDocs(false);
     setLoading(true);
 
     const fetchDocs = async () => {
@@ -2462,6 +2473,9 @@ export default function TabDetailScreen({ route, navigation }: any) {
             flexDirection: 'column',
           }}>
             <View style={{ paddingHorizontal: isMobile ? 8 : 6, paddingTop: isMobile ? 8 : 6 }}>
+              {isArrangingDocs ? (
+                <ArrangeDoneBar compact onDone={() => setArrangingDocs(false)} />
+              ) : (
               <View
                 style={{
                   flexDirection: 'row',
@@ -2487,6 +2501,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                   </TouchableOpacity>
                 )}
               </View>
+              )}
             </View>
 
             <View style={{
@@ -2498,6 +2513,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
               justifyContent: 'center',
               alignItems: 'center',
             }}>
+              {!isArrangingDocs && (
               <TouchableOpacity
                 onPress={() => setSortModalVisible(true)}
                 style={{
@@ -2520,13 +2536,8 @@ export default function TabDetailScreen({ route, navigation }: any) {
                 </Text>
                 <Ionicons name="chevron-down" size={isMobile ? 10 : 9} color={AppTheme.colors.primary} style={{ marginLeft: 2 }} />
               </TouchableOpacity>
+              )}
             </View>
-
-            {sortOption === 'custom' && activeDocuments.length > 1 && (
-              <Text style={{ fontSize: isMobile ? 9.5 : 10, color: AppTheme.colors.textSecondary, textAlign: 'center', paddingHorizontal: 6, paddingTop: 6 }}>
-                {docSearch.trim() ? 'Clear the search to rearrange.' : 'Drag the handle or tap the arrows to rearrange.'}
-              </Text>
-            )}
 
             <FlatList
               data={visibleDocuments}
@@ -2542,7 +2553,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
               updateCellsBatchingPeriod={50}
               windowSize={7}
               contentContainerStyle={{ padding: isMobile ? 9 : 8 }}
-              renderItem={({ item, index }) => {
+              renderItem={({ item }) => {
                 const isSelected = previewDoc?.id === item.id;
                 const orderKey = String(item.id);
                 const formattedDate = new Date(item.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
@@ -2564,8 +2575,11 @@ export default function TabDetailScreen({ route, navigation }: any) {
                 const cardContent = (
                   <TouchableOpacity
                     key={item.id}
-                    onPress={() => handleItemPress(item)}
-                    {...(Platform.OS === 'web' ? { onDoubleClick: () => handleViewDoc(item) } : {})}
+                    onPress={() => { if (!isArrangingDocs) handleItemPress(item); }}
+                    onLongPress={isArrangingDocs ? undefined : startArrangingDocs}
+                    delayLongPress={350}
+                    activeOpacity={isArrangingDocs ? 1 : 0.2}
+                    {...(Platform.OS === 'web' ? { onDoubleClick: () => { if (!isArrangingDocs) handleViewDoc(item); } } : {})}
                     style={{
                       // The expiry tint survives selection, which is shown by the border
                       backgroundColor: expiryStyle
@@ -2585,15 +2599,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                     }}
                   >
                     {isArrangingDocs && (
-                      <ReorderControls
-                        compact
-                        dragHandlers={docDrag.handlersFor(orderKey)}
-                        onMoveUp={() => moveDoc(orderKey, -1)}
-                        onMoveDown={() => moveDoc(orderKey, 1)}
-                        canMoveUp={index > 0}
-                        canMoveDown={index < visibleDocuments.length - 1}
-                        label={item.title}
-                      />
+                      <ReorderControls compact dragHandlers={docDrag.handlersFor(orderKey)} label={item.title} />
                     )}
 
                     {/* Left File Type Icon Box (Compact) */}
@@ -2693,13 +2699,15 @@ export default function TabDetailScreen({ route, navigation }: any) {
                       )}
                     </View>
 
-                    {/* Right: Three Dots Action Menu Trigger */}
+                    {/* Right: Three Dots Action Menu Trigger, set aside while rearranging */}
+                    {!isArrangingDocs && (
                     <TouchableOpacity
                       onPress={() => handleOpenEditDoc(item)}
                       style={{ padding: 2 }}
                     >
                       <Ionicons name="ellipsis-vertical" size={isMobile ? 14 : 15} color="#94a3b8" />
                     </TouchableOpacity>
+                    )}
                   </TouchableOpacity>
                 );
 
@@ -2707,7 +2715,7 @@ export default function TabDetailScreen({ route, navigation }: any) {
                   cardContent,
                   `${item.title} (${formatFileSize(item)} • ${formattedDate})`,
                   'block',
-                  () => handleViewDoc(item)
+                  isArrangingDocs ? undefined : () => handleViewDoc(item)
                 );
                 if (!isArrangingDocs) return row;
                 const { onLayout, style } = docDrag.rowProps(orderKey);

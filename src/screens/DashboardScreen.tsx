@@ -25,8 +25,8 @@ import { BACKUP_PASSWORD_MIN } from '../services/BackupService';
 import { NEW_PIN_LENGTH } from '../store/useLockerStore';
 import { withoutAutoLock } from '../services/AutoLockService';
 import BiometricToggle, { BiometricUnlockButton } from '../components/BiometricToggle';
-import ReorderControls from '../components/ReorderControls';
-import { useCustomOrder, useDragReorder, applyCustomOrder, moveKey } from '../hooks/useCustomOrder';
+import ReorderControls, { ArrangeDoneBar } from '../components/ReorderControls';
+import { useCustomOrder, useDragReorder, applyCustomOrder } from '../hooks/useCustomOrder';
 import { BiometricService, BiometricScopes } from '../services/BiometricService';
 
 type DashboardProps = {
@@ -187,6 +187,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
   const [sortOption, setSortOption] = useState<SortOption>('newest');
   const [sortModalVisible, setSortModalVisible] = useState(false);
   const [tabSearch, setTabSearch] = useState('');
+  // Pressing and holding a category puts the list into rearranging until Done
+  const [arrangingTabs, setArrangingTabs] = useState(false);
   // The order the user arranged the categories in, kept per account
   const tabOrder = useCustomOrder(currentUser?.uuid ? `@offline_locker_tab_order_${currentUser.uuid}` : null);
 
@@ -205,7 +207,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     { id: 'oldest', label: 'Oldest First', desc: 'Earliest created categories appear first', icon: 'hourglass-outline' },
     { id: 'name_asc', label: 'Name (A to Z)', desc: 'Alphabetical category order', icon: 'text-outline' },
     { id: 'name_desc', label: 'Name (Z to A)', desc: 'Reverse alphabetical category order', icon: 'text-outline' },
-    { id: 'custom', label: 'Custom Order', desc: 'Your own order: drag or use the arrows to move', icon: 'reorder-three-outline' },
+    { id: 'custom', label: 'Custom Order', desc: 'Your own order: press and hold any item to rearrange', icon: 'reorder-three-outline' },
   ];
 
   const getSortLabel = (opt: SortOption) => {
@@ -241,9 +243,22 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
   const tabKeys = useMemo(() => sortedTabs.map(t => t.uuid), [sortedTabs]);
   const tabDrag = useDragReorder(tabKeys, tabOrder.setOrder);
-  // Arranging is only offered over the whole list: moving a row among search
-  // results would say nothing about where it sits among the hidden ones
-  const isArrangingTabs = sortOption === 'custom' && !tabSearch.trim();
+  const isArrangingTabs = arrangingTabs && sortOption === 'custom';
+
+  /**
+   * Starts rearranging from the order on screen, whatever it is sorted by, so
+   * nothing jumps when the handles appear. The search is cleared: a row is
+   * only ever moved among all of them, never among a filtered few.
+   */
+  const startArrangingTabs = () => {
+    if (sortOption !== 'custom') {
+      tabOrder.setOrder(tabKeys);
+      setSortOption('custom');
+      StorageService.setItem('@offline_locker_tab_sort_option', 'custom');
+    }
+    setTabSearch('');
+    setArrangingTabs(true);
+  };
 
   const visibleTabs = useMemo(() => {
     const term = tabSearch.trim().toLowerCase();
@@ -257,10 +272,6 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
     return tabDrag.orderedKeys.map(key => byKey.get(key)).filter(Boolean) as typeof sortedTabs;
   }, [sortedTabs, tabSearch, sortOption, tabDrag.orderedKeys]);
 
-  const moveTab = (uuid: string, step: -1 | 1) => {
-    const from = tabKeys.indexOf(uuid);
-    tabOrder.setOrder(moveKey(tabKeys, from, from + step));
-  };
 
   // Imperative hidden file input for Web — native DOM event, immune to React Modal layering
   const webFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -901,6 +912,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 <Text style={styles.sectionTitle}>Your document categories</Text>
                 <Text style={styles.sectionSubtitle}>Organize and protect what matters.</Text>
               </View>
+              {!isArrangingTabs && (
               <TouchableOpacity
                 onPress={() => setSortModalVisible(true)}
                 style={styles.sortFilterBtn}
@@ -910,7 +922,13 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 <Text style={styles.sortFilterBtnText}>{getSortLabel(sortOption)}</Text>
                 <Ionicons name="chevron-down" size={13} color={AppTheme.colors.textSecondary} style={{ marginLeft: 4 }} />
               </TouchableOpacity>
+              )}
             </View>
+            {isArrangingTabs ? (
+              <View style={{ marginTop: 12 }}>
+                <ArrangeDoneBar onDone={() => setArrangingTabs(false)} />
+              </View>
+            ) : (
             <View style={styles.tabSearchBox}>
               <Ionicons name="search" size={15} color="#94a3b8" />
               <TextInput
@@ -926,31 +944,21 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 </TouchableOpacity>
               )}
             </View>
-            {sortOption === 'custom' && tabs.length > 1 && (
-              <Text style={styles.arrangeHint}>
-                {tabSearch.trim()
-                  ? 'Clear the search to rearrange categories.'
-                  : 'Drag the handle, or tap the arrows, to rearrange.'}
-              </Text>
             )}
           </View>
         }
-        renderItem={({ item, index }) => {
+        renderItem={({ item }) => {
           const docCount = tabDocCounts[item.uuid] || 0;
           const row = renderWithTooltip(
             <TouchableOpacity
               style={styles.tabCard}
-              onPress={() => handleTabPress(item)}
+              onPress={() => { if (!isArrangingTabs) handleTabPress(item); }}
+              onLongPress={isArrangingTabs ? undefined : startArrangingTabs}
+              delayLongPress={350}
+              activeOpacity={isArrangingTabs ? 1 : 0.2}
             >
               {isArrangingTabs && (
-                <ReorderControls
-                  dragHandlers={tabDrag.handlersFor(item.uuid)}
-                  onMoveUp={() => moveTab(item.uuid, -1)}
-                  onMoveDown={() => moveTab(item.uuid, 1)}
-                  canMoveUp={index > 0}
-                  canMoveDown={index < visibleTabs.length - 1}
-                  label={item.name}
-                />
+                <ReorderControls dragHandlers={tabDrag.handlersFor(item.uuid)} label={item.name} />
               )}
               {/* Category Folder Icon Badge */}
               <View style={styles.folderIconContainer}>
@@ -977,7 +985,8 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
                 </View>
               </View>
 
-              {/* Action Buttons & Chevron */}
+              {/* Action Buttons & Chevron, set aside while rearranging */}
+              {!isArrangingTabs && (
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                 <TouchableOpacity 
                   onPress={(e) => {
@@ -1003,6 +1012,7 @@ export default function DashboardScreen({ navigation }: DashboardProps) {
 
                 <Ionicons name="chevron-forward" size={20} color={AppTheme.colors.textMuted} style={{ marginLeft: 10 }} />
               </View>
+              )}
             </TouchableOpacity>,
             `Open ${item.name} Vault Category`,
             'block'
@@ -2541,7 +2551,6 @@ const createStyles = () => StyleSheet.create({
     marginTop: 12,
   },
   tabSearchInput: { flex: 1, minWidth: 0, paddingVertical: 9, paddingHorizontal: 8, fontSize: 13, color: AppTheme.colors.text },
-  arrangeHint: { fontSize: 11.5, color: AppTheme.colors.textSecondary, marginTop: 8, marginLeft: 2 },
   sectionTitle: { color: AppTheme.colors.text, fontSize: 24, fontWeight: 'bold', letterSpacing: -0.3 },
   sectionSubtitle: { color: AppTheme.colors.textSecondary, fontSize: 15, marginTop: 4 },
   folderIconContainer: { width: 36, height: 36, borderRadius: 10, backgroundColor: AppTheme.colors.iconFolderBg, justifyContent: 'center', alignItems: 'center', marginRight: 10, position: 'relative' },

@@ -50,15 +50,6 @@ export function applyCustomOrder<T>(items: T[], keyOf: (item: T) => string, orde
   return [...unseen, ...placed];
 }
 
-/** `keys` with the item at `from` moved to `to`. */
-export function moveKey(keys: string[], from: number, to: number): string[] {
-  if (from === to || from < 0 || to < 0 || from >= keys.length || to >= keys.length) return keys;
-  const next = [...keys];
-  const [moved] = next.splice(from, 1);
-  next.splice(to, 0, moved);
-  return next;
-}
-
 /**
  * Drag-to-reorder for a plain FlatList, without a gesture library. The row
  * is dragged by its handle; as it passes half of a neighbour, the two swap in
